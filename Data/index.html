@@ -1,0 +1,598 @@
+<!doctype html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>ESP Heat Controller</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="app">
+    <aside class="side">
+      <div class="brand">
+        <div class="logo" aria-hidden="true">⟡</div>
+        <div class="brandTxt">
+          <div class="brandTitle">Heat Controller</div>
+          <div class="brandSub" id="brandSub">—</div>
+        </div>
+      </div>
+
+      <nav class="nav" aria-label="Navigace">
+        <button class="navItem active" data-page="dash">
+          <span class="ico">⌁</span><span>Přehled</span>
+        </button>
+        <button class="navItem" data-page="config">
+          <span class="ico">⚙</span><span>Konfigurace</span>
+        </button>
+        <button class="navItem" data-page="mqtt">
+          <span class="ico">⇄</span><span>MQTT / HA</span>
+        </button>
+        <button class="navItem" data-page="ble">
+          <span class="ico">⌂</span><span>BLE</span>
+        </button>
+        <button class="navItem" data-page="rules">
+          <span class="ico">⟰</span><span>Rule engine</span>
+        </button>
+        <button class="navItem" data-page="files">
+          <span class="ico">⧉</span><span>LittleFS</span>
+        </button>
+        <button class="navItem" data-page="system">
+          <span class="ico">⟲</span><span>Systém</span>
+        </button>
+        <button class="navItem" data-page="ota"><span class="ico">⤒</span><span>OTA update</span></button>
+      </nav>
+
+      <div class="sideFooter">
+        <div class="chips">
+          <span class="chip" id="chipWifi">Wi‑Fi: —</span>
+          <span class="chip" id="chipMqtt">MQTT: —</span>
+        </div>
+        <button class="ghost" id="btnTheme" title="Přepnout motiv">Motiv</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="topLeft">
+          <div class="h1">Řídicí panel</div>
+          <div class="muted" id="topHint">Načítám…</div>
+        </div>
+        <div class="topRight">
+          <div class="pill" id="pillIp">IP: —</div>
+          <div class="pill" id="pillUptime">uptime: —</div>
+        </div>
+      </header>
+
+      <section class="page active" id="page-dash">
+        <div class="grid2">
+          <div class="card">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Režimy</div>
+                <div class="muted">Řízení AUTO / MANUAL a aktivní režim</div>
+              </div>
+            </div>
+
+            <div class="row">
+              <div class="field">
+                <label>Control mode</label>
+                <select id="selControlMode">
+                  <option value="auto">AUTO</option>
+                  <option value="manual">MANUAL</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>Aktivní režim</label>
+                <select id="selSystemMode"></select>
+              </div>
+              <div class="field">
+                <label>Akce</label>
+                <div class="btnRow">
+                  <button class="btn" id="btnApplyMode">Použít</button>
+                  <button class="btn ghost" id="btnAutoRecompute" title="Přepočítat AUTO podle vstupů">AUTO přepočítat</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="split">
+              <div class="kv">
+                <div class="k">SystemMode</div><div class="v" id="kvSystemMode">—</div>
+                <div class="k">ControlMode</div><div class="v" id="kvControlMode">—</div>
+                <div class="k">RSSI</div><div class="v" id="kvRssi">—</div>
+              </div>
+
+              <div class="kv">
+                <div class="k">BLE</div><div class="v" id="kvBle">—</div>
+                <div class="k">Párování</div><div class="v" id="kvPairing">—</div>
+                <div class="k">Meteo</div><div class="v" id="kvMeteo">—</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Relé</div>
+                <div class="muted">Kliknutím zapneš/vypneš relé (v MANUAL)</div>
+              </div>
+              <div class="right">
+                <span class="badge" id="badgeControl">—</span>
+              </div>
+            </div>
+
+            <div class="ioGrid" id="relayGrid"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="cardHead">
+            <div>
+              <div class="cardTitle">Vstupy</div>
+              <div class="muted">Stav vstupů (logický stav podle activeLevel)</div>
+            </div>
+          </div>
+          <div class="ioGrid" id="inputGrid"></div>
+        </div>
+      </section>
+
+      <section class="page" id="page-config">
+        <div class="tabs">
+          <button class="tab active" data-ctab="io">Vstupy & relé</button>
+          <button class="tab" data-ctab="modes">Režimy</button>
+          <button class="tab" data-ctab="json">Advanced JSON</button>
+        </div>
+
+        <div class="tabPage active" id="cfg-io">
+          <div class="grid2">
+            <div class="card">
+              <div class="cardHead">
+                <div>
+                  <div class="cardTitle">Vstupy</div>
+                  <div class="muted">Názvy + aktivní úroveň (LOW/HIGH)</div>
+                </div>
+                <button class="btn" id="btnSaveInputs">Uložit</button>
+              </div>
+              <div class="table" id="tblInputs"></div>
+            </div>
+
+            <div class="card">
+              <div class="cardHead">
+                <div>
+                  <div class="cardTitle">Relé</div>
+                  <div class="muted">Názvy + mapování pro AUTO</div>
+                </div>
+                <button class="btn" id="btnSaveRelays">Uložit</button>
+              </div>
+              <div class="table" id="tblRelays"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="tabPage" id="cfg-modes">
+          <div class="card">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Režimy (MODE1..MODE5)</div>
+                <div class="muted">Každý režim: název, popis, trigger vstup a stavy relé</div>
+              </div>
+              <button class="btn" id="btnSaveModes">Uložit</button>
+            </div>
+            <div class="modeGrid" id="modesGrid"></div>
+          </div>
+        </div>
+
+        <div class="tabPage" id="cfg-json">
+          <div class="card">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Konfigurace jako JSON</div>
+                <div class="muted">Zachová 100% kompatibilitu i pro položky, které UI neukazuje.</div>
+              </div>
+              <div class="btnRow">
+                <button class="btn ghost" id="btnFmtCfg">Formátovat</button>
+                <button class="btn" id="btnSaveCfgJson">Uložit JSON</button>
+              </div>
+            </div>
+            <textarea id="cfgJson" spellcheck="false" class="code" rows="18"></textarea>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="page-mqtt">
+        <div class="grid2">
+          <div class="card">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">MQTT</div>
+                <div class="muted">Nastavení připojení + baseTopic</div>
+              </div>
+              <button class="btn" id="btnSaveMqtt">Uložit</button>
+            </div>
+
+            <div class="form">
+              <label class="check"><input type="checkbox" id="mqttEnabled"> <span>MQTT enabled</span></label>
+
+              <div class="row">
+                <div class="field">
+                  <label>Host</label>
+                  <input id="mqttHost" placeholder="192.168.1.50" />
+                </div>
+                <div class="field">
+                  <label>Port</label>
+                  <input id="mqttPort" type="number" min="1" max="65535" placeholder="1883" />
+                </div>
+              </div>
+
+              <div class="row">
+                <div class="field">
+                  <label>User</label>
+                  <input id="mqttUser" placeholder="(volitelné)" />
+                </div>
+                <div class="field">
+                  <label>Password</label>
+                  <input id="mqttPass" placeholder="(volitelné)" />
+                </div>
+              </div>
+
+              <div class="row">
+                <div class="field">
+                  <label>Client ID</label>
+                  <input id="mqttClientId" placeholder="espheat-xxxx" />
+                </div>
+                <div class="field">
+                  <label>Base topic</label>
+                  <input id="mqttBaseTopic" placeholder="espheat" />
+                </div>
+              </div>
+
+              <div class="row">
+                <div class="field">
+                  <label>HA prefix</label>
+                  <input id="mqttHaPrefix" placeholder="homeassistant" />
+                </div>
+                <div class="field">
+                  <label>Akce</label>
+                  <div class="btnRow">
+                    <button class="btn ghost" id="btnMqttDiscovery">Republish discovery</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="note">
+                Tip: v Home Assistant zkontroluj MQTT integraci a auto-discovery. Názvy relé/vstupů se berou z konfigurace.
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Stav</div>
+                <div class="muted">Rychlý přehled navázání spojení</div>
+              </div>
+            </div>
+            <div class="kv big">
+              <div class="k">Wi‑Fi</div><div class="v" id="stWifi">—</div>
+              <div class="k">MQTT</div><div class="v" id="stMqtt">—</div>
+              <div class="k">IP</div><div class="v" id="stIp">—</div>
+              <div class="k">Uptime</div><div class="v" id="stUptime">—</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="page-ble">
+        <div class="grid2">
+          <div class="card">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">BLE konfigurace</div>
+                <div class="muted">Zapnutí, zabezpečení, meteo klient</div>
+              </div>
+              <button class="btn" id="btnSaveBle">Uložit</button>
+            </div>
+
+            <div class="form">
+              <label class="check"><input type="checkbox" id="bleEnabled"> <span>BLE enabled</span></label>
+              <div class="row">
+                <div class="field">
+                  <label>Device name</label>
+                  <input id="bleDeviceName" placeholder="ESP-HeatControl" />
+                </div>
+                <div class="field">
+                  <label>Advertise</label>
+                  <select id="bleAdvertise">
+                    <option value="true">true</option>
+                    <option value="false">false</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="row">
+                <div class="field">
+                  <label>Security mode</label>
+                  <select id="bleSecurityMode">
+                    <option value="0">0 (none)</option>
+                    <option value="1">1 (passkey)</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label>Passkey</label>
+                  <input id="blePasskey" type="number" min="0" max="999999" placeholder="123456" />
+                </div>
+              </div>
+
+              <label class="check"><input type="checkbox" id="bleAllowlist"> <span>Allowlist enforced</span></label>
+
+              <hr class="sep" />
+
+              <label class="check"><input type="checkbox" id="meteoEnabled"> <span>Meteo enabled</span></label>
+
+              <div class="row">
+                <div class="field">
+                  <label>Meteo MAC</label>
+                  <input id="meteoMac" placeholder="AA:BB:CC:DD:EE:FF" />
+                </div>
+                <div class="field">
+                  <label>Scan (ms)</label>
+                  <input id="meteoScanMs" type="number" min="1000" step="1000" placeholder="20000" />
+                </div>
+              </div>
+
+              <div class="row">
+                <div class="field">
+                  <label>Reconnect (ms)</label>
+                  <input id="meteoReconnectMs" type="number" min="1000" step="1000" placeholder="30000" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card" id="blePairCard">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Párování & Allowlist</div>
+                <div class="muted">Okno pro přidání zařízení do allowlistu</div>
+              </div>
+            </div>
+
+            <div class="form">
+              <div class="row">
+                <div class="field">
+                  <label>Pairing (sekundy)</label>
+                  <input id="pairSeconds" type="number" min="10" max="600" value="120" />
+                </div>
+                <div class="field">
+                  <label>Role (hint)</label>
+                  <input id="pairRole" placeholder="např. meteo" />
+                </div>
+                <div class="field">
+                  <label>Akce</label>
+                  <div class="btnRow">
+                    <button class="btn" id="btnStartPair">Start</button>
+                    <button class="btn ghost" id="btnStopPair">Stop</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="kv">
+                <div class="k">Stav</div><div class="v" id="bleState">—</div>
+                <div class="k">Párování</div><div class="v" id="blePairState">—</div>
+                <div class="k">Meteo</div><div class="v" id="bleMeteoState">—</div>
+              </div>
+
+              <div class="table" id="tblBlePaired"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="page-rules">
+        <div class="grid2">
+          <div class="card">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Rule engine</div>
+                <div class="muted">Editor pravidel + pokročilý JSON</div>
+              </div>
+              <div class="btnRow">
+                <button class="btn ghost" id="btnAddRule">+ Pravidlo</button>
+                <button class="btn ghost" id="btnFmtRules">Formátovat</button>
+                <button class="btn" id="btnSaveRules">Uložit</button>
+              </div>
+            </div>
+
+            <div class="rtabs" style="padding: 0 14px 10px">
+              <button class="rtab active" data-rtab="editor">Editor</button>
+              <button class="rtab" data-rtab="json">JSON</button>
+            </div>
+
+            <div class="tabPage active" id="rtab-editor">
+              <div class="form">
+                <label class="check"><input type="checkbox" id="rulesEnabled" /> Rule engine enabled</label>
+                <label class="check"><input type="checkbox" id="rulesDefaultOff" /> Default OFF pro řízená relé (fallback)</label>
+              </div>
+              <div class="table" id="rulesTable"></div>
+              <div class="note">Tip: Klikni na „Upravit“ u pravidla. Pro složitější podmínky/akce použij záložku JSON.</div>
+            </div>
+
+            <div class="tabPage" id="rtab-json">
+              <textarea id="rulesJson" spellcheck="false" class="code" rows="18"></textarea>
+            </div>
+          </div>
+
+          <!-- Modal: Rule editor -->
+          <div class="modal hidden" id="ruleModal">
+            <div class="modalBack" data-close="1"></div>
+            <div class="modalCard">
+              <div class="modalHead">
+                <div>
+                  <div class="cardTitle" id="ruleModalTitle">Pravidlo</div>
+                  <div class="muted">Základní editor pro nejčastější scénáře</div>
+                </div>
+                <button class="btn ghost" id="btnRuleClose">Zavřít</button>
+              </div>
+
+              <div class="form">
+                <div class="row">
+                  <div class="field"><label>Název</label><input id="ruleName" /></div>
+                  <div class="field"><label>Popis</label><input id="ruleDesc" /></div>
+                </div>
+
+                <div class="row">
+                  <div class="field"><label>Enabled</label><select id="ruleEnabled"><option value="true">true</option><option value="false">false</option></select></div>
+                  <div class="field"><label>Priority</label><input id="rulePriority" type="number" step="1" /></div>
+                  <div class="field"><label>Stop on match</label><select id="ruleStopOnMatch"><option value="false">false</option><option value="true">true</option></select></div>
+                </div>
+
+                <div class="row">
+                  <div class="field"><label>Debounce (ms)</label><input id="ruleDebounceMs" type="number" step="10" min="0" /></div>
+                  <div class="field"><label>Min ON (ms)</label><input id="ruleMinOnMs" type="number" step="100" min="0" /></div>
+                  <div class="field"><label>Min OFF (ms)</label><input id="ruleMinOffMs" type="number" step="100" min="0" /></div>
+                </div>
+
+                <hr class="sep" />
+
+                <div class="row">
+                  <div class="field">
+                    <label>WHEN (Input)</label>
+                    <div class="row" style="padding:0">
+                      <div class="field"><label>Vstup</label><select id="ruleWhenInput"></select></div>
+                      <div class="field"><label>Stav</label>
+                        <select id="ruleWhenState">
+                          <option value="ACTIVE">ACTIVE</option>
+                          <option value="INACTIVE">INACTIVE</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div class="note">Pro více podmínek (AND/OR), čas nebo MQTT použij záložku JSON.</div>
+                  </div>
+                </div>
+
+                <div class="row">
+                  <div class="field">
+                    <label>THEN (Relay set)</label>
+                    <div class="row" style="padding:0">
+                      <div class="field"><label>Relé</label><select id="ruleThenRelay"></select></div>
+                      <div class="field"><label>Hodnota</label>
+                        <select id="ruleThenValue">
+                          <option value="true">ON</option>
+                          <option value="false">OFF</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="btnRow" style="padding: 0 14px 14px">
+                  <button class="btn" id="btnRuleSave">Uložit do editoru</button>
+                  <button class="btn bad" id="btnRuleDelete">Smazat</button>
+                </div>
+              </div>
+            </div>
+          </div><div class="card">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Stav Rule engine</div>
+                <div class="muted">Runtime info (počty, enabled, …)</div>
+              </div>
+              <button class="btn ghost" id="btnReloadRules">Načíst</button>
+            </div>
+            <pre class="pre" id="rulesStatus">—</pre>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="page-files">
+        <div class="grid2">
+          <div class="card">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Soubory v LittleFS</div>
+                <div class="muted">Seznam / mazání</div>
+              </div>
+              <button class="btn ghost" id="btnRefreshFiles">Obnovit</button>
+            </div>
+            <div class="table" id="tblFiles"></div>
+          </div>
+
+          <div class="card">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Upload souboru</div>
+                <div class="muted">Nahraje do LittleFS přes /api/fs/upload</div>
+              </div>
+            </div>
+            <form id="uploadForm" class="form">
+              <div class="row">
+                <div class="field">
+                  <label>Soubor</label>
+                  <input id="filePick" type="file" />
+                </div>
+                <div class="field">
+                  <label>Cíl</label>
+                  <input id="filePath" placeholder="/index.html" />
+                </div>
+              </div>
+              <button class="btn" type="submit">Nahrát</button>
+              <div class="muted" id="uploadHint">Pozn.: některé upload implementace ignorují cílovou cestu a používají název souboru.</div>
+            </form>
+          </div>
+        </div>
+
+        <div class="note">
+          Tip: Pro nahrání celé web UI složky je pohodlnější LittleFS uploader v Arduino IDE (data upload).
+        </div>
+      </section>
+
+      <section class="page" id="page-system">
+        <div class="grid2">
+          <div class="card">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Restart</div>
+                <div class="muted">Pošle /api/reboot</div>
+              </div>
+            </div>
+            <div class="form">
+              <button class="btn bad" id="btnReboot">Restartovat zařízení</button>
+              <div class="muted">Po restartu se stránka může na chvíli odpojit.</div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Rychlé odkazy</div>
+                <div class="muted">Pomocné stránky</div>
+              </div>
+            </div>
+            <div class="form">
+              <a class="link" href="/update.html">update.html</a>
+              <a class="link" href="/ble.html">ble.html</a>
+            </div>
+          </div>
+        </div>
+      </section>
+
+<section class="page" id="page-ota">
+  <div class="card">
+    <div class="cardHead">
+      <div>
+        <div class="cardTitle">OTA update</div>
+        <div class="muted">Webový upload firmware přes stránku /ota.html.</div>
+      </div>
+    </div>
+    <div style="height:70vh; border-radius:14px; overflow:hidden; border:1px solid var(--line);">
+      <iframe src="/ota.html" style="width:100%;height:100%;border:0"></iframe>
+    </div>
+  </div>
+</section>
+
+      <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    </main>
+  </div>
+
+  <script src="/app.js?v=1766051702"></script>
+</body>
+</html>
