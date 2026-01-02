@@ -2,6 +2,7 @@
 
 #include <FS.h>
 #include <LittleFS.h>
+#include "FsController.h"
 #include <ArduinoJson.h>
 
 #include <string>
@@ -96,7 +97,7 @@ static String nowIso() {
 }
 
 static bool fsReadAll(const char* path, String& out) {
-    if (!LittleFS.begin()) return false;
+    if (!fsIsReady()) return false;
     if (!LittleFS.exists(path)) return false;
     File f = LittleFS.open(path, "r");
     if (!f) return false;
@@ -107,7 +108,7 @@ static bool fsReadAll(const char* path, String& out) {
 }
 
 static bool fsWriteAll(const char* path, const String& data) {
-    if (!LittleFS.begin()) return false;
+    if (!fsIsReady()) return false;
     File f = LittleFS.open(path, "w");
     if (!f) return false;
     f.print(data);

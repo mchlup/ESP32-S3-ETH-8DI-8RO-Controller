@@ -4,16 +4,21 @@
 #include <WebServer.h>
 #include <FS.h>
 #include <LittleFS.h>
+#include "FsController.h"
 #include <ArduinoJson.h>
 #include <WiFi.h>
+#include <math.h>
 
 #include "RelayController.h"
+#include "BuzzerController.h"
 #include "InputController.h"
 #include "LogicController.h"
 #include "NetworkController.h"
 #include "MqttController.h"
 #include "BleController.h"
 #include "RuleEngine.h"
+#include "NtcController.h"
+#include "DallasController.h"
 
 static WebServer server(80);
 static File uploadFile;
@@ -24,6 +29,15 @@ static uint32_t g_rebootAtMs    = 0;
 
 // Globální JSON konfigurace (popisy + mapování relé + režimy)
 static String g_configJson;
+
+static void applyAllConfig(const String& json){
+    networkApplyConfig(json);
+    ntcApplyConfig(json);
+    dallasApplyConfig(json);
+    mqttApplyConfig(json);
+    logicApplyConfig(json);
+}
+
 
 // Rule engine JSON (uložené v LittleFS jako /rules.json)
 static String g_rulesJson;
@@ -71,11 +85,23 @@ static bool handleFileRead(const String& path) {
     else if (p.endsWith(".png")) contentType = "image/png";
     else if (p.endsWith(".jpg") || p.endsWith(".jpeg")) contentType = "image/jpeg";
     else if (p.endsWith(".svg")) contentType = "image/svg+xml";
+    else if (p.endsWith(".ico")) contentType = "image/x-icon";
 
     if (!LittleFS.exists(p)) return false;
 
     File f = LittleFS.open(p, "r");
     if (!f) return false;
+
+    // UI soubory nechceme cachovat – typicky řeší "změny se neprojevily".
+    // (index.html / app.js / styles.css / případně json configy)
+    if (p.endsWith(".html") || p.endsWith(".js") || p.endsWith(".css") || p.endsWith(".json")) {
+        server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+        server.sendHeader("Pragma", "no-cache");
+        server.sendHeader("Expires", "0");
+    } else {
+        // Statické assety (obrázky) klidně cachuj – šetří to výkon.
+        server.sendHeader("Cache-Control", "public, max-age=86400");
+    }
 
     server.streamFile(f, contentType);
     f.close();
@@ -103,8 +129,7 @@ static void loadConfigFromFS() {
     if (!LittleFS.exists("/config.json")) {
         g_configJson = "{}";
         Serial.println(F("[CFG] No config.json, using {}"));
-        logicApplyConfig(g_configJson);
-        mqttApplyConfig(g_configJson);
+        applyAllConfig(g_configJson);
         return;
     }
 
@@ -112,8 +137,7 @@ static void loadConfigFromFS() {
     if (!f) {
         g_configJson = "{}";
         Serial.println(F("[CFG] config.json open failed, using {}"));
-        logicApplyConfig(g_configJson);
-        mqttApplyConfig(g_configJson);
+        applyAllConfig(g_configJson);
         return;
     }
 
@@ -123,10 +147,67 @@ static void loadConfigFromFS() {
 
     if (!g_configJson.length()) g_configJson = "{}";
 
-    logicApplyConfig(g_configJson);
-    mqttApplyConfig(g_configJson);
+    applyAllConfig(g_configJson);
 
     Serial.println(F("[CFG] config.json loaded & applied."));
+}
+
+
+// ===== API dash (Dashboard V2) =====
+static void handleApiDash() {
+    DynamicJsonDocument doc(4096);
+
+    JsonArray temps = doc.createNestedArray("temps");
+    JsonArray tempsValid = doc.createNestedArray("tempsValid");
+    for (uint8_t i=0;i<8;i++){
+        bool v = logicIsTempValid(i);
+        tempsValid.add(v);
+        float t = logicGetTempC(i);
+        if (isfinite(t)) temps.add(t);
+        else temps.add(nullptr);
+    }
+    // --- Dallas diagnostics (GPIO0-3) ---
+    JsonArray dallasArr = doc.createNestedArray("dallas");
+    for (uint8_t gpio=0; gpio<=3; gpio++){
+        const DallasGpioStatus* ds = DallasController::getStatus(gpio);
+        JsonObject go = dallasArr.createNestedObject();
+        go["gpio"] = gpio;
+        if (!ds){ go["status"] = "disabled"; continue; }
+        switch(ds->status){
+          case TEMP_STATUS_OK: go["status"]="ok"; break;
+          case TEMP_STATUS_NO_SENSOR: go["status"]="no_sensor"; break;
+          case TEMP_STATUS_ERROR: go["status"]="error"; break;
+          case TEMP_STATUS_DISABLED: go["status"]="disabled"; break;
+          default: go["status"]="unknown"; break;
+        }
+        go["lastReadMs"] = ds->lastReadMs;
+        JsonArray devs = go.createNestedArray("devices");
+        for (const auto &dv : ds->devices){
+            JsonObject d = devs.createNestedObject();
+            char buf[17];
+            snprintf(buf, sizeof(buf), "%016llX", (unsigned long long)dv.rom);
+            d["rom"] = buf;
+            d["valid"] = dv.valid;
+            if (isfinite(dv.temperature)) d["tempC"] = dv.temperature; else d["tempC"] = nullptr;
+        }
+    }
+
+
+    JsonArray valves = doc.createNestedArray("valves");
+    for (uint8_t r=1;r<=8;r++){
+        ValveUiStatus vs;
+        if (!logicGetValveUiStatus(r, vs)) continue;
+        JsonObject o = valves.createNestedObject();
+        o["master"] = vs.master;
+        o["peer"] = vs.peer;
+        o["posPct"] = vs.posPct;
+        o["moving"] = vs.moving;
+        o["targetB"] = vs.targetB;
+    }
+
+    String out;
+    serializeJson(doc, out);
+    server.send(200, "application/json", out);
 }
 
 static bool saveConfigToFS() {
@@ -212,97 +293,118 @@ static bool saveRulesToFS() {
 // ===== API status =====
 
 void handleApiStatus() {
-    String json = "{";
+    // Stabilní status přes ArduinoJson (bez ručního skládání Stringů)
+    DynamicJsonDocument doc(12288);
 
     // --- mode/control ---
-    json += "\"systemMode\":\"";
-    json += logicModeToString(logicGetMode());
-    json += "\",";
+    doc["systemMode"]  = logicModeToString(logicGetMode());
+    doc["controlMode"] = (logicGetControlMode() == ControlMode::AUTO) ? "auto" : "manual";
 
-    json += "\"controlMode\":\"";
-    json += (logicGetControlMode() == ControlMode::AUTO) ? "auto" : "manual";
-    json += "\",";
-// --- AUTO diagnostika ---
-AutoStatus as = logicGetAutoStatus();
-json += "\"auto\":{";
-json += "\"triggered\":";
-json += as.triggered ? "true" : "false";
-json += ",\"triggerInput\":";
-json += String((uint32_t)as.triggerInput);
-json += ",\"triggerMode\":\"";
-json += logicModeToString(as.triggerMode);
-json += "\"";
-json += ",\"usingRelayMap\":";
-json += as.usingRelayMap ? "true" : "false";
-json += ",\"blockedByRules\":";
-json += as.blockedByRules ? "true" : "false";
-json += ",\"defaultOffUnmapped\":";
-json += logicGetAutoDefaultOffUnmapped() ? "true" : "false";
-json += "},";
+    // --- AUTO diagnostika ---
+    AutoStatus as = logicGetAutoStatus();
+    JsonObject autoObj = doc.createNestedObject("auto");
+    autoObj["triggered"] = as.triggered;
+    autoObj["triggerInput"] = as.triggerInput;
+    autoObj["triggerMode"] = logicModeToString(as.triggerMode);
+    autoObj["usingRelayMap"] = as.usingRelayMap;
+    autoObj["blockedByRules"] = as.blockedByRules;
+    autoObj["defaultOffUnmapped"] = logicGetAutoDefaultOffUnmapped();
 
     // --- relays ---
-    json += "\"relays\":[";
+    JsonArray relays = doc.createNestedArray("relays");
     for (int i = 0; i < RELAY_COUNT; i++) {
-        if (i > 0) json += ",";
-        json += relayGetState(static_cast<RelayId>(i)) ? "1" : "0";
+        relays.add(relayGetState(static_cast<RelayId>(i)) ? 1 : 0);
     }
-    json += "],";
 
     // --- inputs (RAW) ---
-    json += "\"inputs\":[";
+    JsonArray inputs = doc.createNestedArray("inputs");
     for (int i = 0; i < INPUT_COUNT; i++) {
-        if (i > 0) json += ",";
-        json += inputGetRaw(static_cast<InputId>(i)) ? "1" : "0";
+        inputs.add(inputGetRaw(static_cast<InputId>(i)) ? 1 : 0);
     }
-    json += "],";
+
+    // --- temperatures (TEMP1..TEMP8) ---
+    JsonArray temps = doc.createNestedArray("temps");
+    for (int i = 0; i < INPUT_COUNT; i++) {
+        if (logicIsTempValid((uint8_t)i)) temps.add(logicGetTempC((uint8_t)i));
+        else temps.add(nullptr);
+    }
+
+    // --- valves (UI stav pro trojcestné ventily) ---
+    JsonArray valves = doc.createNestedArray("valves");
+    for (uint8_t r = 1; r <= RELAY_COUNT; r++) {
+        ValveUiStatus vs;
+        if (!logicGetValveUiStatus(r, vs)) continue;
+        JsonObject o = valves.createNestedObject();
+        o["master"] = vs.master;
+        o["peer"] = vs.peer;
+        o["posPct"] = vs.posPct;
+        o["moving"] = vs.moving;
+        o["targetB"] = vs.targetB;
+    }
 
     // --- uptime ---
-    json += "\"uptimeMs\":";
-    json += String((uint32_t)millis());
-    json += ",";
+    doc["uptimeMs"] = (uint32_t)millis();
 
     // --- wifi ---
     const bool wifiConn = networkIsConnected();
-    json += "\"wifi\":{";
-    json += "\"connected\":";
-    json += wifiConn ? "true" : "false";
-    json += ",\"ip\":\"";
-    json += networkGetIp();
-    json += "\"";
-    if (wifiConn) {
-        json += ",\"rssi\":";
-        json += String(WiFi.RSSI());
-    }
-    json += "},";
+    JsonObject wifi = doc.createNestedObject("wifi");
+    wifi["connected"] = wifiConn;
+    wifi["ip"] = networkGetIp();
+    if (wifiConn) wifi["rssi"] = WiFi.RSSI();
 
-    // MQTT status
-    json += "\"mqtt\":{";
-    json += "\"configured\":";
-    json += mqttIsConfigured() ? "true" : "false";
-    json += ",\"connected\":";
-    json += mqttIsConnected() ? "true" : "false";
-    json += "}";
+    // --- MQTT ---
+    JsonObject mqtt = doc.createNestedObject("mqtt");
+    mqtt["configured"] = mqttIsConfigured();
+    mqtt["connected"] = mqttIsConnected();
 
-    // convenience (top-level) pro UI kompatibilitu
-    json += ",\"ip\":\"";
-    json += networkGetIp();
-    json += "\"";
-    json += ",\"wifiConnected\":";
-    json += wifiConn ? "true" : "false";
-    json += ",\"mqttConnected\":";
-    json += mqttIsConnected() ? "true" : "false";
+    // --- time ---
+    JsonObject t = doc.createNestedObject("time");
+    t["valid"] = networkIsTimeValid();
+    t["epoch"] = (uint32_t)networkGetTimeEpoch();
+    t["iso"] = networkGetTimeIso();
+    t["source"] = networkGetTimeSource();
+    t["rtcPresent"] = networkIsRtcPresent();
+
+    // --- TUV status ---
+    JsonObject tuv = doc.createNestedObject("tuv");
+    tuv["enabled"] = logicGetTuvEnabled();
+    tuv["nightMode"] = logicGetNightMode();
+
+    // --- equitherm ---
+    EquithermStatus es = logicGetEquithermStatus();
+    JsonObject eq = doc.createNestedObject("equitherm");
+    eq["enabled"] = es.enabled;
+    eq["active"] = es.active;
+    eq["night"] = es.night;
+    if (isfinite(es.outdoorC)) eq["outdoorC"] = es.outdoorC; else eq["outdoorC"] = nullptr;
+    // Backward/UI compatibility: některé UI buildy očekávají i tyto klíče,
+    // ale v aktuálním firmware nejsou součástí EquithermStatus.
+    eq["requestedRoomC"] = nullptr;
+    eq["curveK"] = nullptr;
+    eq["curveB"] = nullptr;
+    if (isfinite(es.targetFlowC)) eq["targetFlowC"] = es.targetFlowC;
+    else eq["targetFlowC"] = nullptr;
+    eq["reason"] = logicGetEquithermReason();
 
     // UI kompatibilita: top-level alias
-    json += ",\"ruleEngineEnabled\":";
-    json += ruleEngineIsEnabled() ? "true" : "false";
+    doc["ruleEngineEnabled"] = ruleEngineIsEnabled();
 
-    // Rule Engine status
-    json += ",\"rules\":";
-    json += ruleEngineGetStatusJson();
+    // Rule Engine status (jako objekt)
+    {
+        DynamicJsonDocument rulesDoc(3072);
+        DeserializationError err = deserializeJson(rulesDoc, ruleEngineGetStatusJson());
+        if (!err) {
+            JsonObject ro = doc.createNestedObject("rules");
+            ro.set(rulesDoc.as<JsonObject>());
+        } else {
+            JsonObject ro = doc.createNestedObject("rules");
+            ro["error"] = err.c_str();
+        }
+    }
 
-    json += "}";
-
-    server.send(200, "application/json", json);
+    String out;
+    serializeJson(doc, out);
+    server.send(200, "application/json", out);
 }
 
 // ===== API relé =====
@@ -376,8 +478,7 @@ void handleApiConfigPost() {
         return;
     }
 
-    logicApplyConfig(g_configJson);
-    mqttApplyConfig(g_configJson);
+    applyAllConfig(g_configJson);
 
     server.send(200, "application/json", "{\"status\":\"ok\"}");
 }
@@ -504,11 +605,19 @@ void handleApiModeCtrlPost() {
                 server.send(400, "application/json", "{\"error\":\"relay must be 1-8\"}");
                 return;
             }
+    if (action == "relay_raw") {
+        const uint8_t relay = (uint8_t)(doc["relay"] | 0);
+        const bool on = (bool)(doc["on"] | false);
+        logicSetRelayRaw(relay, on);
+        server.send(200, "application/json", "{\"ok\":true}");
+        return;
+    }
+
             // Bezpečné chování: ruční zásah => MANUAL
             if (logicGetControlMode() == ControlMode::AUTO) {
                 logicSetControlMode(ControlMode::MANUAL);
             }
-            relaySet(static_cast<RelayId>(rid - 1), val);
+            logicSetRelayOutput((uint8_t)rid, val);
             String json = "{\"status\":\"ok\",\"relay\":";
             json += String(rid);
             json += ",\"value\":";
@@ -629,29 +738,33 @@ void handleApiRebootPost() {
 // ===== File manager =====
 
 void handleApiFsList() {
+    if (!fsIsReady()) {
+        server.send(500, "application/json", "{\"error\":\"fs not mounted\"}");
+        return;
+    }
     File root = LittleFS.open("/");
     if (!root) {
         server.send(500, "application/json", "{\"error\":\"fs open failed\"}");
         return;
     }
 
-    String json = "[";
+    // Pozn.: ArduinoJson minimalizuje fragmentaci heapu oproti ručnímu lepení Stringů
+    DynamicJsonDocument doc(2048);
+    JsonArray arr = doc.to<JsonArray>();
+
     File file = root.openNextFile();
-    bool first = true;
     while (file) {
-        if (!first) json += ",";
-        first = false;
-
-        json += "{\"name\":\"";
-        json += file.name();
-        json += "\",\"size\":";
-        json += String((uint32_t)file.size());
-        json += "}";
-
+        JsonObject o = arr.createNestedObject();
+        o["name"] = file.name();
+        o["size"] = (uint32_t)file.size();
         file = root.openNextFile();
+        // pokud je FS větší a dojdeme na limit, raději vrať částečný výpis než spadnout
+        if (doc.memoryUsage() > 1900) break;
     }
-    json += "]";
-    server.send(200, "application/json", json);
+
+    String out;
+    serializeJson(arr, out);
+    server.send(200, "application/json", out);
 }
 
 void handleApiFsDelete() {
@@ -685,13 +798,116 @@ void handleApiFsUploadDone() {
     server.send(200, "application/json", "{\"status\":\"ok\"}");
 }
 
-// ===== Inicializace webserveru =====
+// ===== API buzzer =====
+static void handleApiBuzzerGet() {
+    String json;
+    buzzerToJson(json);
+    server.send(200, "application/json", json);
+}
 
+static void handleApiBuzzerPost() {
+    String body = server.arg("plain");
+    body.trim();
+    if (!body.length() || body[0] != '{') {
+        server.send(400, "application/json", "{\"error\":\"invalid json\"}");
+        return;
+    }
+
+    StaticJsonDocument<768> doc;
+    DeserializationError err = deserializeJson(doc, body);
+    if (err) {
+        server.send(400, "application/json", "{\"error\":\"invalid json\"}");
+        return;
+    }
+
+    String action = (const char*)(doc["action"] | "");
+    action.toLowerCase();
+
+    if (action == "test") {
+        String pattern = (const char*)(doc["pattern"] | "short");
+        buzzerPlayPatternByName(pattern);
+        handleApiBuzzerGet();
+        return;
+    }
+    if (action == "stop") {
+        buzzerStop();
+        handleApiBuzzerGet();
+        return;
+    }
+    if (action == "set_config") {
+        // očekává {"action":"set_config","config":{...}}
+        JsonObject cfg = doc["config"].as<JsonObject>();
+        if (cfg.isNull()) {
+            server.send(400, "application/json", "{\"error\":\"missing config\"}");
+            return;
+        }
+        buzzerUpdateFromJson(cfg);
+        buzzerSaveToFS();
+        handleApiBuzzerGet();
+        return;
+    }
+
+    server.send(400, "application/json", "{\"error\":\"unknown action\"}");
+}
+
+
+
+// ===== API time/caps =====
+
+static void handleApiTime() {
+    StaticJsonDocument<512> doc;
+    doc["valid"] = networkIsTimeValid();
+    doc["epoch"] = (uint32_t)networkGetTimeEpoch();
+    doc["iso"] = networkGetTimeIso();
+    doc["source"] = networkGetTimeSource();
+    doc["rtcPresent"] = networkIsRtcPresent();
+    doc["ip"] = networkGetIp();
+
+    String out;
+    serializeJson(doc, out);
+    server.send(200, "application/json", out);
+}
+
+static void handleApiCaps() {
+    StaticJsonDocument<512> doc;
+    // UI can hide/disable features based on these flags
+    doc["time"] = true;
+    doc["rtc"] = networkIsRtcPresent();
+    doc["schedules"] = true;
+    doc["iofunc"] = true;
+    doc["ruleEngine"] = true;
+    doc["mqtt"] = true;
+    doc["ble"] = true;
+
+    String out;
+    serializeJson(doc, out);
+    server.send(200, "application/json", out);
+}
+
+static void handleApiTemps() {
+  StaticJsonDocument<1024> doc;
+  JsonArray arr = doc.createNestedArray("ntc");
+
+  for (uint8_t i = 0; i < 3; i++) {
+    JsonObject o = arr.createNestedObject();
+    o["idx"] = i + 1;
+    o["en"] = ntcIsEnabled(i);
+    o["gpio"] = ntcGetGpio(i);
+    o["valid"] = ntcIsValid(i);
+    o["raw"] = ntcGetRaw(i);
+    if (ntcIsValid(i)) o["c"] = ntcGetTempC(i);
+    else o["c"] = nullptr;
+  }
+
+  String out;
+  serializeJson(doc, out);
+  server.send(200, "application/json", out);
+}
+
+// ===== Inicializace webserveru =====
 void webserverInit() {
-    if (!LittleFS.begin()) {
-        Serial.println(F("[FS] LittleFS mount failed."));
-    } else {
-        Serial.println(F("[FS] LittleFS mounted."));
+    // FS je mountnutý v setup() přes fsInit(); tady jen načti konfiguraci, pokud je dostupná
+    if (fsIsReady()) {
         loadConfigFromFS();
         loadRulesFromFS();
     }
@@ -702,6 +918,21 @@ void webserverInit() {
         }
     });
 
+    // BUZZER API
+    server.on("/api/buzzer", HTTP_GET, []() {
+        handleApiBuzzerGet();
+    });
+    server.on("/api/buzzer", HTTP_POST, []() {
+        handleApiBuzzerPost();
+    });
+
+    // favicon explicitně (ať to nechodí přes onNotFound a je to čitelnější v logu)
+    server.on("/favicon.ico", HTTP_GET, []() {
+        if (!handleFileRead("/favicon.ico")) {
+            server.send(404, "text/plain", "favicon.ico not found");
+        }
+    });
+
     server.onNotFound([]() {
         if (!handleFileRead(server.uri())) {
             server.send(404, "text/plain", "Not found");
@@ -709,7 +940,11 @@ void webserverInit() {
     });
 
     // API
+    server.on("/api/dash", HTTP_GET, handleApiDash);
     server.on("/api/status", HTTP_GET, handleApiStatus);
+    server.on("/api/time", HTTP_GET, handleApiTime);
+    server.on("/api/caps", HTTP_GET, handleApiCaps);
+
 
     server.on("/api/relay", HTTP_GET, handleApiRelay);
 
@@ -736,6 +971,8 @@ void webserverInit() {
 
     // Reboot
     server.on("/api/reboot", HTTP_POST, handleApiRebootPost);
+
+    server.on("/api/temps", HTTP_GET, handleApiTemps);
 
     // FS manager
     server.on("/api/fs/list", HTTP_GET, handleApiFsList);

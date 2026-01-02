@@ -23,6 +23,28 @@ enum class ControlMode : uint8_t {
 void logicInit();
 void logicUpdate();
 
+// Teplotní senzory (TEMP1..TEMP8) – index 0..7
+bool  logicIsTempValid(uint8_t idx);
+float logicGetTempC(uint8_t idx);
+
+// Equitherm – stav pro UI/MQTT (výpočet cílové teploty)
+struct EquithermStatus {
+    bool  enabled = false;
+    bool  active  = false;
+    bool  night   = false;
+    float outdoorC = NAN;
+    float targetFlowC = NAN;
+};
+EquithermStatus logicGetEquithermStatus();
+String logicGetEquithermReason();
+
+// Nastavení výstupu z UI/API (respektuje šablony, např. 3c ventil)
+void logicSetRelayOutput(uint8_t relay1based, bool on);
+// RAW ovládání relé (použito pro kalibrace; obejde šablony, ale drží bezpečnost A/B páru)
+void logicSetRelayRaw(uint8_t relay1based, bool on);
+
+
+
 // volá InputController při změně vstupu
 void logicOnInputChanged(InputId id, bool newState);
 
@@ -56,4 +78,21 @@ struct AutoStatus {
 };
 
 AutoStatus logicGetAutoStatus();
+
+// Virtual functions controlled by schedules / external demand
+bool logicGetTuvEnabled();
+bool logicGetNightMode();
+
 bool logicGetAutoDefaultOffUnmapped();
+
+// Trojcestný ventil – stav pro dashboard (V2)
+struct ValveUiStatus {
+    uint8_t master = 0;  // 1..8
+    uint8_t peer = 0;    // 1..8 (0 = none)
+    uint8_t posPct = 0;  // 0..100
+    bool moving = false;
+    bool targetB = false;
+};
+
+bool logicGetValveUiStatus(uint8_t relay1based, ValveUiStatus& out);
+

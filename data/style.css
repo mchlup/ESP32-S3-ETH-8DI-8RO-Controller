@@ -1,0 +1,66 @@
+:root {
+  --bg: #f4f4f4;
+  --fg: #222;
+  --card: #fff;
+  --primary: #007aff;
+}
+[data-theme="dark"] {
+  --bg: #121212;
+  --fg: #eee;
+  --card: #1f1f1f;
+  --primary: #4ca3ff;
+}
+body {
+  margin: 0;
+  font-family: sans-serif;
+  display: flex;
+  background: var(--bg);
+  color: var(--fg);
+}
+.sidebar {
+  width: 200px;
+  background: var(--card);
+  padding: 1em;
+  height: 100vh;
+  box-shadow: 2px 0 5px rgba(0,0,0,0.1);
+}
+.sidebar h2 {
+  margin-top: 0;
+}
+.sidebar ul {
+  list-style: none;
+  padding-left: 0;
+}
+.sidebar li {
+  margin: 0.5em 0;
+}
+.sidebar a {
+  color: var(--fg);
+  text-decoration: none;
+}
+.main {
+  flex: 1;
+  padding: 2em;
+}
+.view {
+  display: none;
+}
+.view:not(.hidden) {
+  display: block;
+}
+button {
+  background: var(--primary);
+  color: white;
+  border: none;
+  padding: 0.5em 1em;
+  margin-top: 1em;
+  cursor: pointer;
+  border-radius: 0.3em;
+}
+input {
+  margin: 0.3em;
+}
+label {
+  display: block;
+  margin-top: 0.5em;
+}

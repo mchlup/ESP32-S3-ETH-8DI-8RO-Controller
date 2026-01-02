@@ -10,7 +10,11 @@
 #include "MqttController.h"
 #include "BleController.h"
 #include "RgbLedController.h"
+#include "BuzzerController.h"
 #include "RuleEngine.h"
+#include "NtcController.h"
+#include "DallasController.h"
+#include "FsController.h"
 
 String inputBuffer;
 
@@ -108,11 +112,10 @@ void setup() {
     Serial.begin(115200);
     Serial.println();
     Serial.println(F("=== ESP Heat & Domestic Controller ==="));
-
-#ifdef FORCE_LOW_PIN
-    pinMode(FORCE_LOW_PIN, OUTPUT);
-    digitalWrite(FORCE_LOW_PIN, LOW);
-#endif
+    #ifdef FORCE_LOW_PIN
+        pinMode(FORCE_LOW_PIN, OUTPUT);
+        digitalWrite(FORCE_LOW_PIN, LOW);
+    #endif
 
     // Relé + vstupy + logika
     relayInit();
@@ -124,17 +127,21 @@ void setup() {
     });
 
     logicInit();
-
     ruleEngineInit();
-
-    // RGB LED (pokud používáš)
-    rgbLedInit();
-
-    // Network + Web + MQTT + OTA
+    rgbLedInit();       // RGB LED (pokud používáš)
+    fsInit();           // Network + Web + MQTT + OTA
     networkInit();
+    ntcInit();
+    DallasController::begin();
+    DallasController::configureGpio(0, TEMP_INPUT_AUTO);
+    DallasController::configureGpio(1, TEMP_INPUT_AUTO);
+    DallasController::configureGpio(2, TEMP_INPUT_AUTO);
+    DallasController::configureGpio(3, TEMP_INPUT_AUTO);
+    //dallasInit();
     webserverInit();
     mqttInit();
     bleInit();
+    buzzerInit();
     OTA::init();
 
     printHelp();
@@ -158,15 +165,21 @@ void loop() {
     // vstupy (debounce + callback)
     inputUpdate();
 
+    // senzory (před logikou)
+    ntcLoop();
+    DallasController::loop();
+    //dallasLoop();
+    networkLoop();
+
     // pravidla (běží pouze v AUTO)
     ruleEngineUpdate();
 
-    // logika (rezerva pro budoucí časové funkce)
+    // logika (AUTO/MANUAL + ventily + equitherm)
     logicUpdate();
 
     bleLoop();
     rgbLedLoop();
-
+    buzzerLoop();
     mqttLoop();
 
     // web server

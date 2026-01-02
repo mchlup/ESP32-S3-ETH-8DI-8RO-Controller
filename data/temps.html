@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Teploměry</title>
+  <link rel="stylesheet" href="/styles.css?v=1"/>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">ESP Heat Control</div>
+    <nav class="topnav">
+      <a class="btn" href="/index.html">← Zpět</a>
+    </nav>
+  </header>
+
+  <main class="container">
+    <section class="card">
+      <h2>NTC 10k – konfigurace</h2>
+      <p class="muted">Použij IO1–IO3 (ADC). Uložení jde přes /api/config.</p>
+      <div id="ntcForm"></div>
+      <div class="row">
+        <button class="btn primary" id="btnSave">Uložit</button>
+        <button class="btn" id="btnReload">Znovu načíst</button>
+      </div>
+      <div id="saveMsg" class="muted"></div>
+    </section>
+
+    <section class="card">
+      <h2>Live diagnostika</h2>
+      <div id="diag"></div>
+    </section>
+  </main>
+
+  <script src="/temps.js?v=1"></script>
+</body>
+</html>
+

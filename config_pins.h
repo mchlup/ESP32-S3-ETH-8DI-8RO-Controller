@@ -1,62 +1,38 @@
 #pragma once
 #include <Arduino.h>
 
-// ==============================
-// ESP32-S3-POE-ETH-8DI-8DO – PINY
-// ==============================
+// Waveshare ESP32-S3-ETH-8DI-8RO pin map (Waveshare Wiki)
 //
-// Digitální vstupy (DI1..DI8) – podle dokumentace Waveshare:
-//   DI1 → GPIO4
-//   DI2 → GPIO5
-//   DI3 → GPIO6
-//   DI4 → GPIO7
-//   DI5 → GPIO8
-//   DI6 → GPIO9
-//   DI7 → GPIO10
-//   DI8 → GPIO11
+// Relays are driven by TCA9554 (EXIO1..EXIO8) 
+// Digital inputs are on GPIO4..GPIO11 
+// WS2812 RGB LED is on GPIO38 
 //
-// Výstupy (EXIO1..EXIO8) nejsou v dokumentaci přímo svázané s GPIO,
-// proto je nechávám jako "NEPOUŽITÝ PIN" a skutečné ovládání se řeší
-// v RelayControlleru (centrálně – viz komentáře tam).
+// RTC chip PCF85063 exists on board; I2C is on GPIO41/42 on this board family.
 
-// ---- Digitální vstupy ----
-static const uint8_t INPUT1_PIN = 4;   // DI1
-static const uint8_t INPUT2_PIN = 5;   // DI2
-static const uint8_t INPUT3_PIN = 6;   // DI3
-static const uint8_t INPUT4_PIN = 7;   // DI4
-static const uint8_t INPUT5_PIN = 8;   // DI5
-static const uint8_t INPUT6_PIN = 9;   // DI6
-static const uint8_t INPUT7_PIN = 10;  // DI7
-static const uint8_t INPUT8_PIN = 11;  // DI8
+#define INPUT1_PIN 4
+#define INPUT2_PIN 5
+#define INPUT3_PIN 6
+#define INPUT4_PIN 7
+#define INPUT5_PIN 8
+#define INPUT6_PIN 9
+#define INPUT7_PIN 10
+#define INPUT8_PIN 11
 
-// WS2812 RGB LED – ovládací pin (GPIO38 podle dokumentace Waveshare)
-static const uint8_t RGB_LED_PIN = 38;
+// I2C (shared bus for RTC + IO expander)
+#define I2C_SCL_PIN 41
+#define I2C_SDA_PIN 42
+#define I2C_FREQ_HZ 100000
 
-// Speciální hodnota znamenající "kanál relé nemá přiřazený žádný GPIO pin",
-// tzn. hardware ovládáš jiným způsobem (např. knihovnou od Waveshare).
-static const uint8_t RELAY_PIN_UNUSED = 0xFF;
+// RGB + buzzer
+#define RGB_LED_PIN 38
+#define BUZZER_PIN 46
 
-// ---- Digitální výstupy (relé kanály 1–8) ----
-//
-// ⚠️ DŮLEŽITÉ:
-//   Na této desce se EXIO1..EXIO8 NEPŘIPOJUJÍ přímo na běžná GPIO jako
-//   u D1 mini. Ovládání relé je typicky řešené přes IO expander / driver
-//   v jejich knihovně.
-//
-//   Proto jsou tady piny nastavené na RELAY_PIN_UNUSED – v RelayControlleru
-//   se s tím počítá a nebude se volat pinMode/digitalWrite.
-//
-//   Jakmile zjistíš, jak se u tebe EXIO1..8 ovládají (nebo použiješ
-//   jejich demo knihovnu), můžeš:
-//     - buď tyto konstanty nastavit na reálná GPIO,
-//     - nebo v RelayController.cpp nahradit volání boardRelayWrite()
-//       vlastní implementací a piny vůbec nepotřebovat.
+// NTC ADC pins (IO1-IO3 per your requirement)
+#define NTC_ADC_IO1_PIN 1
+#define NTC_ADC_IO2_PIN 2
+#define NTC_ADC_IO3_PIN 3
 
-static const uint8_t RELAY1_PIN = RELAY_PIN_UNUSED;
-static const uint8_t RELAY2_PIN = RELAY_PIN_UNUSED;
-static const uint8_t RELAY3_PIN = RELAY_PIN_UNUSED;
-static const uint8_t RELAY4_PIN = RELAY_PIN_UNUSED;
-static const uint8_t RELAY5_PIN = RELAY_PIN_UNUSED;
-static const uint8_t RELAY6_PIN = RELAY_PIN_UNUSED;
-static const uint8_t RELAY7_PIN = RELAY_PIN_UNUSED;
-static const uint8_t RELAY8_PIN = RELAY_PIN_UNUSED;
+// TCA9554 default I2C address on many boards
+#ifndef TCA9554_ADDR
+#define TCA9554_ADDR 0x20
+#endif

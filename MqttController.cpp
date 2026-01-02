@@ -9,6 +9,63 @@
 #include "InputController.h"
 #include "LogicController.h"
 
+// ===== Cache přijatých hodnot (pro Rule engine MQTT podmínky) =====
+struct MqttCacheEntry {
+    String topic;
+    String value;
+    uint32_t lastMs = 0;
+};
+
+static const uint8_t MQTT_CACHE_MAX = 16;
+static MqttCacheEntry mqttCache[MQTT_CACHE_MAX];
+
+static void cachePut(const String& topic, const String& value) {
+    if (!topic.length()) return;
+
+    // update existing
+    for (uint8_t i = 0; i < MQTT_CACHE_MAX; i++) {
+        if (mqttCache[i].topic == topic) {
+            mqttCache[i].value = value;
+            mqttCache[i].lastMs = millis();
+            return;
+        }
+    }
+
+    // find empty
+    for (uint8_t i = 0; i < MQTT_CACHE_MAX; i++) {
+        if (!mqttCache[i].topic.length()) {
+            mqttCache[i].topic = topic;
+            mqttCache[i].value = value;
+            mqttCache[i].lastMs = millis();
+            return;
+        }
+    }
+
+    // replace oldest (simple LRU)
+    uint8_t oldest = 0;
+    uint32_t oldestMs = mqttCache[0].lastMs;
+    for (uint8_t i = 1; i < MQTT_CACHE_MAX; i++) {
+        if (mqttCache[i].lastMs < oldestMs) {
+            oldestMs = mqttCache[i].lastMs;
+            oldest = i;
+        }
+    }
+    mqttCache[oldest].topic = topic;
+    mqttCache[oldest].value = value;
+    mqttCache[oldest].lastMs = millis();
+}
+
+bool mqttGetLastValue(const String& topic, String* outValue) {
+    if (!outValue) return false;
+    for (uint8_t i = 0; i < MQTT_CACHE_MAX; i++) {
+        if (mqttCache[i].topic == topic) {
+            *outValue = mqttCache[i].value;
+            return true;
+        }
+    }
+    return false;
+}
+
 // ===== Konfigurace MQTT =====
 
 struct MqttConfig {
@@ -290,6 +347,9 @@ static void mqttCallback(char* topic, byte* payload, unsigned int length) {
     p.reserve(length + 1);
     for (unsigned int i = 0; i < length; i++) p += (char)payload[i];
     p.trim();
+
+    // uložíme poslední hodnotu pro Rule engine (MQTT podmínky)
+    cachePut(t, p);
 
     if (t == topicControlModeSet()) {
         handleControlModeSet(p);
