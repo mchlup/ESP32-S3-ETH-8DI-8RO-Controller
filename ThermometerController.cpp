@@ -17,9 +17,15 @@ void thermometersInit() {
 }
 
 void thermometersApplyConfig(const String& json) {
-    // Parsujeme celý config JSON; buffer musí být dostatečný i pro větší konfigurace.
-    DynamicJsonDocument doc(16384);
-    DeserializationError err = deserializeJson(doc, json);
+    StaticJsonDocument<256> filter;
+    filter["thermometers"]["mqtt"][0]["name"] = true;
+    filter["thermometers"]["mqtt"][0]["topic"] = true;
+    filter["thermometers"]["mqtt"][0]["jsonKey"] = true;
+    filter["thermometers"]["ble"]["name"] = true;
+    filter["thermometers"]["ble"]["id"] = true;
+
+    StaticJsonDocument<1024> doc;
+    DeserializationError err = deserializeJson(doc, json, DeserializationOption::Filter(filter));
     if (err) {
         // keep previous
         return;

@@ -429,8 +429,20 @@ void dallasApplyConfig(const String& jsonStr){
     s_inited = true;
   }
 
-  DynamicJsonDocument doc(16384);
-  DeserializationError err = deserializeJson(doc, jsonStr);
+  StaticJsonDocument<256> filter;
+  filter["dallasNames"][0] = true;
+  filter["dallasAddrs"][0] = true;
+  filter["iofunc"]["inputs"][0]["role"] = true;
+  filter["iofunc"]["inputs"][0]["params"]["gpio"] = true;
+  filter["iofunc"]["inputs"][0]["params"]["addr"] = true;
+  filter["cfg"]["dallasNames"][0] = true;
+  filter["cfg"]["dallasAddrs"][0] = true;
+  filter["cfg"]["iofunc"]["inputs"][0]["role"] = true;
+  filter["cfg"]["iofunc"]["inputs"][0]["params"]["gpio"] = true;
+  filter["cfg"]["iofunc"]["inputs"][0]["params"]["addr"] = true;
+
+  StaticJsonDocument<1024> doc;
+  DeserializationError err = deserializeJson(doc, jsonStr, DeserializationOption::Filter(filter));
   if (err) return;
   applyCfgObj(doc.as<JsonObjectConst>());
 }

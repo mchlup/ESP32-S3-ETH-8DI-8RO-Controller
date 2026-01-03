@@ -504,8 +504,13 @@ void mqttLoop() {
 }
 
 void mqttApplyConfig(const String& json) {
-    DynamicJsonDocument doc(4096);
-    DeserializationError err = deserializeJson(doc, json);
+    StaticJsonDocument<256> filter;
+    filter["mqtt"] = true;
+    filter["relayNames"][0] = true;
+    filter["inputNames"][0] = true;
+
+    StaticJsonDocument<1024> doc;
+    DeserializationError err = deserializeJson(doc, json, DeserializationOption::Filter(filter));
     if (err) {
         Serial.print(F("[MQTT] config parse failed: "));
         Serial.println(err.c_str());

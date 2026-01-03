@@ -125,8 +125,20 @@ String networkGetIp() {
 
 
 void networkApplyConfig(const String& json) {
-    DynamicJsonDocument doc(8192);
-    DeserializationError err = deserializeJson(doc, json);
+    StaticJsonDocument<256> filter;
+    filter["time"]["ntpEnabled"] = true;
+    filter["time"]["server1"] = true;
+    filter["time"]["server2"] = true;
+    filter["time"]["tz"] = true;
+    filter["time"]["syncIntervalMin"] = true;
+    filter["ntpEnabled"] = true;
+    filter["ntpServer1"] = true;
+    filter["ntpServer2"] = true;
+    filter["ntpTz"] = true;
+    filter["ntpIntervalMin"] = true;
+
+    StaticJsonDocument<512> doc;
+    DeserializationError err = deserializeJson(doc, json, DeserializationOption::Filter(filter));
     if (err) return;
 
     // time section

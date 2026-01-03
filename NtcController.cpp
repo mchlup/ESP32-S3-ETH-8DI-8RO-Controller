@@ -200,8 +200,24 @@ void ntcApplyConfig(const JsonObjectConst& json) {
 }
 
 void ntcApplyConfig(const String& jsonStr) {
-  DynamicJsonDocument doc(16384);
-  DeserializationError err = deserializeJson(doc, jsonStr);
+  StaticJsonDocument<256> filter;
+  filter["iofunc"]["inputs"][0]["role"] = true;
+  filter["iofunc"]["inputs"][0]["params"]["gpio"] = true;
+  filter["iofunc"]["inputs"][0]["params"]["beta"] = true;
+  filter["iofunc"]["inputs"][0]["params"]["rSeries"] = true;
+  filter["iofunc"]["inputs"][0]["params"]["r0"] = true;
+  filter["iofunc"]["inputs"][0]["params"]["t0"] = true;
+  filter["iofunc"]["inputs"][0]["params"]["offset"] = true;
+  filter["cfg"]["iofunc"]["inputs"][0]["role"] = true;
+  filter["cfg"]["iofunc"]["inputs"][0]["params"]["gpio"] = true;
+  filter["cfg"]["iofunc"]["inputs"][0]["params"]["beta"] = true;
+  filter["cfg"]["iofunc"]["inputs"][0]["params"]["rSeries"] = true;
+  filter["cfg"]["iofunc"]["inputs"][0]["params"]["r0"] = true;
+  filter["cfg"]["iofunc"]["inputs"][0]["params"]["t0"] = true;
+  filter["cfg"]["iofunc"]["inputs"][0]["params"]["offset"] = true;
+
+  StaticJsonDocument<1024> doc;
+  DeserializationError err = deserializeJson(doc, jsonStr, DeserializationOption::Filter(filter));
   if (err) return;
   JsonObjectConst root = doc.as<JsonObjectConst>();
   applyCfgObj(root);

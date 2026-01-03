@@ -310,6 +310,7 @@ static void valveTick(uint32_t nowMs){
 // TUV demand + request relay
 static int8_t s_tuvDemandInput = -1;  // 0..7 or -1
 static int8_t s_tuvRequestRelay = -1; // 0..7 or -1
+static int8_t s_tuvEnableInput = -1;  // 0..7 or -1 (Funkce I/O -> Aktivace ohřevu TUV)
 static bool s_tuvScheduleEnabled = false;
 static bool s_tuvDemandActive = false;
 static bool s_tuvModeActive = false;
@@ -379,6 +380,7 @@ static constexpr uint8_t MAX_SCHEDULES = 16;
 static ScheduleItem s_schedules[MAX_SCHEDULES];
 static uint8_t s_scheduleCount = 0;
 static bool s_nightMode = false;
+static int8_t s_nightModeInput = -1; // 0..7 or -1 (Funkce I/O -> Aktivace nočního útlumu)
 
 // Equitherm konfigurace + stav
 // Pozn.: ekviterm se aplikuje pouze v CONTROL=AUTO, ale hodnoty počítáme pro diagnostiku i v MANUAL.
@@ -707,6 +709,16 @@ static bool isTuvDemandConfigured() {
     return (s_tuvDemandInput >= 0 && s_tuvDemandInput < (int8_t)INPUT_COUNT);
 }
 
+static void updateInputBasedModes() {
+    if (s_tuvEnableInput >= 0 && s_tuvEnableInput < (int8_t)INPUT_COUNT) {
+        s_tuvScheduleEnabled = inputGetState(static_cast<InputId>(s_tuvEnableInput));
+    }
+    if (s_nightModeInput >= 0 && s_nightModeInput < (int8_t)INPUT_COUNT) {
+        s_nightMode = inputGetState(static_cast<InputId>(s_nightModeInput));
+        equithermRecompute();
+    }
+}
+
 static bool isTuvEnabledEffective() {
     const bool demandOk = isTuvDemandConfigured() ? s_tuvDemandActive : true;
     return (s_tuvScheduleEnabled && demandOk);
@@ -968,6 +980,7 @@ void logicUpdate() {
         else if (ntcIsValid(i)) { s_tempValid[i]=true; s_tempC[i]=ntcGetTempC(i); }
         else { s_tempValid[i]=false; /* keep last value to show on dashboard */ }
     }
+    updateInputBasedModes();
     equithermRecompute();
     equithermControlTick(nowMs);
     updateTuvModeState(nowMs);
@@ -983,6 +996,8 @@ void logicUpdate() {
     if (isValidTimeNow(t, epoch)) {
         const uint32_t key = minuteKey(t);
         const uint8_t dowMask = dowToMask(t);
+        const bool hasTuvEnableInput = (s_tuvEnableInput >= 0 && s_tuvEnableInput < (int8_t)INPUT_COUNT);
+        const bool hasNightModeInput = (s_nightModeInput >= 0 && s_nightModeInput < (int8_t)INPUT_COUNT);
 
         // recompute demand input
         if (s_tuvDemandInput >= 0 && s_tuvDemandInput < (int8_t)INPUT_COUNT) {
@@ -1023,12 +1038,14 @@ void logicUpdate() {
                     break;
 
                 case ScheduleKind::TUV_ENABLE:
+                    if (hasTuvEnableInput) break;
                     s_tuvScheduleEnabled = s.enableValue;
                     updateTuvModeState(nowMs);
                     Serial.printf("[SCHED] TUV -> %s\n", s_tuvScheduleEnabled ? "ON" : "OFF");
                     break;
 
                 case ScheduleKind::NIGHT_MODE:
+                    if (hasNightModeInput) break;
                     s_nightMode = s.enableValue;
                     Serial.printf("[SCHED] night_mode -> %s\n", s_nightMode ? "ON" : "OFF");
                     break;
@@ -1056,6 +1073,15 @@ void logicOnInputChanged(InputId id, bool newState) {
         s_tuvDemandActive = inputGetState(id);
         updateTuvModeState(millis());
         applyTuvRequest();
+    }
+    if (s_tuvEnableInput >= 0 && id == static_cast<InputId>(s_tuvEnableInput)) {
+        s_tuvScheduleEnabled = inputGetState(id);
+        updateTuvModeState(millis());
+        applyTuvRequest();
+    }
+    if (s_nightModeInput >= 0 && id == static_cast<InputId>(s_nightModeInput)) {
+        s_nightMode = inputGetState(id);
+        equithermRecompute();
     }
 
     if (currentControlMode != ControlMode::AUTO) {
@@ -1092,10 +1118,110 @@ void logicOnInputChanged(InputId id, bool newState) {
 //  ]
 //
 void logicApplyConfig(const String& json) {
-    // config.json může být větší (popisy režimů, jména, MQTT, mapování...)
-    // Konfigurace se časem rozrůstá; větší buffer = robustnější aplikace konfigurace.
-    DynamicJsonDocument doc(32768);
-    DeserializationError err = deserializeJson(doc, json);
+    StaticJsonDocument<4096> filter;
+    filter["inputActiveLevels"] = true;
+    filter["inputs"][0]["activeLevel"] = true;
+    filter["inputs"][0]["active_level"] = true;
+    filter["relayMap"][0]["input"] = true;
+    filter["relayMap"][0]["polarity"] = true;
+    filter["autoDefaultOffUnmapped"] = true;
+    filter["auto_default_off_unmapped"] = true;
+    filter["modes"][0]["id"] = true;
+    filter["modes"][0]["relayStates"][0] = true;
+    filter["modes"][0]["triggerInput"] = true;
+    filter["iofunc"]["inputs"][0]["role"] = true;
+    filter["iofunc"]["outputs"][0]["role"] = true;
+    filter["iofunc"]["outputs"][0]["params"]["peerRel"] = true;
+    filter["iofunc"]["outputs"][0]["params"]["partnerRelay"] = true;
+    filter["iofunc"]["outputs"][0]["params"]["travelTime"] = true;
+    filter["iofunc"]["outputs"][0]["params"]["pulseTime"] = true;
+    filter["iofunc"]["outputs"][0]["params"]["guardTime"] = true;
+    filter["iofunc"]["outputs"][0]["params"]["minSwitchS"] = true;
+    filter["iofunc"]["outputs"][0]["params"]["invertDir"] = true;
+    filter["iofunc"]["outputs"][0]["params"]["defaultPos"] = true;
+    filter["equitherm"]["enabled"] = true;
+    filter["equitherm"]["outdoor"]["source"] = true;
+    filter["equitherm"]["outdoor"]["gpio"] = true;
+    filter["equitherm"]["outdoor"]["rom"] = true;
+    filter["equitherm"]["outdoor"]["addr"] = true;
+    filter["equitherm"]["outdoor"]["topic"] = true;
+    filter["equitherm"]["outdoor"]["jsonKey"] = true;
+    filter["equitherm"]["outdoor"]["key"] = true;
+    filter["equitherm"]["outdoor"]["field"] = true;
+    filter["equitherm"]["outdoor"]["mqttIdx"] = true;
+    filter["equitherm"]["outdoor"]["preset"] = true;
+    filter["equitherm"]["outdoor"]["bleId"] = true;
+    filter["equitherm"]["outdoor"]["id"] = true;
+    filter["equitherm"]["flow"]["source"] = true;
+    filter["equitherm"]["flow"]["gpio"] = true;
+    filter["equitherm"]["flow"]["rom"] = true;
+    filter["equitherm"]["flow"]["addr"] = true;
+    filter["equitherm"]["flow"]["topic"] = true;
+    filter["equitherm"]["flow"]["jsonKey"] = true;
+    filter["equitherm"]["flow"]["key"] = true;
+    filter["equitherm"]["flow"]["field"] = true;
+    filter["equitherm"]["flow"]["mqttIdx"] = true;
+    filter["equitherm"]["flow"]["preset"] = true;
+    filter["equitherm"]["flow"]["bleId"] = true;
+    filter["equitherm"]["flow"]["id"] = true;
+    filter["equitherm"]["minFlow"] = true;
+    filter["equitherm"]["maxFlow"] = true;
+    filter["equitherm"]["slopeDay"] = true;
+    filter["equitherm"]["shiftDay"] = true;
+    filter["equitherm"]["slopeNight"] = true;
+    filter["equitherm"]["shiftNight"] = true;
+    filter["equitherm"]["refs"]["day"]["tout1"] = true;
+    filter["equitherm"]["refs"]["day"]["tflow1"] = true;
+    filter["equitherm"]["refs"]["day"]["tout2"] = true;
+    filter["equitherm"]["refs"]["day"]["tflow2"] = true;
+    filter["equitherm"]["refs"]["night"]["tout1"] = true;
+    filter["equitherm"]["refs"]["night"]["tflow1"] = true;
+    filter["equitherm"]["refs"]["night"]["tout2"] = true;
+    filter["equitherm"]["refs"]["night"]["tflow2"] = true;
+    filter["equitherm"]["valve"]["master"] = true;
+    filter["equitherm"]["valveMaster"] = true;
+    filter["equitherm"]["control"]["deadbandC"] = true;
+    filter["equitherm"]["control"]["deadband"] = true;
+    filter["equitherm"]["control"]["stepPct"] = true;
+    filter["equitherm"]["control"]["step"] = true;
+    filter["equitherm"]["control"]["periodMs"] = true;
+    filter["equitherm"]["control"]["period"] = true;
+    filter["equitherm"]["control"]["minPct"] = true;
+    filter["equitherm"]["control"]["maxPct"] = true;
+    filter["tuv"]["demandInput"] = true;
+    filter["tuv"]["demand_input"] = true;
+    filter["tuv"]["relay"] = true;
+    filter["tuv"]["requestRelay"] = true;
+    filter["tuv"]["request_relay"] = true;
+    filter["tuv"]["enabled"] = true;
+    filter["tuv"]["valveMaster"] = true;
+    filter["tuv"]["shortValveMaster"] = true;
+    filter["tuv"]["valveTargetPct"] = true;
+    filter["tuv"]["targetPct"] = true;
+    filter["tuv"]["eqValveTargetPct"] = true;
+    filter["tuv"]["mixValveTargetPct"] = true;
+    filter["tuvDemandInput"] = true;
+    filter["tuv_demand_input"] = true;
+    filter["tuvRelay"] = true;
+    filter["tuv_relay"] = true;
+    filter["tuvEnabled"] = true;
+    filter["tuvValveMaster"] = true;
+    filter["tuv_valve_master"] = true;
+    filter["tuvValveTargetPct"] = true;
+    filter["tuv_valve_target_pct"] = true;
+    filter["tuvEqValveTargetPct"] = true;
+    filter["tuv_eq_valve_target_pct"] = true;
+    filter["schedules"][0]["enabled"] = true;
+    filter["schedules"][0]["days"][0] = true;
+    filter["schedules"][0]["at"] = true;
+    filter["schedules"][0]["time"] = true;
+    filter["schedules"][0]["kind"] = true;
+    filter["schedules"][0]["type"] = true;
+    filter["schedules"][0]["value"] = true;
+    filter["schedules"][0]["params"] = true;
+
+    DynamicJsonDocument doc(8192);
+    DeserializationError err = deserializeJson(doc, json, DeserializationOption::Filter(filter));
     if (err) {
         Serial.print(F("[LOGIC] Config JSON parse error: "));
         Serial.println(err.c_str());
@@ -1175,6 +1301,9 @@ void logicApplyConfig(const String& json) {
     }
 
     
+    s_tuvEnableInput = -1;
+    s_nightModeInput = -1;
+
     // ---------------- I/O funkce (roles/templates) ----------------
     JsonObject iof = doc["iofunc"].as<JsonObject>();
     if (!iof.isNull()) {
@@ -1186,8 +1315,12 @@ void logicApplyConfig(const String& json) {
             for (uint8_t i=0;i<cnt;i++){
                 JsonObject io = in[i].as<JsonObject>();
                 const String role = String((const char*)(io["role"] | "none"));
-                JsonObject params = io["params"].as<JsonObject>();
 
+                if (role == "tuv_enable") {
+                    s_tuvEnableInput = (int8_t)i;
+                } else if (role == "night_mode") {
+                    s_nightModeInput = (int8_t)i;
+                }
             }
         }
 
@@ -1381,6 +1514,9 @@ void logicApplyConfig(const String& json) {
         s_eqEnabled = false;
         s_eqValveMaster0 = -1;
     }
+    if (s_nightModeInput >= 0 && s_nightModeInput < (int8_t)INPUT_COUNT) {
+        s_nightMode = inputGetState(static_cast<InputId>(s_nightModeInput));
+    }
 // relayMap
     JsonArray rm = doc["relayMap"].as<JsonArray>();
     if (!rm.isNull()) {
@@ -1519,6 +1655,7 @@ void logicApplyConfig(const String& json) {
     } else {
         s_tuvDemandActive = false;
     }
+    updateInputBasedModes();
     updateTuvModeState(millis());
     applyTuvRequest();
 

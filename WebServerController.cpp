@@ -8,6 +8,7 @@
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <math.h>
+#include <ctype.h>
 
 #include "RelayController.h"
 #include "BuzzerController.h"
@@ -271,10 +272,36 @@ JsonArray valves = doc.createNestedArray("valves");
 }
 
 static bool saveConfigToFS() {
-    File f = LittleFS.open("/config.json", "w");
+    const char* tmpPath = "/config.json.tmp";
+    const char* bakPath = "/config.json.bak";
+
+    File f = LittleFS.open(tmpPath, "w");
     if (!f) return false;
-    f.print(g_configJson);
+
+    const size_t written = f.print(g_configJson);
+    f.flush();
     f.close();
+
+    if (written != g_configJson.length()) {
+        LittleFS.remove(tmpPath);
+        return false;
+    }
+
+    if (LittleFS.exists(bakPath)) LittleFS.remove(bakPath);
+    if (LittleFS.exists("/config.json")) {
+        if (!LittleFS.rename("/config.json", bakPath)) {
+            LittleFS.remove(tmpPath);
+            return false;
+        }
+    }
+
+    if (!LittleFS.rename(tmpPath, "/config.json")) {
+        if (LittleFS.exists(bakPath)) LittleFS.rename(bakPath, "/config.json");
+        LittleFS.remove(tmpPath);
+        return false;
+    }
+
+    if (LittleFS.exists(bakPath)) LittleFS.remove(bakPath);
     return true;
 }
 
@@ -540,20 +567,46 @@ void handleApiConfigPost() {
         return;
     }
 
-    // validace JSON
-    // UI může posílat delší popisy / názvy, 4kB bývá málo
-    // Konfigurace postupně roste (teploměry, ekviterm, pravidla, BLE, ...),
-    // proto necháváme větší buffer, ať se POST z UI zbytečně neodmítá.
-    DynamicJsonDocument doc(32768);
-    DeserializationError err = deserializeJson(doc, body);
-    if (err) {
+    int first = 0;
+    while (first < (int)body.length() && isspace(static_cast<unsigned char>(body[first]))) first++;
+    if (first >= (int)body.length() || body[first] != '{') {
         server.send(400, "application/json", "{\"error\":\"invalid json\"}");
         return;
     }
 
-    g_configJson = body;
+    StaticJsonDocument<512> filter;
+    filter["iofunc"] = true;
+    filter["equitherm"] = true;
+    filter["tuv"] = true;
+    filter["schedules"] = true;
+    filter["mqtt"] = true;
+    filter["time"] = true;
+    filter["thermometers"] = true;
+    filter["opentherm"] = true;
+    filter["relayNames"] = true;
+    filter["inputNames"] = true;
+    filter["inputActiveLevels"] = true;
+    filter["inputs"] = true;
+    filter["relayMap"] = true;
+    filter["modes"] = true;
+    filter["autoDefaultOffUnmapped"] = true;
+    filter["auto_default_off_unmapped"] = true;
 
+    StaticJsonDocument<2048> doc;
+    DeserializationError err = deserializeJson(doc, body, DeserializationOption::Filter(filter));
+    if (err) {
+        server.send(400, "application/json", "{\"error\":\"invalid json\"}");
+        return;
+    }
+    if (!doc.is<JsonObject>()) {
+        server.send(400, "application/json", "{\"error\":\"invalid json\"}");
+        return;
+    }
+
+    String previous = g_configJson;
+    g_configJson = body;
     if (!saveConfigToFS()) {
+        g_configJson = previous;
         server.send(500, "application/json", "{\"error\":\"save failed\"}");
         return;
     }
