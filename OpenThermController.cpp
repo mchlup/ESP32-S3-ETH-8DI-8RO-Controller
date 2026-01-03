@@ -62,8 +62,20 @@ void openthermInit() {
 }
 
 void openthermApplyConfig(const String& json) {
-    StaticJsonDocument<4096> doc;
-    DeserializationError err = deserializeJson(doc, json);
+    StaticJsonDocument<256> filter;
+    filter["opentherm"]["enabled"] = true;
+    filter["opentherm"]["mode"] = true;
+    filter["opentherm"]["inPin"] = true;
+    filter["opentherm"]["outPin"] = true;
+    filter["opentherm"]["pollIntervalMs"] = true;
+    filter["opentherm"]["pollMs"] = true;
+    filter["opentherm"]["chEnable"] = true;
+    filter["opentherm"]["manualSetpointC"] = true;
+    filter["opentherm"]["minDeltaWriteC"] = true;
+    filter["opentherm"]["minWriteIntervalMs"] = true;
+
+    StaticJsonDocument<768> doc;
+    DeserializationError err = deserializeJson(doc, json, DeserializationOption::Filter(filter));
     if (err) return;
 
     JsonObject root = doc.as<JsonObject>();
@@ -189,4 +201,3 @@ void openthermFillJson(JsonObject obj) {
     obj["errFrames"] = s_st.errFrames;
     obj["lastError"] = s_st.lastError;
 }
-

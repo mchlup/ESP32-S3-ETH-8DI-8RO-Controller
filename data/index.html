@@ -390,6 +390,7 @@
               <div>
                 <div class="cardTitle">Plánování</div>
                 <div class="muted">Časová pravidla uložená do konfigurace. Firmware je může později vyhodnocovat (přepínání režimů, noční útlum, ohřev TUV…).</div>
+                <div class="muted" id="schedInputHint" style="margin-top:6px"></div>
               </div>
               <div class="actions">
                 <button class="btn ghost" id="btnAddSchedule">Přidat</button>
@@ -674,7 +675,10 @@
       <div class="ioGrid">
         <div class="ioRow">
           <div class="ioLabel">Povolit režim</div>
-          <div class="ioValue"><label class="switch"><input id="tuvEnabled" type="checkbox"><span class="slider"></span></label></div>
+          <div class="ioValue">
+            <label class="switch"><input id="tuvEnabled" type="checkbox"><span class="slider"></span></label>
+            <div class="hint mt4" id="tuvEnableHint"></div>
+          </div>
         </div>
 
         <div class="ioRow">

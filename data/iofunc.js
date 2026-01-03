@@ -20,6 +20,8 @@
     { v: "none", t: "—" },
     { v: "thermostat", t: "Termostat (kontakt)" },
     { v: "mode_trigger", t: "Přepínač režimu (MODE)" },
+    { v: "tuv_enable", t: "Aktivace ohřevu TUV" },
+    { v: "night_mode", t: "Aktivace nočního útlumu" },
     { v: "generic", t: "Obecný digitální vstup" },
   ];
 
@@ -218,6 +220,14 @@
 
     if (role === "thermostat") {
       return `<div class="muted">Kontakt termostatu (logika HIGH/LOW se nastavuje v „Vstupy & relé“).</div>`;
+    }
+
+    if (role === "tuv_enable") {
+      return `<div class="muted">Aktivní vstup zapne „Ohřev TUV → Aktivace ohřevu TUV“.</div>`;
+    }
+
+    if (role === "night_mode") {
+      return `<div class="muted">Aktivní vstup zapne „Ekviterm → Aktivace nočního útlumu“.</div>`;
     }
 
     return `<div class="muted">—</div>`;

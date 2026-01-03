@@ -5,6 +5,7 @@
   const el = {
     btnSave: $("btnSaveTuv"),
     enabled: $("tuvEnabled"),
+    enableHint: $("tuvEnableHint"),
     demandInput: $("tuvDemandInput"),
     requestRelay: $("tuvRequestRelay"),
     eqValveTargetPct: $("tuvEqValveTargetPct"),
@@ -108,12 +109,33 @@
     el.eqValveTargetPct.value = clampPct(t.eqValveTargetPct ?? 0);
     el.valveMaster.value = String(t.valveMaster || 0);
     el.valveTargetPct.value = clampPct(t.valveTargetPct ?? 0);
+    updateEnableHint(cfg);
+  }
+
+  function findInputRoleIndex(cfg, role) {
+    const inputs = Array.isArray(cfg?.iofunc?.inputs) ? cfg.iofunc.inputs : [];
+    for (let i = 0; i < inputs.length; i++) {
+      if (String(inputs[i]?.role || "") === role) return i;
+    }
+    return -1;
+  }
+
+  function updateEnableHint(cfg) {
+    const idx = findInputRoleIndex(cfg, "tuv_enable");
+    if (el.enableHint) {
+      el.enableHint.textContent = (idx >= 0)
+        ? `Řízeno vstupem ${idx + 1} (Funkce I/O) – přepínač je uzamčen.`
+        : "";
+    }
+    if (el.enabled) {
+      el.enabled.disabled = (idx >= 0);
+    }
   }
 
   function saveToConfig(cfg) {
     App.ensureConfigShape(cfg);
     cfg.tuv = cfg.tuv || {};
-    cfg.tuv.enabled = !!el.enabled.checked;
+    if (!el.enabled.disabled) cfg.tuv.enabled = !!el.enabled.checked;
     cfg.tuv.demandInput = readInt(el.demandInput.value, 0);
     cfg.tuv.requestRelay = readInt(el.requestRelay.value, 0);
     cfg.tuv.eqValveTargetPct = clampPct(el.eqValveTargetPct.value);

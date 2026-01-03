@@ -8,6 +8,7 @@
   const toast = App.toast;
   const apiPostJson = App.apiPostJson;
   const apiGetJson = App.apiGetJson;
+  const schedHint = $("#schedInputHint");
 
   const MODE_IDS = ["MODE1","MODE2","MODE3","MODE4","MODE5"];
   const BOOL_KINDS = new Set(["tuv_enable","night_mode"]);
@@ -34,6 +35,24 @@
       kind: String(s?.kind || s?.type || "set_mode"),
       value: (s && typeof s.value === "object") ? s.value : ((s && typeof s.params === "object") ? s.params : {}),
     }));
+  };
+
+  const findInputRoleIndex = (cfg, role) => {
+    const inputs = Array.isArray(cfg?.iofunc?.inputs) ? cfg.iofunc.inputs : [];
+    for (let i = 0; i < inputs.length; i++) {
+      if (String(inputs[i]?.role || "") === role) return i;
+    }
+    return -1;
+  };
+
+  const updateInputHints = (cfg) => {
+    if (!schedHint) return;
+    const tuvIdx = findInputRoleIndex(cfg, "tuv_enable");
+    const nightIdx = findInputRoleIndex(cfg, "night_mode");
+    const parts = [];
+    if (tuvIdx >= 0) parts.push(`Ohřev TUV řídí vstup ${tuvIdx + 1} (Funkce I/O) – plánování TUV se ignoruje.`);
+    if (nightIdx >= 0) parts.push(`Noční útlum řídí vstup ${nightIdx + 1} (Funkce I/O) – plánování nočního útlumu se ignoruje.`);
+    schedHint.textContent = parts.join(" ");
   };
 
   const ensureTuv = (cfg) => {
@@ -588,6 +607,7 @@
   const prev = App.onConfigLoaded;
   App.onConfigLoaded = (cfg) => {
     try { prev && prev(cfg); } catch (_) {}
+    updateInputHints(cfg);
     render();
   };
 
