@@ -13,6 +13,7 @@
   --bad:#ff6b7d;
   --shadow: 0 18px 40px rgba(0,0,0,.35);
   --r: 16px;
+  --sideBg: rgba(12,18,27,.96);
 }
 
 :root.light{
@@ -29,6 +30,7 @@
   --warn:#b07b00;
   --bad:#d3153b;
   --shadow: 0 14px 30px rgba(2,10,25,.10);
+  --sideBg: rgba(255,255,255,.96);
 }
 
 *{box-sizing:border-box}
@@ -43,13 +45,41 @@ body{
 }
 
 a{color:inherit}
-.app{display:flex; min-height:100%}
-.side{
-  width: 280px;
-  padding: 18px 14px;
-  border-right:1px solid var(--line);
-  background: linear-gradient(180deg, rgba(255,255,255,.02), rgba(255,255,255,0));
+
+/* Layout – zatažený sidebar (hover/focus ho roztáhne) */
+:root{
+  --sideCollapsed: 86px;
+  --sideExpanded: 280px;
+  --contentMax: 1500px;
 }
+
+@media (max-width: 740px){
+  :root{ --sideCollapsed: 72px; }
+}
+
+.app{display:flex; min-height:100%}
+
+/* Sidebar je fixní – obsah neskáče při roztahování */
+.side{
+  position: fixed;
+  inset: 0 auto 0 0;
+  width: var(--sideCollapsed);
+  padding: 18px 10px;
+  border-right:1px solid var(--line);
+  background: linear-gradient(180deg, rgba(255,255,255,.02), rgba(255,255,255,0)), var(--sideBg);
+  overflow-x:hidden;
+  overflow-y:auto;
+  z-index: 50;
+  transition: width .18s ease, padding .18s ease;
+  display:flex;
+  flex-direction:column;
+}
+.side:hover,
+.side:focus-within{
+  width: var(--sideExpanded);
+  padding: 18px 14px;
+}
+
 .brand{display:flex; gap:12px; align-items:center; padding:12px 10px; border-radius: 18px;}
 .logo{
   width:44px;height:44px; border-radius: 16px;
@@ -73,13 +103,32 @@ a{color:inherit}
   color: var(--text);
   cursor:pointer;
   text-align:left;
+  justify-content:center; /* při zataženém sidebaru */
 }
+.side:hover .navItem,
+.side:focus-within .navItem{
+  justify-content:flex-start;
+}
+
 .navItem:hover{background: rgba(255,255,255,.04); border-color: var(--line)}
 .navItem.active{
   background: linear-gradient(135deg, rgba(107,229,255,.14), rgba(19,104,255,.10));
   border-color: rgba(107,229,255,.28);
 }
 .ico{width:20px; display:inline-block; opacity:.9}
+
+/* Texty a footer schováme v "zataženém" stavu – zobrazí se při hover/focus */
+.side .brandTxt,
+.side .sideFooter{display:none}
+.side .navItem span:not(.ico){display:none}
+
+.side:hover .brandTxt,
+.side:hover .sideFooter,
+.side:focus-within .brandTxt,
+.side:focus-within .sideFooter{display:block}
+
+.side:hover .navItem span:not(.ico),
+.side:focus-within .navItem span:not(.ico){display:inline}
 
 .sideFooter{margin-top:auto; padding:10px}
 .chips{display:flex; gap:8px; flex-wrap:wrap}
@@ -102,7 +151,11 @@ a{color:inherit}
   cursor:pointer;
 }
 
-.main{flex:1; padding: 18px 18px 30px}
+.main{
+  flex:1;
+  padding: 18px 18px 30px;
+  margin-left: var(--sideCollapsed);
+}
 .topbar{
   display:flex; align-items:flex-end; justify-content:space-between;
   gap:14px; margin-bottom: 16px;
@@ -127,10 +180,53 @@ a{color:inherit}
   grid-template-columns: 1.15fr .85fr;
   gap: 14px;
 }
+/* Dashboard – layout (Režimy 30 % / Ekviterm 70 %, Relé + Vstupy v jednom řádku) */
+.dashGrid{
+  display:grid;
+  grid-template-columns: minmax(280px, 0.30fr) minmax(420px, 0.70fr);
+  gap: 14px;
+  align-items:start;
+}
+
+#cardModes{grid-column:1;}
+#cardEquitherm{grid-column:2;}
+#cardRelays{grid-column:1;}
+#cardInputs{grid-column:2;}
+#cardValves, #cardTemps{grid-column:1 / -1;}
+#cardModes.span2{grid-column:1 / -1;}
+
 @media (max-width: 1050px){
-  .side{width: 86px}
-  .brandTxt, .navItem span:not(.ico), .sideFooter{display:none}
-  .navItem{justify-content:center}
+  .dashGrid{grid-template-columns: 1fr;}
+  #cardModes, #cardEquitherm, #cardRelays, #cardInputs, #cardValves, #cardTemps{ grid-column: 1 / -1; }
+}
+
+/* Dashboard – kompaktnější řádek a "Detaily" */
+.row.compact{ padding: 12px 14px 10px; }
+
+.details{ padding: 0 14px 14px; }
+.details > summary{
+  cursor:pointer;
+  color: var(--muted);
+  font-size: 13px;
+  user-select:none;
+}
+.details > summary::-webkit-details-marker{ display:none; }
+.details > summary::before{
+  content:"▸";
+  display:inline-block;
+  margin-right:8px;
+  transform: translateY(-1px);
+  opacity:.85;
+}
+.details[open] > summary::before{ content:"▾"; }
+/* Content max width – dashboard i konfigurace jsou čitelnější na velkých monitorech */
+.topbar, .page{
+  max-width: var(--contentMax);
+  margin-left:auto;
+  margin-right:auto;
+}
+
+@media (max-width: 1050px){
   .grid2{grid-template-columns: 1fr}
 }
 
@@ -151,6 +247,19 @@ a{color:inherit}
   border-bottom: 1px solid var(--line);
 }
 .cardTitle{font-weight: 750}
+.cardActions{
+  display:flex;
+  gap:8px;
+  align-items:center;
+  flex-wrap:wrap;
+}
+.toggleInline{
+  display:flex;
+  gap:8px;
+  align-items:center;
+}
+.toggleInline .mini{ font-size:12px; color: var(--muted); }
+
 .right{display:flex; gap:8px; align-items:center}
 .badge{
   padding:6px 10px;
@@ -177,6 +286,18 @@ input, select, textarea{
   outline:none;
 }
 :root.light input,:root.light select,:root.light textarea{background:#fff}
+
+/* Toggle switch */
+.switch{ position:relative; display:inline-block; width:44px; height:24px; flex:0 0 auto; }
+.switch input{ opacity:0; width:0; height:0; }
+.slider{ position:absolute; inset:0; cursor:pointer; border-radius:999px; background: rgba(255,255,255,.10); border:1px solid var(--line); transition: .18s ease; }
+:root.light .slider{ background: rgba(0,0,0,.08); }
+.slider:before{ content:""; position:absolute; height:18px; width:18px; left:3px; top:2px; border-radius:999px; background: var(--text); transition: .18s ease; }
+:root.light .slider:before{ background: var(--text); }
+.switch input:checked + .slider{ background: rgba(107,229,255,.20); border-color: rgba(107,229,255,.35); }
+:root.light .switch input:checked + .slider{ background: rgba(19,104,255,.18); border-color: rgba(19,104,255,.30); }
+.switch input:checked + .slider:before{ transform: translateX(20px); }
+
 
 /* FIX: čitelnost nativního dropdownu (option list) */
 select option{

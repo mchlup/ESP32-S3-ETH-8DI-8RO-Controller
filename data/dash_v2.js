@@ -129,7 +129,7 @@
     if (!Number.isFinite(yMax)) yMax = 50;
     if (Math.abs(yMax - yMin) < 0.1) yMax = yMin + 1;
 
-    const padL = 32, padR = 10, padT = 10, padB = 18;
+    const padL = 32, padR = 10, padT = 10, padB = 26;
     const x2px = (x) => padL + ((x - xMin) / (xMax - xMin)) * (W - padL - padR);
     const y2px = (y) => (H - padB) - ((y - yMin) / (yMax - yMin)) * (H - padT - padB);
 
@@ -166,6 +166,45 @@
     ctx.lineTo(W - padR, H - padB);
     ctx.stroke();
     ctx.restore();
+
+
+// axis labels
+ctx.save();
+ctx.fillStyle = fg;
+ctx.globalAlpha = 0.65;
+ctx.font = `${11*dpr}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
+ctx.textAlign = "center";
+ctx.textBaseline = "alphabetic";
+ctx.fillText("Tout (°C)", padL + (W - padL - padR) / 2, H - 6 * dpr);
+
+// Y label (rotated)
+ctx.translate(10 * dpr, padT + (H - padT - padB) / 2);
+ctx.rotate(-Math.PI / 2);
+ctx.textAlign = "center";
+ctx.textBaseline = "middle";
+ctx.fillText("Tflow (°C)", 0, 0);
+ctx.restore();
+
+    // axis ranges (min/max)
+    ctx.save();
+    ctx.fillStyle = fg;
+    ctx.globalAlpha = 0.55;
+    ctx.font = `${10*dpr}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
+    // X min/max
+    ctx.textBaseline = "alphabetic";
+    ctx.textAlign = "left";
+    ctx.fillText(`${xMin}`, padL, H - 6 * dpr);
+    ctx.textAlign = "right";
+    ctx.fillText(`${xMax}`, W - padR, H - 6 * dpr);
+    // Y min/max
+    const yMinLbl = Math.round(yMin * 10) / 10;
+    const yMaxLbl = Math.round(yMax * 10) / 10;
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "left";
+    ctx.fillText(`${yMaxLbl}`, 4 * dpr, y2px(yMax));
+    ctx.fillText(`${yMinLbl}`, 4 * dpr, y2px(yMin));
+    ctx.restore();
+
 
     const slopeDay = Number(eqCfg?.slopeDay ?? 1.25);
     const shiftDay = Number(eqCfg?.shiftDay ?? 30);
@@ -276,6 +315,8 @@
     const eq = (st && st.equitherm) ? st.equitherm : {};
     const eqCfg = getEqCfg(cfg);
     const eqEnabled = !!eq.enabled;
+    const cardModes = $id("cardModes");
+    if (cardModes) cardModes.classList.toggle("span2", !eqEnabled);
     let eqValveMaster0 = -1;
     if (eqEnabled && eq){
       const vm = Number(eq.valveMaster || 0);
