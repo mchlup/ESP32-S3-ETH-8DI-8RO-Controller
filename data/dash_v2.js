@@ -10,6 +10,22 @@
 
   const fmtTemp = (v) => (typeof v === "number" && Number.isFinite(v)) ? `${v.toFixed(1)} °C` : "—";
 
+  const normFlow = (v, defV) => {
+    if (typeof v !== "number" || !Number.isFinite(v)) return defV;
+    if (v > 120 && v <= 2000) return v / 10.0;
+    return v;
+  };
+  const normShift = (v, defV) => {
+    if (typeof v !== "number" || !Number.isFinite(v)) return defV;
+    if (Math.abs(v) > 60 && Math.abs(v) <= 600) return v / 10.0;
+    return v;
+  };
+  const normSlope = (v, defV) => {
+    if (typeof v !== "number" || !Number.isFinite(v)) return defV;
+    if (v > 10 && v <= 500) return v / 100.0;
+    return v;
+  };
+
   const computeTargetFlow = (tout, slope, shift, minFlow, maxFlow) => {
     const t = (20 - tout) * slope + 20 + shift;
     const cl = clamp(t, minFlow, maxFlow);
@@ -21,12 +37,12 @@
     return {
       enabled: !!e.enabled,
       // sane defaults (match refs: day -10->55 / 15->30 ; night -10->50 / 15->25)
-      minFlow: (typeof e.minFlow === "number") ? e.minFlow : 25,
-      maxFlow: (typeof e.maxFlow === "number") ? e.maxFlow : 55,
-      slopeDay: (typeof e.slopeDay === "number") ? e.slopeDay : 1.0,
-      shiftDay: (typeof e.shiftDay === "number") ? e.shiftDay : 5.0,
-      slopeNight: (typeof e.slopeNight === "number") ? e.slopeNight : 1.0,
-      shiftNight: (typeof e.shiftNight === "number") ? e.shiftNight : 0.0,
+      minFlow: normFlow(e.minFlow, 25),
+      maxFlow: normFlow(e.maxFlow, 55),
+      slopeDay: normSlope(e.slopeDay, 1.0),
+      shiftDay: normShift(e.shiftDay, 5.0),
+      slopeNight: normSlope(e.slopeNight, 1.0),
+      shiftNight: normShift(e.shiftNight, 0.0),
       outdoor: (e.outdoor && typeof e.outdoor === "object") ? e.outdoor : {},
       flow: (e.flow && typeof e.flow === "object") ? e.flow : {},
       valve: (e.valve && typeof e.valve === "object") ? e.valve : {},
@@ -402,6 +418,77 @@
         // draw after inserted
         const canvas = tCurve.querySelector("#eqMiniCurve");
         if (canvas) drawEqMiniCurve(canvas, cfg, eqCfg, eq);
+      }
+    }
+
+    // --- TUV (ohřev bojleru) ---
+    const cardTuv = $id("cardTuv");
+    const tuvGrid = $id("tuvDashGrid");
+    const tuvCfg = cfg?.tuv || {};
+    const tuv = st?.tuv || {};
+    const hasTuvCfg = !!tuvCfg?.enabled || (tuvCfg?.demandInput > 0) || (tuvCfg?.requestRelay > 0) || (tuvCfg?.valveMaster > 0);
+    if (cardTuv && tuvGrid) {
+      const active = !!tuv.modeActive;
+      if (!hasTuvCfg && !active) {
+        cardTuv.style.display = "none";
+        tuvGrid.innerHTML = "";
+      } else {
+        cardTuv.style.display = "";
+        tuvGrid.innerHTML = "";
+
+        const modeTile = document.createElement("div");
+        modeTile.className = "ioTile";
+        const modeLabel = active ? "Aktivní" : "Neaktivní";
+        const demandTxt = (typeof tuv.demandActive !== "undefined") ? (tuv.demandActive ? "požadavek: ANO" : "požadavek: ne") : "požadavek: —";
+        const schedTxt = (typeof tuv.scheduleEnabled !== "undefined") ? (tuv.scheduleEnabled ? "plán: ON" : "plán: OFF") : "plán: —";
+        modeTile.innerHTML = `
+          <div>
+            <div class="ioName">Ohřev TUV</div>
+            <div class="ioSub">${escapeHtml(demandTxt)} • ${escapeHtml(schedTxt)}</div>
+          </div>
+          <div class="ioRight">
+            <div class="tempValue ${active ? "" : "muted"}">${modeLabel}</div>
+          </div>
+        `;
+        tuvGrid.appendChild(modeTile);
+
+        const eqMaster = Number(tuv.eqValveMaster || eqCfg?.valve?.master || 0);
+        if (eqMaster >= 1 && eqMaster <= RELAY_COUNT) {
+          const eqTile = document.createElement("div");
+          eqTile.className = "ioTile";
+          const tgt = Number.isFinite(tuv.eqValveTargetPct) ? Math.round(tuv.eqValveTargetPct) : 0;
+          eqTile.innerHTML = `
+            <div>
+              <div class="ioName">Směšovací ventil</div>
+              <div class="ioSub">${escapeHtml(getNameRelays(cfg, eqMaster - 1))} • cíl ${tgt}%</div>
+            </div>
+            <div class="ioRight">
+              <div class="dial" style="--p:${tgt}%">
+                <div class="dialTxt">${tgt}%</div>
+              </div>
+            </div>
+          `;
+          tuvGrid.appendChild(eqTile);
+        }
+
+        const tuvMaster = Number(tuv.valveMaster || tuvCfg?.valveMaster || 0);
+        if (tuvMaster >= 1 && tuvMaster <= RELAY_COUNT) {
+          const vTile = document.createElement("div");
+          vTile.className = "ioTile";
+          const tgt = Number.isFinite(tuv.valveTargetPct) ? Math.round(tuv.valveTargetPct) : 0;
+          vTile.innerHTML = `
+            <div>
+              <div class="ioName">Přepínací ventil TUV</div>
+              <div class="ioSub">${escapeHtml(getNameRelays(cfg, tuvMaster - 1))} • cíl ${tgt}%</div>
+            </div>
+            <div class="ioRight">
+              <div class="dial" style="--p:${tgt}%">
+                <div class="dialTxt">${tgt}%</div>
+              </div>
+            </div>
+          `;
+          tuvGrid.appendChild(vTile);
+        }
       }
     }
 

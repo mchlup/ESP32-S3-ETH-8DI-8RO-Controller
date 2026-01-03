@@ -98,6 +98,19 @@ bool logicGetNightMode();
 
 bool logicGetAutoDefaultOffUnmapped();
 
+// TUV status (pro dashboard / UI)
+struct TuvStatus {
+    bool enabled = false;        // schedule enabled OR demand active
+    bool scheduleEnabled = false;
+    bool demandActive = false;
+    bool modeActive = false;     // TUV režim aktivní (přepnutí ventilu)
+    uint8_t eqValveMaster = 0;   // 1..8 (ekvitermní ventil)
+    uint8_t eqValveTargetPct = 0;
+    uint8_t valveMaster = 0;     // 1..8 (TUV přepínací ventil)
+    uint8_t valveTargetPct = 0;
+};
+TuvStatus logicGetTuvStatus();
+
 // Trojcestný ventil – stav pro dashboard (V2)
 struct ValveUiStatus {
     uint8_t master = 0;     // 1..8

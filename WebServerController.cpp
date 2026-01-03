@@ -427,7 +427,15 @@ void handleApiStatus() {
 
     // --- TUV status ---
     JsonObject tuv = doc.createNestedObject("tuv");
-    tuv["enabled"] = logicGetTuvEnabled();
+    TuvStatus ts = logicGetTuvStatus();
+    tuv["enabled"] = ts.enabled;
+    tuv["scheduleEnabled"] = ts.scheduleEnabled;
+    tuv["demandActive"] = ts.demandActive;
+    tuv["modeActive"] = ts.modeActive;
+    tuv["eqValveMaster"] = ts.eqValveMaster;
+    tuv["eqValveTargetPct"] = ts.eqValveTargetPct;
+    tuv["valveMaster"] = ts.valveMaster;
+    tuv["valveTargetPct"] = ts.valveTargetPct;
     tuv["nightMode"] = logicGetNightMode();
 
     // --- equitherm ---
