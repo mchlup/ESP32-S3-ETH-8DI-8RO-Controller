@@ -307,6 +307,17 @@ static void valveTick(uint32_t nowMs){
     }
 }
 
+// TUV demand + request relay
+static int8_t s_tuvDemandInput = -1;  // 0..7 or -1
+static int8_t s_tuvRequestRelay = -1; // 0..7 or -1
+static bool s_tuvScheduleEnabled = false;
+static bool s_tuvDemandActive = false;
+static bool s_tuvModeActive = false;
+static int8_t s_tuvValveMaster0 = -1; // 0..7 or -1 (TUV přepínací ventil)
+static uint8_t s_tuvValveTargetPct = 0;
+static uint8_t s_tuvEqValveTargetPct = 0;
+static uint32_t s_tuvLastValveCmdMs = 0;
+
 // Nastavení relé s respektem k šablonám (např. 3c ventil)
 // Pokud je ekviterm aktivní a používá 3c ventil, v AUTO režimu nenecháme relayMap přepisovat jeho relé.
 static bool   s_eqEnabled = false;
@@ -367,17 +378,6 @@ struct ScheduleItem {
 static constexpr uint8_t MAX_SCHEDULES = 16;
 static ScheduleItem s_schedules[MAX_SCHEDULES];
 static uint8_t s_scheduleCount = 0;
-
-// TUV demand + request relay
-static int8_t s_tuvDemandInput = -1;  // 0..7 or -1
-static int8_t s_tuvRequestRelay = -1; // 0..7 or -1
-static bool s_tuvScheduleEnabled = false;
-static bool s_tuvDemandActive = false;
-static bool s_tuvModeActive = false;
-static int8_t s_tuvValveMaster0 = -1; // 0..7 or -1 (TUV přepínací ventil)
-static uint8_t s_tuvValveTargetPct = 0;
-static uint8_t s_tuvEqValveTargetPct = 0;
-static uint32_t s_tuvLastValveCmdMs = 0;
 static bool s_nightMode = false;
 
 // Equitherm konfigurace + stav
