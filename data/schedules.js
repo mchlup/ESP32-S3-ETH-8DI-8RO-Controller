@@ -39,7 +39,10 @@
   const ensureTuv = (cfg) => {
     cfg.tuv = (cfg.tuv && typeof cfg.tuv === "object") ? cfg.tuv : {};
     cfg.tuv.demandInput = Number.isFinite(Number(cfg.tuv.demandInput)) ? Number(cfg.tuv.demandInput) : 0;
-    cfg.tuv.relay = Number.isFinite(Number(cfg.tuv.relay)) ? Number(cfg.tuv.relay) : 0;
+    cfg.tuv.requestRelay = Number.isFinite(Number(cfg.tuv.requestRelay)) ? Number(cfg.tuv.requestRelay) : 0;
+    const legacyRelay = Number.isFinite(Number(cfg.tuv.relay)) ? Number(cfg.tuv.relay) : 0;
+    if (!cfg.tuv.requestRelay && legacyRelay) cfg.tuv.requestRelay = legacyRelay;
+    cfg.tuv.relay = cfg.tuv.requestRelay;
     cfg.tuv.enabled = (typeof cfg.tuv.enabled !== "undefined") ? !!cfg.tuv.enabled : false;
   };
 
@@ -71,12 +74,12 @@
     ).join("");
 
     selIn.value = String(cfg.tuv.demandInput || 0);
-    selOut.value = String(cfg.tuv.relay || 0);
+    selOut.value = String(cfg.tuv.requestRelay || 0);
     chk.checked = !!cfg.tuv.enabled;
 
     if (st) {
       st.textContent =
-        (cfg.tuv.relay ? `Požadavek TUV bude posílán na DO${cfg.tuv.relay}` : "Nenastavené relé pro TUV request.")
+        (cfg.tuv.requestRelay ? `Požadavek TUV bude posílán na DO${cfg.tuv.requestRelay}` : "Nenastavené relé pro TUV request.")
         + (cfg.tuv.demandInput ? ` · Vstup DI${cfg.tuv.demandInput} je demand.` : " · Demand vstup není nastaven.");
     }
   };
@@ -87,7 +90,8 @@
     const selOut = $("#tuvRequestRelay");
     const chk = $("#tuvManualEnable");
     if (selIn) cfg.tuv.demandInput = Number(selIn.value || 0);
-    if (selOut) cfg.tuv.relay = Number(selOut.value || 0);
+    if (selOut) cfg.tuv.requestRelay = Number(selOut.value || 0);
+    cfg.tuv.relay = cfg.tuv.requestRelay;
     if (chk) cfg.tuv.enabled = !!chk.checked;
   };
 
@@ -261,10 +265,9 @@
       const t = s?.tuv;
       if (!t) return;
       const parts = [];
-      if (typeof t.active !== "undefined") parts.push(`Aktivní: ${t.active ? "ANO" : "NE"}`);
-      if (typeof t.enabled !== "undefined") parts.push(`Plán/ručně: ${t.enabled ? "ON" : "OFF"}`);
-      if (typeof t.inputActive !== "undefined") parts.push(`Vstup: ${t.inputActive ? "ON" : "OFF"}`);
-      if (t.requestRelay) parts.push(`Relé: DO${t.requestRelay}`);
+      if (typeof t.modeActive !== "undefined") parts.push(`Aktivní: ${t.modeActive ? "ANO" : "NE"}`);
+      if (typeof t.scheduleEnabled !== "undefined") parts.push(`Plán/ručně: ${t.scheduleEnabled ? "ON" : "OFF"}`);
+      if (typeof t.demandActive !== "undefined") parts.push(`Vstup: ${t.demandActive ? "ON" : "OFF"}`);
       st.textContent = parts.length ? parts.join(" · ") : "—";
     } catch (_) {}
   };
