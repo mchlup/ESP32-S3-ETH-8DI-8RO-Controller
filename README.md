@@ -1,7 +1,3 @@
-Níže je návrh kompletního **README.md** pro GitHub projekt. Text je psaný tak, aby byl srozumitelný i pro někoho, kdo projekt vidí poprvé, ale zároveň dostatečně technický pro vývojáře a bastlíře.
-
----
-
 # ESP-HeatAndDomesticController
 
 **Modulární řídicí jednotka pro chytré řízení topení a domácích technologií postavená na ESP32-S3**
@@ -159,14 +155,6 @@ ESP-HeatAndDomesticController
 Projekt je **aktivně vyvíjen**.
 Některé části (např. OpenTherm, pokročilé BLE scénáře) jsou připravené k dalšímu rozšíření.
 
----
-
-## 📜 Licence
-
-Projekt je uvolněn jako **open-source**.
-Použití na vlastní riziko – zejména při připojení ke kotlům a zařízením na 230 V.
-
----
 
 Pokud chceš, můžu:
 
