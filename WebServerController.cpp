@@ -16,6 +16,9 @@
 #include "NetworkController.h"
 #include "MqttController.h"
 #include "BleController.h"
+#include "ThermometerController.h"
+#include "TempParse.h"
+#include "OpenThermController.h"
 #include "RuleEngine.h"
 #include "NtcController.h"
 #include "DallasController.h"
@@ -34,6 +37,8 @@ static void applyAllConfig(const String& json){
     networkApplyConfig(json);
     ntcApplyConfig(json);
     dallasApplyConfig(json);
+    thermometersApplyConfig(json);
+    openthermApplyConfig(json);
     mqttApplyConfig(json);
     logicApplyConfig(json);
 }
@@ -155,7 +160,9 @@ static void loadConfigFromFS() {
 
 // ===== API dash (Dashboard V2) =====
 static void handleApiDash() {
-    DynamicJsonDocument doc(4096);
+        // Config může růst (pravidla, teploměry, BLE, ...). Pro validaci POST /api/config
+        // používáme větší JSON buffer, aby se konfigurace neodmítala jen kvůli velikosti.
+        DynamicJsonDocument doc(32768);
 
     JsonArray temps = doc.createNestedArray("temps");
     JsonArray tempsValid = doc.createNestedArray("tempsValid");
@@ -193,7 +200,60 @@ static void handleApiDash() {
     }
 
 
-    JsonArray valves = doc.createNestedArray("valves");
+    
+    // --- BLE temps (např. meteostanice) ---
+    {
+        JsonArray bleTemps = doc.createNestedArray("bleTemps");
+        const BleThermometerCfg& bc = thermometersGetBle();
+        float tC = NAN;
+        bool ok = bleGetTempCById(bc.id, tC);
+
+        {
+            JsonObject o = bleTemps.createNestedObject();
+            o["id"] = bc.id;
+            o["label"] = bc.name.length() ? bc.name : "BLE";
+            o["valid"] = ok && isfinite(tC);
+            if (ok && isfinite(tC)) o["tempC"] = tC; else o["tempC"] = nullptr;
+        }
+
+        // stručný stav (pro rychlé kontroly)
+        JsonObject ble = doc.createNestedObject("ble");
+        ble["meteoFix"] = bleHasMeteoFix();
+        float mt = NAN;
+        if (bleGetMeteoTempC(mt) && isfinite(mt)) ble["meteoTempC"] = mt; else ble["meteoTempC"] = nullptr;
+    }
+
+    // --- MQTT teploměry (konfigurace "Teploměry") ---
+    {
+        JsonArray mqttTemps = doc.createNestedArray("mqttTemps");
+        for (uint8_t i = 0; i < 2; i++) {
+            const MqttThermometerCfg& mc = thermometersGetMqtt(i);
+            JsonObject o = mqttTemps.createNestedObject();
+            o["idx"] = i + 1;
+            o["name"] = mc.name;
+            o["topic"] = mc.topic;
+            o["jsonKey"] = mc.jsonKey;
+
+            float tC = NAN;
+            bool ok = false;
+            uint32_t lastMs = 0;
+            String payload;
+            bool have = mc.topic.length() && mqttGetLastValueInfo(mc.topic, &payload, &lastMs);
+            if (have) ok = tempParseFromPayload(payload, mc.jsonKey, tC);
+
+            o["valid"] = ok && isfinite(tC);
+            if (ok && isfinite(tC)) o["tempC"] = tC; else o["tempC"] = nullptr;
+            if (have) {
+                o["lastMs"] = lastMs;
+                o["ageMs"] = (uint32_t)(millis() - lastMs);
+            } else {
+                o["lastMs"] = nullptr;
+                o["ageMs"] = nullptr;
+            }
+        }
+    }
+
+JsonArray valves = doc.createNestedArray("valves");
     for (uint8_t r=1;r<=8;r++){
         ValveUiStatus vs;
         if (!logicGetValveUiStatus(r, vs)) continue;
@@ -371,20 +431,30 @@ void handleApiStatus() {
     tuv["nightMode"] = logicGetNightMode();
 
     // --- equitherm ---
-    EquithermStatus es = logicGetEquithermStatus();
-    JsonObject eq = doc.createNestedObject("equitherm");
-    eq["enabled"] = es.enabled;
-    eq["active"] = es.active;
-    eq["night"] = es.night;
-    if (isfinite(es.outdoorC)) eq["outdoorC"] = es.outdoorC; else eq["outdoorC"] = nullptr;
-    // Backward/UI compatibility: některé UI buildy očekávají i tyto klíče,
-    // ale v aktuálním firmware nejsou součástí EquithermStatus.
-    eq["requestedRoomC"] = nullptr;
-    eq["curveK"] = nullptr;
-    eq["curveB"] = nullptr;
-    if (isfinite(es.targetFlowC)) eq["targetFlowC"] = es.targetFlowC;
-    else eq["targetFlowC"] = nullptr;
-    eq["reason"] = logicGetEquithermReason();
+    {
+        EquithermStatus es = logicGetEquithermStatus();
+        JsonObject eq = doc.createNestedObject("equitherm");
+        eq["enabled"] = es.enabled;
+        eq["active"]  = es.active;
+        eq["night"]   = es.night;
+        eq["reason"]  = logicGetEquithermReason();
+
+        if (isfinite(es.outdoorC)) eq["outdoorC"] = es.outdoorC; else eq["outdoorC"] = nullptr;
+        if (isfinite(es.flowC))    eq["flowC"]    = es.flowC;    else eq["flowC"]    = nullptr;
+        if (isfinite(es.targetFlowC)) eq["targetFlowC"] = es.targetFlowC; else eq["targetFlowC"] = nullptr;
+
+        eq["valveMaster"]   = es.valveMaster;     // 0 = none
+        eq["valvePosPct"]   = es.valvePosPct;
+        eq["valveTargetPct"]= es.valveTargetPct;
+        eq["valveMoving"]   = es.valveMoving;
+        eq["lastAdjustMs"]  = es.lastAdjustMs;
+    }
+
+    // --- opentherm ---
+    {
+        JsonObject ot = doc.createNestedObject("opentherm");
+        openthermFillJson(ot);
+    }
 
     // UI kompatibilita: top-level alias
     doc["ruleEngineEnabled"] = ruleEngineIsEnabled();
@@ -488,6 +558,15 @@ void handleApiConfigPost() {
 
 void handleApiBleStatus() {
     server.send(200, "application/json", bleGetStatusJson());
+}
+
+void handleApiOpenThermStatus() {
+    DynamicJsonDocument doc(512);
+    JsonObject obj = doc.to<JsonObject>();
+    openthermFillJson(obj);
+    String out;
+    serializeJson(doc, out);
+    server.send(200, "application/json", out);
 }
 
 void handleApiBleConfigGet() {
@@ -878,6 +957,7 @@ static void handleApiCaps() {
     doc["ruleEngine"] = true;
     doc["mqtt"] = true;
     doc["ble"] = true;
+    doc["opentherm"] = true;
 
     String out;
     serializeJson(doc, out);
@@ -953,6 +1033,9 @@ void webserverInit() {
 
     // BLE
     server.on("/api/ble/status", HTTP_GET, handleApiBleStatus);
+
+    // OpenTherm (boiler)
+    server.on("/api/opentherm/status", HTTP_GET, handleApiOpenThermStatus);
     server.on("/api/ble/config", HTTP_GET, handleApiBleConfigGet);
     server.on("/api/ble/config", HTTP_POST, handleApiBleConfigPost);
     server.on("/api/ble/paired", HTTP_GET, handleApiBlePairedGet);

@@ -1,0 +1,82 @@
+/* Dashboard V2 – sekce dle aktivních funkcí (ventily, teploty) */
+
+.ioTile {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(0,0,0,.08);
+  border-radius: 12px;
+  background: rgba(255,255,255,.65);
+  backdrop-filter: blur(4px);
+}
+
+.ioTile .ioName { font-weight: 700; }
+.ioTile .ioSub { font-size: 12px; opacity: .75; margin-top: 4px; }
+
+.ioRight {
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 8px;
+}
+
+.dial {
+  width: 48px;
+  height: 48px;
+  border-radius: 999px;
+  background: conic-gradient(
+    rgba(0,0,0,.75) 0%,
+    rgba(0,0,0,.75) var(--p),
+    rgba(0,0,0,.10) var(--p),
+    rgba(0,0,0,.10) 100%
+  );
+  display: grid;
+  place-items: center;
+  position: relative;
+}
+
+.dial::after {
+  content: "";
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  background: rgba(255,255,255,.85);
+  border: 1px solid rgba(0,0,0,.08);
+  position: absolute;
+  inset: 6px;
+}
+
+.dial .dialTxt{
+  position: relative;
+  z-index: 1;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.ioTile.moving .dial {
+  animation: dialPulse 1s ease-in-out infinite;
+}
+
+@keyframes dialPulse {
+  0% { transform: scale(1.00); }
+  50% { transform: scale(1.05); }
+  100% { transform: scale(1.00); }
+}
+
+.tempValue {
+  font-size: 18px;
+  font-weight: 800;
+}
+
+/* Ekviterm – miniaturní graf */
+.ioTile.eqCurveTile{ grid-column: 1 / -1; }
+.ioTile.eqCurveTile .ioRight{ justify-items: stretch; width:100%; }
+.eqMiniCurve{
+  width: 100%;
+  max-width: 340px;
+  height: 120px;
+  border-radius: 10px;
+  background: rgba(0,0,0,.04);
+  border: 1px solid rgba(0,0,0,.06);
+}

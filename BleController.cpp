@@ -13,6 +13,7 @@
 #include "RelayController.h"
 #include "LogicController.h"
 #include "RgbLedController.h"
+#include "ThermometerController.h"
 
 // ---------- Files ----------
 static const char* BLE_CFG_PATH = "/ble.json";
@@ -409,6 +410,9 @@ static void meteoOnNotify(NimBLERemoteCharacteristic* ch, uint8_t* data, size_t 
     g_meteoTrend = tr;
     g_meteoFix = true;
     g_meteoLastMs = millis();
+
+    // externí BLE teploměr (konfigurace "Teploměry")
+    thermometersBleOnReading("meteo.tempC", (float)g_meteoTempX10 / 10.0f);
 }
 
 static bool meteoConnectIfNeeded() {
@@ -698,4 +702,28 @@ bool bleClearDevices() {
 
 bool bleHasMeteoFix() {
     return g_meteoFix;
+}
+
+bool bleGetMeteoTempC(float &outC) {
+    outC = NAN;
+    if (!g_meteoFix) return false;
+    outC = (float)g_meteoTempX10 / 10.0f;
+    return isfinite(outC);
+}
+
+bool bleGetTempCById(const String& id, float &outC) {
+    // Default / legacy IDs
+    if (!id.length()) return bleGetMeteoTempC(outC);
+
+    String s = id;
+    s.trim();
+    s.toLowerCase();
+
+    if (s == "meteo" || s == "meteo.tempc" || s == "temp" || s == "tempc") {
+        return bleGetMeteoTempC(outC);
+    }
+
+    // Unknown ID (reserved)
+    outC = NAN;
+    return false;
 }

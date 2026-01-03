@@ -15,6 +15,8 @@
 #include "NtcController.h"
 #include "DallasController.h"
 #include "FsController.h"
+#include "ThermometerController.h"
+#include "OpenThermController.h"
 
 String inputBuffer;
 
@@ -129,6 +131,8 @@ void setup() {
     logicInit();
     ruleEngineInit();
     rgbLedInit();       // RGB LED (pokud používáš)
+    thermometersInit(); // MQTT/BLE teploměry (konfigurace)
+    openthermInit();    // OpenTherm (boiler) - zatím stub/placeholder
     fsInit();           // Network + Web + MQTT + OTA
     networkInit();
     ntcInit();
@@ -176,6 +180,9 @@ void loop() {
 
     // logika (AUTO/MANUAL + ventily + equitherm)
     logicUpdate();
+
+    // OpenTherm (polling + setpoint)
+    openthermLoop();
 
     bleLoop();
     rgbLedLoop();

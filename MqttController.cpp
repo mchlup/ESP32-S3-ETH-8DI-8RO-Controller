@@ -8,6 +8,7 @@
 #include "RelayController.h"
 #include "InputController.h"
 #include "LogicController.h"
+#include "ThermometerController.h"
 
 // ===== Cache přijatých hodnot (pro Rule engine MQTT podmínky) =====
 struct MqttCacheEntry {
@@ -60,6 +61,18 @@ bool mqttGetLastValue(const String& topic, String* outValue) {
     for (uint8_t i = 0; i < MQTT_CACHE_MAX; i++) {
         if (mqttCache[i].topic == topic) {
             *outValue = mqttCache[i].value;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool mqttGetLastValueInfo(const String& topic, String* outValue, uint32_t* outLastMs) {
+    if (!outValue && !outLastMs) return false;
+    for (uint8_t i = 0; i < MQTT_CACHE_MAX; i++) {
+        if (mqttCache[i].topic == topic) {
+            if (outValue) *outValue = mqttCache[i].value;
+            if (outLastMs) *outLastMs = mqttCache[i].lastMs;
             return true;
         }
     }
@@ -271,6 +284,25 @@ static void mqttSubscribeAll() {
         mqttClient.subscribe(topicRelaySet(i).c_str());
     }
 
+
+// Extra subscriptions requested by logic (e.g., Equitherm MQTT sources)
+String extraTopics[12];
+uint8_t n = logicGetMqttSubscribeTopics(extraTopics, 12);
+for (uint8_t i = 0; i < n; i++) {
+    if (!extraTopics[i].length()) continue;
+    mqttClient.subscribe(extraTopics[i].c_str());
+}
+
+    // Externí MQTT teploměry (konfigurace "Teploměry")
+    {
+        String tTopics[4];
+        uint8_t tn = thermometersGetMqttSubscribeTopics(tTopics, 4);
+        for (uint8_t i = 0; i < tn; i++) {
+            if (!tTopics[i].length()) continue;
+            mqttClient.subscribe(tTopics[i].c_str());
+        }
+    }
+
     Serial.println(F("[MQTT] Subscribed topics."));
 }
 
@@ -350,6 +382,9 @@ static void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
     // uložíme poslední hodnotu pro Rule engine (MQTT podmínky)
     cachePut(t, p);
+
+    // externí MQTT teploměry (konfigurace "Teploměry")
+    thermometersMqttOnMessage(t, p);
 
     if (t == topicControlModeSet()) {
         handleControlModeSet(p);
@@ -501,6 +536,10 @@ void mqttApplyConfig(const String& json) {
     JsonArray in = doc["inputNames"].as<JsonArray>();
     for (uint8_t i = 0; i < INPUT_COUNT; i++) {
         haInputNames[i] = (in.isNull() || i >= in.size()) ? "" : String((const char*)(in[i] | ""));
+    }
+
+    if (mqttClient.connected()) {
+        mqttSubscribeAll();
     }
 
     Serial.println(F("[MQTT] config applied."));

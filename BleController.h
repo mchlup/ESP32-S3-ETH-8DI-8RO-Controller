@@ -28,3 +28,10 @@ bool bleClearDevices();
 
 // Meteo poslední hodnoty (přístupné i přes status)
 bool bleHasMeteoFix();
+
+// Meteo – rychlý přístup k posledním hodnotám
+bool bleGetMeteoTempC(float &outC); // true pokud je fix a hodnota je validní
+
+// Obecný getter podle id (rezerva do budoucna). Aktuálně podporuje minimálně:
+//  - "meteo" / "meteo.tempC" / "temp" / "tempC" / "" (default)
+bool bleGetTempCById(const String& id, float &outC);

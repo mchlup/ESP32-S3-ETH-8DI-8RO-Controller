@@ -20,3 +20,6 @@ void mqttPublishFullState();
 void mqttRepublishDiscovery();
 // Vrátí poslední přijatou hodnotu pro daný topic (pokud existuje). Používá Rule engine (MQTT podmínky).
 bool mqttGetLastValue(const String& topic, String* outValue);
+
+// Jako mqttGetLastValue(), navíc vrací millis() timestamp posledního příjmu.
+bool mqttGetLastValueInfo(const String& topic, String* outValue, uint32_t* outLastMs);

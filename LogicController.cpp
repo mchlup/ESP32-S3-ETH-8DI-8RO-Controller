@@ -8,9 +8,13 @@
 #include "DallasController.h"
 #include "MqttController.h"
 
+#include "ThermometerController.h"
+#include "TempParse.h"
+
 #include <ArduinoJson.h>
 #include <time.h>
 #include <math.h>
+#include "BleController.h"
 
 // Každý režim má profil pro všechna relé (RELAY_COUNT = 8).
 
@@ -55,6 +59,13 @@ static bool s_autoDefaultOffUnmapped = true;
 // Diagnostika AUTO (status pro UI)
 static AutoStatus s_autoStatus = { false, 0, SystemMode::MODE1, false, false };
 
+// Aktuální řízení a režim
+static ControlMode currentControlMode = ControlMode::MANUAL;
+static SystemMode  manualMode         = SystemMode::MODE1;
+static SystemMode  currentMode        = SystemMode::MODE1;
+
+
+
 // RelayMap: z UI mapování vstupu na relé
 struct RelayMapItem {
     uint8_t input;     // 1..INPUT_COUNT, 0 = none
@@ -74,6 +85,12 @@ struct Valve3WayState {
     uint32_t travelMs = 6000;   // doba přeběhu ventilu (ms)
     uint32_t pulseMs  = 800;    // krátký puls pro test/kalibraci (ms)
     uint32_t guardMs  = 300;    // pauza mezi směry (ms)
+
+    // Min. perioda mezi starty přestavení (ochrana proti častému přepínání)
+    uint32_t minSwitchMs = 0;   // 0 = bez omezení
+    uint32_t lastCmdMs = 0;
+    bool hasPending = false;
+    uint8_t pendingTargetPct = 0;
     bool invertDir = false;     // prohození A/B
     bool defaultB = false;      // výchozí poloha po startu / applyConfig
     bool currentB = false;      // posledně požadovaná poloha (B=true, A=false)
@@ -102,14 +119,20 @@ static bool isValveMaster(uint8_t r0){ return r0 < RELAY_COUNT && s_valves[r0].c
 static bool isValvePeer(uint8_t r0){ return r0 < RELAY_COUNT && s_valvePeerOf[r0] >= 0; }
 
 static uint8_t valveComputePosPct(const Valve3WayState& v, uint32_t nowMs){
-    if (!v.moving) return v.currentB ? 100 : 0;
+    // Udržujeme posPct jako poslední známou / dopočtenou pozici (0..100),
+    // aby šlo ventil řídit i procenty (ekviterm).
+    if (!v.moving) return v.posPct;
+
     if ((int32_t)(nowMs - v.guardEndMs) < 0) return v.startPct;
     if ((int32_t)(nowMs - v.moveEndMs) >= 0) return v.targetPct;
-    const float travel = (float)v.travelMs;
+
+    const float travel = (float)(v.moveEndMs - v.moveStartMs);
     if (travel <= 0.0f) return v.targetPct;
-    float p = (float)(nowMs - v.guardEndMs) / travel;
+
+    float p = (float)(nowMs - v.moveStartMs) / travel;
     if (p < 0.0f) p = 0.0f;
     if (p > 1.0f) p = 1.0f;
+
     const float val = (float)v.startPct + ((float)v.targetPct - (float)v.startPct) * p;
     int iv = (int)lroundf(val);
     if (iv < 0) iv = 0;
@@ -117,75 +140,189 @@ static uint8_t valveComputePosPct(const Valve3WayState& v, uint32_t nowMs){
     return (uint8_t)iv;
 }
 
+static inline bool valveCanStartNow(const Valve3WayState &v, uint32_t nowMs){
+    if (v.minSwitchMs == 0) return true;
+    return (uint32_t)(nowMs - v.lastCmdMs) >= v.minSwitchMs;
+}
+
+static void valveStartMoveInternal(Valve3WayState &v, uint8_t internalTargetPct, uint32_t nowMs){
+    if (internalTargetPct > 100) internalTargetPct = 100;
+
+    const uint8_t curPct = valveComputePosPct(v, nowMs);
+
+    // vždy nejdřív vypnout obě (bezpečné při změně směru)
+    relaySet(static_cast<RelayId>(v.relayA), false);
+    relaySet(static_cast<RelayId>(v.relayB), false);
+
+    // pokud jsme (prakticky) v cíli a nic neběží, jen zafixuj stav
+    if (!v.moving && curPct == internalTargetPct){
+        v.moving = false;
+        v.posPct = internalTargetPct;
+        v.startPct = internalTargetPct;
+        v.targetPct = internalTargetPct;
+        v.currentB = (internalTargetPct >= 50);
+        return;
+    }
+
+    v.moving = true;
+    v.startPct = curPct;
+    v.posPct = curPct;
+    v.targetPct = internalTargetPct;
+
+    // směr: cílová > aktuální => jedeme směrem B (sepni relayB)
+    v.currentB = (internalTargetPct > curPct);
+
+    v.guardEndMs = nowMs + v.guardMs;
+    v.moveStartMs = v.guardEndMs;
+
+    const float frac = fabsf((float)internalTargetPct - (float)curPct) / 100.0f;
+    uint32_t durMs = (uint32_t)lroundf((float)v.travelMs * frac);
+    if (durMs < 50) durMs = 50;
+    v.moveEndMs  = v.guardEndMs + durMs;
+}
+
 static void valveCommand(uint8_t masterA0, bool wantB){
     if (!isValveMaster(masterA0)) return;
     Valve3WayState &v = s_valves[masterA0];
 
+    // Pozn.: historicky invertDir obrací smysl A/B (nejen cívky).
+    // Zachováváme kvůli kompatibilitě stávajících konfigurací.
     if (v.invertDir) wantB = !wantB;
 
     const uint32_t nowMs = millis();
-    const uint8_t curPct = valveComputePosPct(v, nowMs);
+    const uint8_t targetPct = wantB ? 100 : 0;
 
-    // Pokud už je v cílové poloze a nic neběží, jen pro jistotu vypni obě cívky.
-    if (!v.moving && v.currentB == wantB){
-        v.posPct = wantB ? 100 : 0;
+    // Pokud už je v cílové poloze a nic neběží, nedrž periodu.
+    if (!v.moving){
+        const uint8_t curPct = valveComputePosPct(v, nowMs);
+        if (curPct == targetPct) {
+            v.posPct = targetPct;
+            v.startPct = targetPct;
+            v.targetPct = targetPct;
+            v.hasPending = false;
+            relaySet(static_cast<RelayId>(v.relayA), false);
+            relaySet(static_cast<RelayId>(v.relayB), false);
+            return;
+        }
+    }
+
+    // perioda přestavení
+    if (!valveCanStartNow(v, nowMs)){
+        v.pendingTargetPct = targetPct;
+        v.hasPending = true;
+        return;
+    }
+
+    v.hasPending = false;
+    v.pendingTargetPct = targetPct;
+    v.lastCmdMs = nowMs;
+    valveStartMoveInternal(v, targetPct, nowMs);
+}
+
+static void valveMoveToPct(uint8_t masterA0, uint8_t targetPctExt){
+    if (!isValveMaster(masterA0)) return;
+    Valve3WayState &v = s_valves[masterA0];
+
+    uint8_t targetPct = targetPctExt;
+    if (targetPct > 100) targetPct = 100;
+
+    // kompatibilita s invertDir: obrátíme škálu 0..100
+    if (v.invertDir) targetPct = (uint8_t)(100 - targetPct);
+
+    const uint32_t nowMs = millis();
+
+    // během pohybu pouze queue
+    if (v.moving){
+        v.pendingTargetPct = targetPct;
+        v.hasPending = true;
+        return;
+    }
+
+    const uint8_t curPct = valveComputePosPct(v, nowMs);
+    if (targetPct == curPct){
+        v.posPct = curPct;
+        v.startPct = curPct;
+        v.targetPct = curPct;
+        v.hasPending = false;
         relaySet(static_cast<RelayId>(v.relayA), false);
         relaySet(static_cast<RelayId>(v.relayB), false);
         return;
     }
 
-    // Bezpečně: vždy nejdřív vypnout obě (i při přepínání směru během pohybu)
-    relaySet(static_cast<RelayId>(v.relayA), false);
-    relaySet(static_cast<RelayId>(v.relayB), false);
+    if (!valveCanStartNow(v, nowMs)){
+        v.pendingTargetPct = targetPct;
+        v.hasPending = true;
+        return;
+    }
 
-    v.currentB = wantB;
-    v.moving = true;
-
-    v.startPct = curPct;
-    v.targetPct = wantB ? 100 : 0;
-    v.posPct = curPct;
-
-    v.guardEndMs = nowMs + v.guardMs;       // krátká pauza mezi směry
-    v.moveStartMs = v.guardEndMs;
-    v.moveEndMs  = v.guardEndMs + v.travelMs;
+    v.hasPending = false;
+    v.pendingTargetPct = targetPct;
+    v.lastCmdMs = nowMs;
+    valveStartMoveInternal(v, targetPct, nowMs);
 }
 
 static void valveTick(uint32_t nowMs){
     for (uint8_t i=0;i<RELAY_COUNT;i++){
-        if (!s_valves[i].configured) continue;
         Valve3WayState &v = s_valves[i];
-        if (!v.moving) continue;
+        if (!v.configured) continue;
 
-        // průběžná pozice pro UI
-        v.posPct = valveComputePosPct(v, nowMs);
+        if (v.moving){
+            // průběžná pozice pro UI
+            v.posPct = valveComputePosPct(v, nowMs);
 
-        // guard: drž obě vypnuté
-        if ((int32_t)(nowMs - v.guardEndMs) < 0){
+            // guard: drž obě vypnuté
+            if ((int32_t)(nowMs - v.guardEndMs) < 0){
+                relaySet(static_cast<RelayId>(v.relayA), false);
+                relaySet(static_cast<RelayId>(v.relayB), false);
+            } else {
+                // během pohybu je sepnutá jen správná cívka
+                const bool wantB = v.currentB;
+                const uint8_t dir = wantB ? v.relayB : v.relayA;
+                const uint8_t other = wantB ? v.relayA : v.relayB;
+                relaySet(static_cast<RelayId>(other), false);
+                relaySet(static_cast<RelayId>(dir), true);
+            }
+
+            // konec pohybu
+            if ((int32_t)(nowMs - v.moveEndMs) >= 0){
+                relaySet(static_cast<RelayId>(v.relayA), false);
+                relaySet(static_cast<RelayId>(v.relayB), false);
+                v.moving = false;
+                v.posPct = v.targetPct;
+                v.startPct = v.targetPct;
+            }
+        } else {
+            // jistota: nic nedržet
             relaySet(static_cast<RelayId>(v.relayA), false);
             relaySet(static_cast<RelayId>(v.relayB), false);
-            continue;
         }
 
-        // během pohybu je sepnutá jen správná cívka
-        const bool wantB = v.currentB;
-        const uint8_t dir = wantB ? v.relayB : v.relayA;
-        const uint8_t other = wantB ? v.relayA : v.relayB;
-        relaySet(static_cast<RelayId>(other), false);
-        relaySet(static_cast<RelayId>(dir), true);
-
-        // konec pohybu
-        if ((int32_t)(nowMs - v.moveEndMs) >= 0){
-            relaySet(static_cast<RelayId>(v.relayA), false);
-            relaySet(static_cast<RelayId>(v.relayB), false);
-            v.moving = false;
-            v.posPct = v.targetPct;
+        // čekající povel (po uplynutí periody)
+        if (!v.moving && v.hasPending && valveCanStartNow(v, nowMs)){
+            const uint8_t tgt = v.pendingTargetPct;
+            v.hasPending = false;
+            v.lastCmdMs = nowMs;
+            valveStartMoveInternal(v, tgt, nowMs);
         }
     }
 }
 
 // Nastavení relé s respektem k šablonám (např. 3c ventil)
+// Pokud je ekviterm aktivní a používá 3c ventil, v AUTO režimu nenecháme relayMap přepisovat jeho relé.
+static bool   s_eqEnabled = false;
+static int8_t s_eqValveMaster0 = -1; // 0..7, -1 = none
 static void relayApplyLogical(uint8_t r0, bool on){
     if (r0 >= RELAY_COUNT) return;
+
+    // Ekviterm (AUTO) si může řídit 3c ventil přímo procenty – zabráníme konfliktům
+    if (currentControlMode == ControlMode::AUTO && s_eqEnabled && s_eqValveMaster0 >= 0 && s_eqValveMaster0 < (int8_t)RELAY_COUNT) {
+        const uint8_t m0 = (uint8_t)s_eqValveMaster0;
+        const uint8_t p0 = s_valves[m0].configured ? s_valves[m0].relayB : 255;
+        if (r0 == m0 || r0 == p0) {
+            return; // nezasahovat
+        }
+    }
+
     if (isValvePeer(r0)){
         // peer relé je řízené masterem, vynucujeme OFF
         relaySet(static_cast<RelayId>(r0), false);
@@ -226,17 +363,43 @@ static bool s_tuvDemandActive = false;
 static bool s_nightMode = false;
 
 // Equitherm konfigurace + stav
-static bool   s_eqEnabled = false;
-static String s_eqOutdoorSource = "none"; // "none" | "temp1..temp8" | "mqtt"
-static String s_eqOutdoorTopic  = "";
+// Pozn.: ekviterm se aplikuje pouze v CONTROL=AUTO, ale hodnoty počítáme pro diagnostiku i v MANUAL.
+struct EqSourceCfg {
+    String source = "none";   // "none" | "dallas" | "temp1..temp8" | "mqtt" | "ble"
+    int    gpio   = 0;        // pro dallas (0..3)
+    String romHex = "";       // pro dallas (16 hex), prázdné => první validní
+    String topic  = "";       // pro mqtt
+    String jsonKey = "";    // pro mqtt (JSON klíč), prázdné => payload je číslo / autodetekce
+    String bleId  = "";       // do budoucna
+};
+
+static EqSourceCfg s_eqOutdoorCfg; // venkovní
+static EqSourceCfg s_eqFlowCfg;    // otopná voda (feedback)
+
+// Křivka (stejný vzorec jako UI): Tflow = (20 - Tout) * slope + 20 + shift
+static float  s_eqSlopeDay   = 1.25f;
+static float  s_eqShiftDay   = 30.0f;
+static float  s_eqSlopeNight = 1.00f;
+static float  s_eqShiftNight = 25.0f;
+
+// Legacy refs (fallback, když slope/shift nejsou v configu)
 static float  s_eqHeatTout1 = -10, s_eqHeatTflow1 = 55, s_eqHeatTout2 = 15, s_eqHeatTflow2 = 30;
 static float  s_eqNightTout1 = -10, s_eqNightTflow1 = 50, s_eqNightTout2 = 15, s_eqNightTflow2 = 25;
 
+// limity teploty otopné vody
 static float  s_eqMinFlow = 22, s_eqMaxFlow = 50;
-static String s_eqReason = "";
+
+// Řízení 3c ventilu (B varianta = plynulá korekce po krocích)
+static float    s_eqDeadbandC = 0.5f;      // necitlivost (°C)
+static uint8_t  s_eqStepPct   = 4;         // krok změny pozice (%)
+static uint32_t s_eqPeriodMs  = 6000;      // minimální perioda korekcí (ms)
+static uint8_t  s_eqMinPct    = 0;         // clamp pozice
+static uint8_t  s_eqMaxPct    = 100;
+
+static uint32_t s_eqLastAdjustMs = 0;
+static String   s_eqReason = "";
 
 static EquithermStatus s_eqStatus = {};
-
 
 static bool isValidTimeNow(struct tm &outTm, time_t &outEpoch) {
     outEpoch = time(nullptr);
@@ -254,65 +417,235 @@ static float lerpClamped(float x, float x1, float y1, float x2, float y2){
     return y1 + (y2 - y1) * t;
 }
 
-static bool tryGetOutdoorTempC(float &outC){
+static bool tryGetDallasTempC(uint8_t gpio, const String& romHex, float &outC){
     outC = NAN;
-    if (!s_eqEnabled) return false;
+    const DallasGpioStatus* st = DallasController::getStatus(gpio);
+    if (!st) return false;
+    if (st->devices.empty()) return false;
 
-    if (s_eqOutdoorSource.startsWith("temp")){
-        int idx = s_eqOutdoorSource.substring(4).toInt(); // temp1..8
+    uint64_t wantRom = 0;
+    bool haveRom = false;
+    if (romHex.length()){
+        char *endp = nullptr;
+        wantRom = strtoull(romHex.c_str(), &endp, 16);
+        haveRom = (endp && endp != romHex.c_str());
+    }
+
+    for (const auto &d : st->devices){
+        if (!d.valid) continue;
+        if (haveRom && d.rom != wantRom) continue;
+        outC = d.temperature;
+        return isfinite(outC);
+    }
+    // Pokud je rom zadaný, ale nenalezen, zkus aspoň první validní
+    if (haveRom){
+        for (const auto &d : st->devices){
+            if (!d.valid) continue;
+            outC = d.temperature;
+            return isfinite(outC);
+        }
+    }
+    return false;
+}
+
+static bool tryGetTempFromSource(const EqSourceCfg& src, float &outC){
+    outC = NAN;
+
+    const String s = src.source;
+    if (!s.length() || s == "none") return false;
+
+    if (s == "dallas"){
+        const uint8_t gpio = (uint8_t)src.gpio;
+        if (gpio > 3) return false;
+        // pro jistotu průběžně udržuj Dallas loop
+        DallasController::loop();
+        return tryGetDallasTempC(gpio, src.romHex, outC);
+    }
+
+    if (s.startsWith("temp")){
+        int idx = s.substring(4).toInt(); // temp1..8
         if (idx < 1 || idx > (int)INPUT_COUNT) return false;
-        uint8_t i0 = (uint8_t)(idx - 1);
+        const uint8_t i0 = (uint8_t)(idx - 1);
         if (!s_tempValid[i0]) return false;
         outC = s_tempC[i0];
         return isfinite(outC);
     }
 
-    if (s_eqOutdoorSource == "mqtt"){
-        if (!s_eqOutdoorTopic.length()) return false;
-        String v;
-        if (!mqttGetLastValue(s_eqOutdoorTopic, &v)) return false;
-        v.trim();
-        outC = v.toFloat();
+    if (s == "mqtt"){
+        if (!src.topic.length()) return false;
+        String payload;
+        if (!mqttGetLastValue(src.topic, &payload)) return false;
+
+        float tC = NAN;
+        if (!tempParseFromPayload(payload, src.jsonKey, tC)) return false;
+        outC = tC;
         return isfinite(outC);
     }
 
+    if (s == "ble"){
+        // BLE: aktuálně je k dispozici minimálně "meteo.tempC".
+        // bleId může být prázdné (default) nebo např. "meteo", "meteo.tempC".
+        const String id = src.bleId;
+        return bleGetTempCById(id, outC);
+    }
+
+    // BLE do budoucna
     return false;
 }
 
-static void equithermRecompute(){
-    s_eqStatus.enabled = s_eqEnabled;
-    s_eqStatus.night = s_nightMode;
-    s_eqStatus.active = false;
-    s_eqStatus.outdoorC = NAN;
-    s_eqStatus.targetFlowC = NAN;
-    s_eqReason = "";
+static float eqComputeTargetFromSlopeShift(float tout, bool night){
+    const float slope = night ? s_eqSlopeNight : s_eqSlopeDay;
+    const float shift = night ? s_eqShiftNight : s_eqShiftDay;
 
-    if (!s_eqEnabled) { s_eqReason = "disabled"; return; }
+    float tflow = (20.0f - tout) * slope + 20.0f + shift;
+    if (!isfinite(tflow)) return NAN;
 
-    float tout;
-    if (!tryGetOutdoorTempC(tout)) { s_eqReason = "no outdoor temp"; return; }
+    // limity (min/max)
+    float mn = s_eqMinFlow, mx = s_eqMaxFlow;
+    if (isfinite(mn) && isfinite(mx)) {
+        if (mn > mx) { float tmp=mn; mn=mx; mx=tmp; }
+        if (tflow < mn) tflow = mn;
+        if (tflow > mx) tflow = mx;
+    }
+    return tflow;
+}
 
-    const bool night = s_nightMode;
+static float eqComputeTargetFromRefs(float tout, bool night){
     const float x1 = night ? s_eqNightTout1 : s_eqHeatTout1;
     const float y1 = night ? s_eqNightTflow1 : s_eqHeatTflow1;
     const float x2 = night ? s_eqNightTout2 : s_eqHeatTout2;
     const float y2 = night ? s_eqNightTflow2 : s_eqHeatTflow2;
 
     float tflow = lerpClamped(tout, x1, y1, x2, y2);
-    if (!isfinite(tflow)) { s_eqReason = "invalid curve"; return; }
+    if (!isfinite(tflow)) return NAN;
 
-    // limity (min/max)
-    if (isfinite(s_eqMinFlow) && isfinite(s_eqMaxFlow)) {
-        if (s_eqMinFlow > s_eqMaxFlow) { float tmp=s_eqMinFlow; s_eqMinFlow=s_eqMaxFlow; s_eqMaxFlow=tmp; }
-        if (tflow < s_eqMinFlow) tflow = s_eqMinFlow;
-        if (tflow > s_eqMaxFlow) tflow = s_eqMaxFlow;
+    float mn = s_eqMinFlow, mx = s_eqMaxFlow;
+    if (isfinite(mn) && isfinite(mx)) {
+        if (mn > mx) { float tmp=mn; mn=mx; mx=tmp; }
+        if (tflow < mn) tflow = mn;
+        if (tflow > mx) tflow = mx;
     }
-
-    s_eqStatus.active = true;
-    s_eqStatus.outdoorC = tout;
-    s_eqStatus.targetFlowC = tflow;
+    return tflow;
 }
 
+static void equithermRecompute(){
+    s_eqStatus = EquithermStatus{};
+    s_eqStatus.enabled = s_eqEnabled;
+    s_eqStatus.night   = s_nightMode;
+    s_eqStatus.valveMaster = (s_eqValveMaster0 >= 0) ? (uint8_t)(s_eqValveMaster0 + 1) : 0;
+    s_eqReason = "";
+    s_eqStatus.reason = "";
+
+    if (!s_eqEnabled) { s_eqReason = "disabled"; s_eqStatus.reason = s_eqReason; return; }
+
+    // Outdoor temperature (venek)
+    float tout = NAN;
+    if (!tryGetTempFromSource(s_eqOutdoorCfg, tout)) {
+        s_eqReason = "no outdoor temp";
+        s_eqStatus.reason = s_eqReason;
+        return;
+    }
+
+    // Target flow temp from curve
+    float target = eqComputeTargetFromSlopeShift(tout, s_nightMode);
+    if (!isfinite(target)) {
+        // fallback for older configs
+        target = eqComputeTargetFromRefs(tout, s_nightMode);
+    }
+    if (!isfinite(target)) {
+        s_eqReason = "invalid curve";
+        s_eqStatus.reason = s_eqReason;
+        return;
+    }
+
+    // Flow temperature (feedback)
+    float flow = NAN;
+    (void)tryGetTempFromSource(s_eqFlowCfg, flow); // ok když není – jen diagnostika
+    const bool hasFlow = isfinite(flow);
+
+    s_eqStatus.active      = true;
+    s_eqStatus.outdoorC    = tout;
+    s_eqStatus.flowC       = flow;
+    s_eqStatus.targetFlowC = target;
+    s_eqStatus.lastAdjustMs = s_eqLastAdjustMs;
+
+    // Valve snapshot for UI
+    if (s_eqValveMaster0 >= 0 && s_eqValveMaster0 < (int8_t)RELAY_COUNT && isValveMaster((uint8_t)s_eqValveMaster0)) {
+        const Valve3WayState &v = s_valves[(uint8_t)s_eqValveMaster0];
+        const uint32_t nowMs = millis();
+        s_eqStatus.valvePosPct = valveComputePosPct(v, nowMs);
+        s_eqStatus.valveTargetPct = v.targetPct;
+        s_eqStatus.valveMoving = v.moving;
+    }
+
+    // If enabled, but not in AUTO, expose reason (řízení se aplikuje jen v AUTO)
+    if (currentControlMode != ControlMode::AUTO) {
+        s_eqReason = "needs AUTO";
+        s_eqStatus.reason = s_eqReason;
+        return;
+    }
+
+    // V AUTO režimu běží řízení jen pokud máme feedback + nakonfigurovaný ventil
+    if (!hasFlow) {
+        s_eqReason = "no flow temp";
+        s_eqStatus.reason = s_eqReason;
+        return;
+    }
+    if (s_eqValveMaster0 < 0 || s_eqValveMaster0 >= (int8_t)RELAY_COUNT || !isValveMaster((uint8_t)s_eqValveMaster0)) {
+        s_eqReason = "no 3-way valve";
+        s_eqStatus.reason = s_eqReason;
+        return;
+    }
+
+    s_eqReason = "";
+    s_eqStatus.reason = ""; // OK
+}
+
+static void equithermControlTick(uint32_t nowMs){
+    if (!s_eqEnabled) return;
+    if (currentControlMode != ControlMode::AUTO) return;
+
+    // musí být spočtený target
+    if (!s_eqStatus.active || !isfinite(s_eqStatus.targetFlowC)) return;
+
+    // nutný feedback senzor
+    float flow = NAN;
+    if (!tryGetTempFromSource(s_eqFlowCfg, flow)) return;
+
+    // nutný ventil
+    if (s_eqValveMaster0 < 0 || s_eqValveMaster0 >= (int8_t)RELAY_COUNT) return;
+    const uint8_t master0 = (uint8_t)s_eqValveMaster0;
+    if (!isValveMaster(master0)) return;
+
+    // perioda korekcí
+    if (s_eqLastAdjustMs != 0 && (uint32_t)(nowMs - s_eqLastAdjustMs) < s_eqPeriodMs) return;
+
+    Valve3WayState &v = s_valves[master0];
+    if (v.moving) return;
+
+    const float target = s_eqStatus.targetFlowC;
+    const float err = target - flow;
+    if (!isfinite(err)) return;
+
+    if (fabsf(err) <= s_eqDeadbandC) return;
+
+    const uint8_t curPct = valveComputePosPct(v, nowMs);
+    int nextPct = (int)curPct + ((err > 0) ? (int)s_eqStepPct : -(int)s_eqStepPct);
+    if (nextPct < (int)s_eqMinPct) nextPct = (int)s_eqMinPct;
+    if (nextPct > (int)s_eqMaxPct) nextPct = (int)s_eqMaxPct;
+
+    if (nextPct == (int)curPct) return;
+
+    valveMoveToPct(master0, (uint8_t)nextPct);
+    s_eqLastAdjustMs = nowMs;
+
+    // aktualizuj status pro UI
+    s_eqStatus.flowC = flow;
+    s_eqStatus.valvePosPct = curPct;
+    s_eqStatus.valveTargetPct = (uint8_t)nextPct;
+    s_eqStatus.valveMoving = true;
+    s_eqStatus.lastAdjustMs = s_eqLastAdjustMs;
+}
 
 static uint8_t dowToMask(const struct tm &t) {
     // tm_wday: 0=Sun..6=Sat -> convert to Mon=bit0..Sun=bit6
@@ -338,9 +671,6 @@ static void applyTuvRequest() {
 }
 
 
-static ControlMode currentControlMode = ControlMode::MANUAL;
-static SystemMode  manualMode         = SystemMode::MODE1;
-static SystemMode  currentMode        = SystemMode::MODE1;
 
 static const RelayProfile* profileForMode(SystemMode mode) {
     switch (mode) {
@@ -533,7 +863,7 @@ void logicInit() {
     manualMode         = SystemMode::MODE1;
     currentMode        = manualMode;
 
-    s_autoStatus = { false, 0, currentMode, false, false };
+    s_autoStatus = AutoStatus{ false, 0, currentMode, false, false };
 
     updateRelaysForMode(currentMode);
 
@@ -553,6 +883,7 @@ void logicUpdate() {
         else { s_tempValid[i]=false; /* keep last value to show on dashboard */ }
     }
     equithermRecompute();
+    equithermControlTick(nowMs);
     if (nowMs - lastTickMs < 250) {
         // still enforce TUV output frequently (no flicker)
         applyTuvRequest();
@@ -671,7 +1002,8 @@ void logicOnInputChanged(InputId id, bool newState) {
 //
 void logicApplyConfig(const String& json) {
     // config.json může být větší (popisy režimů, jména, MQTT, mapování...)
-    DynamicJsonDocument doc(12288);
+    // Konfigurace se časem rozrůstá; větší buffer = robustnější aplikace konfigurace.
+    DynamicJsonDocument doc(32768);
     DeserializationError err = deserializeJson(doc, json);
     if (err) {
         Serial.print(F("[LOGIC] Config JSON parse error: "));
@@ -692,6 +1024,25 @@ void logicApplyConfig(const String& json) {
     }
 
     // reset templates/sensors
+    // Pozn.: při změně konfigurace 3c ventilů dříve docházelo k resetu
+    // odhadované polohy na default, i když fyzicky ventil zůstal jinde.
+    // Proto si před resetem uložíme odhad polohy a po opětovném nastavení
+    // stejného master relé ji obnovíme.
+    struct ValveSnapshot {
+        bool valid = false;
+        bool invertDir = false;
+        uint8_t posPct = 0;
+    } snap[RELAY_COUNT];
+
+    const uint32_t nowMsSnap = millis();
+    for (uint8_t i=0; i<RELAY_COUNT; i++) {
+        if (s_valves[i].configured) {
+            snap[i].valid = true;
+            snap[i].invertDir = s_valves[i].invertDir;
+            snap[i].posPct = valveComputePosPct(s_valves[i], nowMsSnap);
+        }
+    }
+
     valveResetAll();
 
     // inputActiveLevels -> ConfigStore (pokud existuje)
@@ -759,24 +1110,60 @@ void logicApplyConfig(const String& json) {
                 JsonObject params = oo["params"].as<JsonObject>();
 
                 if (role == "valve_3way_2rel") {
-                    if (i >= RELAY_COUNT-1) continue; // potřebuje peer (i+1)
+                    // peer relé (1-based v UI), default je i+2 = "další relé"
+                    uint8_t peerRel = (uint8_t)(params["peerRel"] | 0);
+                    if (peerRel == 0) {
+                        // legacy config key
+                        peerRel = (uint8_t)(params["partnerRelay"] | (int)(i+2));
+                    }
+                    const int peer0 = (int)peerRel - 1;
+                    if (peer0 < 0 || peer0 >= RELAY_COUNT || peer0 == (int)i) continue;
+
+                    // Pokud už je relé použité jako peer jiné instance, vynecháme.
+                    if (s_valvePeerOf[peer0] >= 0) continue;
+                    // A nechceme, aby peer byl zároveň master jiného ventilu.
+                    if (s_valves[peer0].configured) continue;
 
                     Valve3WayState &v = s_valves[i];
                     v.configured = true;
                     v.relayA = i;
-                    v.relayB = (uint8_t)(i+1);
+                    v.relayB = (uint8_t)peer0;
                     v.travelMs = (uint32_t)((float)(params["travelTime"] | 6.0f) * 1000.0f);
                     v.pulseMs  = (uint32_t)((float)(params["pulseTime"]  | 0.8f) * 1000.0f);
                     v.guardMs  = (uint32_t)((float)(params["guardTime"]  | 0.3f) * 1000.0f);
+                    // Bezpečnostní / ochranná perioda mezi přestaveními (default 30s)
+                    v.minSwitchMs = (uint32_t)((float)(params["minSwitchS"] | 30.0f) * 1000.0f);
+                    if (v.minSwitchMs > 3600000UL) v.minSwitchMs = 3600000UL;
+                    v.lastCmdMs = 0;
+                    v.hasPending = false;
                     v.invertDir = (bool)(params["invertDir"] | false);
                     const String defPos = String((const char*)(params["defaultPos"] | "A"));
                     v.defaultB = (defPos.equalsIgnoreCase("B"));
-                    v.currentB = v.defaultB;
+
+                    // Historická kompatibilita: invertDir obrací smysl A/B
+                    bool initB = v.invertDir ? !v.defaultB : v.defaultB;
+                    uint8_t initPct = initB ? 100 : 0;
+
+                    // Obnova odhadované polohy po změně konfigurace
+                    if (snap[i].valid) {
+                        uint8_t savedPct = snap[i].posPct;
+                        if (snap[i].invertDir != v.invertDir) savedPct = (uint8_t)(100 - savedPct);
+                        initPct = savedPct;
+                    }
+
+                    v.posPct = initPct;
+                    v.startPct = initPct;
+                    v.targetPct = initPct;
+                    v.currentB = (initPct >= 50);
+                    v.pendingTargetPct = initPct;
+                    v.hasPending = false;
+
                     v.moving = false;
+                    v.moveStartMs = 0;
                     v.moveEndMs = 0;
                     v.guardEndMs = 0;
 
-                    s_valvePeerOf[i+1] = (int8_t)i;
+                    s_valvePeerOf[peer0] = (int8_t)i;
 
                     // jistota: peer relé vypnout
                     relaySet(static_cast<RelayId>(v.relayA), false);
@@ -786,20 +1173,52 @@ void logicApplyConfig(const String& json) {
         }
     }
 
+
     // ---------------- Equitherm konfigurace ----------------
     JsonObject eq = doc["equitherm"].as<JsonObject>();
     if (!eq.isNull()) {
         s_eqEnabled = (bool)(eq["enabled"] | false);
 
+        // defaults
+        s_eqOutdoorCfg = EqSourceCfg{};
+        s_eqFlowCfg    = EqSourceCfg{};
+
+        auto parseSrc = [](JsonObject o, EqSourceCfg& dst){
+            if (o.isNull()) return;
+            dst.source = String((const char*)(o["source"] | dst.source.c_str()));
+            dst.gpio   = (int)(o["gpio"] | dst.gpio);
+            dst.romHex = String((const char*)(o["rom"] | o["addr"] | dst.romHex.c_str()));
+            dst.topic  = String((const char*)(o["topic"] | dst.topic.c_str()));
+            dst.jsonKey = String((const char*)(o["jsonKey"] | o["key"] | o["field"] | dst.jsonKey.c_str()));
+            dst.bleId  = String((const char*)(o["bleId"] | o["id"] | dst.bleId.c_str()));
+        };
+
         JsonObject outdoor = eq["outdoor"].as<JsonObject>();
-        if (!outdoor.isNull()) {
-            s_eqOutdoorSource = String((const char*)(outdoor["source"] | "none"));
-            s_eqOutdoorTopic  = String((const char*)(outdoor["topic"] | ""));
+        parseSrc(outdoor, s_eqOutdoorCfg);
+
+        JsonObject flow = eq["flow"].as<JsonObject>();
+        parseSrc(flow, s_eqFlowCfg);
+
+        // kompatibilita se staršími konfiguracemi (jen MQTT venek)
+        if (!s_eqOutdoorCfg.source.length()) s_eqOutdoorCfg.source = "none";
+        if (s_eqOutdoorCfg.source == "mqtt" && !s_eqOutdoorCfg.topic.length()) {
+            s_eqOutdoorCfg.topic = String((const char*)(outdoor["topic"] | ""));
         }
 
         s_eqMinFlow = (float)(eq["minFlow"] | s_eqMinFlow);
         s_eqMaxFlow = (float)(eq["maxFlow"] | s_eqMaxFlow);
 
+        // curve: slope/shift preferované (UI)
+        const bool hasSlope = eq.containsKey("slopeDay") || eq.containsKey("shiftDay") ||
+                              eq.containsKey("slopeNight") || eq.containsKey("shiftNight");
+        if (hasSlope) {
+            s_eqSlopeDay   = (float)(eq["slopeDay"]   | s_eqSlopeDay);
+            s_eqShiftDay   = (float)(eq["shiftDay"]   | s_eqShiftDay);
+            s_eqSlopeNight = (float)(eq["slopeNight"] | s_eqSlopeNight);
+            s_eqShiftNight = (float)(eq["shiftNight"] | s_eqShiftNight);
+        }
+
+        // refs fallback (legacy)
         JsonObject refs = eq["refs"].as<JsonObject>();
         if (!refs.isNull()) {
             JsonObject day = refs["day"].as<JsonObject>();
@@ -818,7 +1237,57 @@ void logicApplyConfig(const String& json) {
             }
         }
 
+        // pokud slope/shift není, dopočti z refs (aby i staré configy fungovaly stejně jako UI)
+        if (!hasSlope) {
+            auto derive = [](float tout1, float tflow1, float tout2, float tflow2, float &slopeOut, float &shiftOut){
+                const float a1 = 20.0f - tout1;
+                const float a2 = 20.0f - tout2;
+                const float den = (a1 - a2);
+                if (fabsf(den) < 0.0001f) return false;
+                slopeOut = (tflow1 - tflow2) / den;
+                shiftOut = tflow1 - a1 * slopeOut - 20.0f;
+                return isfinite(slopeOut) && isfinite(shiftOut);
+            };
+            (void)derive(s_eqHeatTout1, s_eqHeatTflow1, s_eqHeatTout2, s_eqHeatTflow2, s_eqSlopeDay, s_eqShiftDay);
+            (void)derive(s_eqNightTout1, s_eqNightTflow1, s_eqNightTout2, s_eqNightTflow2, s_eqSlopeNight, s_eqShiftNight);
+        }
+
+        // 3c ventil (master relé 1..8)
+        int master1 = 0;
+        JsonObject valve = eq["valve"].as<JsonObject>();
+        if (!valve.isNull()) master1 = (int)(valve["master"] | 0);
+        master1 = (int)(eq["valveMaster"] | master1); // kompatibilita
+        if (master1 >= 1 && master1 <= (int)RELAY_COUNT) s_eqValveMaster0 = (int8_t)(master1 - 1);
+        else s_eqValveMaster0 = -1;
+
+        // control params
+        JsonObject ctrl = eq["control"].as<JsonObject>();
+        if (!ctrl.isNull()) {
+            s_eqDeadbandC = (float)(ctrl["deadbandC"] | ctrl["deadband"] | s_eqDeadbandC);
+            s_eqStepPct   = (uint8_t)(ctrl["stepPct"] | ctrl["step"] | s_eqStepPct);
+            s_eqPeriodMs  = (uint32_t)(ctrl["periodMs"] | ctrl["period"] | s_eqPeriodMs);
+            s_eqMinPct    = (uint8_t)(ctrl["minPct"] | s_eqMinPct);
+            s_eqMaxPct    = (uint8_t)(ctrl["maxPct"] | s_eqMaxPct);
+        }
+
+        // clamp
+        if (s_eqStepPct < 1) s_eqStepPct = 1;
+        if (s_eqStepPct > 25) s_eqStepPct = 25;
+        if (!isfinite(s_eqDeadbandC) || s_eqDeadbandC < 0.0f) s_eqDeadbandC = 0.0f;
+        if (s_eqDeadbandC > 5.0f) s_eqDeadbandC = 5.0f;
+        if (s_eqPeriodMs < 500) s_eqPeriodMs = 500;
+        if (s_eqPeriodMs > 600000) s_eqPeriodMs = 600000;
+        if (s_eqMinPct > 100) s_eqMinPct = 100;
+        if (s_eqMaxPct > 100) s_eqMaxPct = 100;
+        if (s_eqMinPct > s_eqMaxPct) { uint8_t t=s_eqMinPct; s_eqMinPct=s_eqMaxPct; s_eqMaxPct=t; }
+
+        // pokud vybraný ventil není nakonfigurovaný jako 3c master, ignoruj
+        if (s_eqValveMaster0 >= 0 && !isValveMaster((uint8_t)s_eqValveMaster0)) s_eqValveMaster0 = -1;
+
         equithermRecompute();
+    } else {
+        s_eqEnabled = false;
+        s_eqValveMaster0 = -1;
     }
 // relayMap
     JsonArray rm = doc["relayMap"].as<JsonArray>();
@@ -1067,10 +1536,49 @@ bool logicGetValveUiStatus(uint8_t relay1based, ValveUiStatus& out){
     const Valve3WayState &v = s_valves[r0];
 
     out.master = relay1based;
-    const int8_t peer0 = s_valvePeerOf[r0];
-    out.peer = (peer0 >= 0) ? (uint8_t)(peer0 + 1) : 0;
+    out.peer   = (v.relayB < RELAY_COUNT) ? (uint8_t)(v.relayB + 1) : 0;
     out.posPct = v.posPct;
     out.moving = v.moving;
-    out.targetB = v.currentB;
+
+    out.targetPct = v.targetPct;
+    out.targetB   = (v.targetPct >= 50); // legacy (pro starší UI)
     return true;
+}
+
+// MQTT: seznam topiců, které je potřeba odebírat (např. Ekviterm zdroje)
+uint8_t logicGetMqttSubscribeTopics(String* outTopics, uint8_t maxTopics) {
+    uint8_t n = 0;
+
+    auto add = [&](const String& t){
+        if (!t.length()) return;
+        // dedup
+        for (uint8_t i = 0; i < n; i++) {
+            if (outTopics && outTopics[i] == t) return;
+        }
+        if (outTopics && n < maxTopics) outTopics[n] = t;
+        n++;
+    };
+
+    // Ekviterm topicy
+    if (s_eqEnabled) {
+        if (s_eqOutdoorCfg.source == "mqtt") add(s_eqOutdoorCfg.topic);
+        if (s_eqFlowCfg.source == "mqtt") add(s_eqFlowCfg.topic);
+    }
+
+    // MQTT teploměry z konfigurace (záložka "Teploměry")
+    {
+        // pokud outTopics==nullptr, funkce stále správně vrací počet
+        String tmp[2];
+        uint8_t cnt = thermometersGetMqttSubscribeTopics(outTopics ? tmp : nullptr, 2);
+        if (!outTopics) {
+            n += cnt;
+        } else {
+            // add() řeší dedup
+            for (uint8_t i = 0; i < cnt && i < 2; i++) add(tmp[i]);
+        }
+    }
+
+    // Pokud outTopics==nullptr, počítáme jen počet
+    if (!outTopics) return n;
+    return (n > maxTopics) ? maxTopics : n;
 }

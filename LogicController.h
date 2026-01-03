@@ -32,8 +32,21 @@ struct EquithermStatus {
     bool  enabled = false;
     bool  active  = false;
     bool  night   = false;
+
+    // Sources + measured temps
     float outdoorC = NAN;
-    float targetFlowC = NAN;
+    float flowC    = NAN;     // teplota otopné vody / okruhu (feedback)
+    float targetFlowC = NAN;  // požadovaná teplota podle křivky
+
+    // Control (mixing valve)
+    uint8_t valveMaster = 0;      // 1..8, 0 = none
+    uint8_t valvePosPct = 0;      // 0..100 (odhad pozice)
+    uint8_t valveTargetPct = 0;   // 0..100 (poslední požadavek)
+    bool    valveMoving = false;
+    uint32_t lastAdjustMs = 0;    // millis() poslední korekce (0 = nikdy)
+
+    // Optional diagnostic
+    String reason = "";
 };
 EquithermStatus logicGetEquithermStatus();
 String logicGetEquithermReason();
@@ -87,12 +100,16 @@ bool logicGetAutoDefaultOffUnmapped();
 
 // Trojcestný ventil – stav pro dashboard (V2)
 struct ValveUiStatus {
-    uint8_t master = 0;  // 1..8
-    uint8_t peer = 0;    // 1..8 (0 = none)
-    uint8_t posPct = 0;  // 0..100
+    uint8_t master = 0;     // 1..8
+    uint8_t peer = 0;       // 1..8 (0 = none)
+    uint8_t posPct = 0;     // 0..100
     bool moving = false;
-    bool targetB = false;
+    bool targetB = false;   // legacy (A/B)
+    uint8_t targetPct = 0;  // 0..100 (pokud firmware řídí procenty)
 };
 
 bool logicGetValveUiStatus(uint8_t relay1based, ValveUiStatus& out);
 
+// MQTT: seznam topiců, které je potřeba odebírat (např. Ekviterm zdroje)
+// outTopics může být nullptr pro zjištění počtu.
+uint8_t logicGetMqttSubscribeTopics(String* outTopics, uint8_t maxTopics);
