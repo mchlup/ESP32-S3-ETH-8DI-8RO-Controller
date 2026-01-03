@@ -703,10 +703,18 @@ static uint32_t minuteKey(const struct tm &t) {
     return (y*100000000UL) + (m*1000000UL) + (d*10000UL) + (hh*100UL) + mm;
 }
 
+static bool isTuvDemandConfigured() {
+    return (s_tuvDemandInput >= 0 && s_tuvDemandInput < (int8_t)INPUT_COUNT);
+}
+
+static bool isTuvEnabledEffective() {
+    const bool demandOk = isTuvDemandConfigured() ? s_tuvDemandActive : true;
+    return (s_tuvScheduleEnabled && demandOk);
+}
+
 static void applyTuvRequest() {
     if (s_tuvRequestRelay < 0 || s_tuvRequestRelay >= (int8_t)RELAY_COUNT) return;
-    bool want = (s_tuvScheduleEnabled || s_tuvDemandActive);
-    relaySet(static_cast<RelayId>(s_tuvRequestRelay), want);
+    relaySet(static_cast<RelayId>(s_tuvRequestRelay), isTuvEnabledEffective());
 }
 
 static uint8_t clampPctInt(int v) {
@@ -732,7 +740,7 @@ static void applyTuvModeValves(uint32_t nowMs) {
 }
 
 static void updateTuvModeState(uint32_t nowMs) {
-    s_tuvModeActive = (s_tuvScheduleEnabled || s_tuvDemandActive);
+    s_tuvModeActive = isTuvEnabledEffective();
     applyTuvModeValves(nowMs);
 }
 
@@ -793,7 +801,7 @@ AutoStatus logicGetAutoStatus() {
 }
 
 bool logicGetTuvEnabled() {
-    return (s_tuvScheduleEnabled || s_tuvDemandActive);
+    return isTuvEnabledEffective();
 }
 
 bool logicGetNightMode() {
@@ -802,7 +810,7 @@ bool logicGetNightMode() {
 
 TuvStatus logicGetTuvStatus() {
     TuvStatus st;
-    st.enabled = (s_tuvScheduleEnabled || s_tuvDemandActive);
+    st.enabled = isTuvEnabledEffective();
     st.scheduleEnabled = s_tuvScheduleEnabled;
     st.demandActive = s_tuvDemandActive;
     st.modeActive = s_tuvModeActive;
@@ -1475,6 +1483,10 @@ void logicApplyConfig(const String& json) {
     s_tuvValveMaster0 = -1;
     s_tuvValveTargetPct = 0;
     s_tuvEqValveTargetPct = 0;
+    s_tuvScheduleEnabled = false;
+    s_tuvDemandActive = false;
+    s_tuvModeActive = false;
+    s_tuvLastValveCmdMs = 0;
 
     JsonObject tuv = doc["tuv"].as<JsonObject>();
     if (!tuv.isNull()) {
@@ -1502,6 +1514,13 @@ void logicApplyConfig(const String& json) {
         s_tuvEqValveTargetPct = clampPctInt((int)(doc["tuvEqValveTargetPct"] | doc["tuv_eq_valve_target_pct"] | s_tuvEqValveTargetPct));
     }
     if (s_tuvValveMaster0 >= 0 && !isValveMaster((uint8_t)s_tuvValveMaster0)) s_tuvValveMaster0 = -1;
+    if (isTuvDemandConfigured()) {
+        s_tuvDemandActive = inputGetState(static_cast<InputId>(s_tuvDemandInput));
+    } else {
+        s_tuvDemandActive = false;
+    }
+    updateTuvModeState(millis());
+    applyTuvRequest();
 
     // --- schedules (UI stores cfg.schedules[]) ---
     s_scheduleCount = 0;

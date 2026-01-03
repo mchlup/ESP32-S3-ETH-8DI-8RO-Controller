@@ -100,7 +100,7 @@ bool logicGetAutoDefaultOffUnmapped();
 
 // TUV status (pro dashboard / UI)
 struct TuvStatus {
-    bool enabled = false;        // schedule enabled OR demand active
+    bool enabled = false;        // schedule enabled AND (demand active if demand input configured)
     bool scheduleEnabled = false;
     bool demandActive = false;
     bool modeActive = false;     // TUV režim aktivní (přepnutí ventilu)

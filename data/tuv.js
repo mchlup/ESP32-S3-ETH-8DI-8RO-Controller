@@ -67,14 +67,29 @@
 
   function updateValveOptions(dash, cfg, keep) {
     const opts = [{ value: "0", label: "Nepoužívat" }];
+    const seen = new Set();
+    const relayNames = Array.isArray(cfg?.relayNames) ? cfg.relayNames : [];
+
+    const addOption = (master, peer) => {
+      const m = Number(master);
+      if (!Number.isFinite(m) || m < 1 || m > 8 || seen.has(m)) return;
+      const rawName = String(relayNames[m - 1] || "").trim();
+      const base = rawName || `Ventil ${m}`;
+      const peerTxt = (peer && Number.isFinite(Number(peer))) ? ` / peer ${peer}` : "";
+      opts.push({ value: String(m), label: `${base} (master ${m}${peerTxt})` });
+      seen.add(m);
+    };
+
     const valves = (dash && Array.isArray(dash.valves)) ? dash.valves : [];
-    for (const v of valves) {
-      if (!v || typeof v.master !== "number") continue;
-      const m = v.master;
-      const label = v.label ? String(v.label) : `Ventil ${m}`;
-      const peer = (typeof v.peer === "number" && v.peer) ? ` / peer ${v.peer}` : "";
-      opts.push({ value: String(m), label: `${label} (master ${m}${peer})` });
-    }
+    for (const v of valves) addOption(v?.master, v?.peer);
+
+    const outs = Array.isArray(cfg?.iofunc?.outputs) ? cfg.iofunc.outputs : [];
+    outs.forEach((o, idx) => {
+      if (String(o?.role || "") !== "valve_3way_2rel") return;
+      const params = (o && typeof o.params === "object") ? o.params : {};
+      const peer = params.peerRel ?? params.partnerRelay;
+      addOption(idx + 1, peer);
+    });
 
     const cur = cfg?.tuv?.valveMaster || 0;
     if (cur && !opts.some((o) => o.value === String(cur))) {

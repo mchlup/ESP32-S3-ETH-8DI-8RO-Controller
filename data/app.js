@@ -163,7 +163,7 @@
     }
     if (typeof tuv.modeActive !== "undefined") {
       if (tuv.modeActive) tuvHint = " • TUV: aktivní";
-      else if (tuv.enabled) tuvHint = " • TUV: čeká";
+      else if (tuv.scheduleEnabled) tuvHint = " • TUV: čeká";
     }
     $("#topHint").textContent = `System: ${sys} • Control: ${ctrl}${eqHint}${tuvHint}`;
   }
@@ -338,6 +338,8 @@ for (const s of [e.outdoor, e.flow]) {
 // Valve (3c)
 e.valve = e.valve || {};
 e.valve.master = (typeof e.valve.master === "number") ? e.valve.master : 0; // 0 = none
+const legacyEqValve = Number.isFinite(Number(e.valveMaster)) ? Number(e.valveMaster) : 0;
+if (!e.valve.master && legacyEqValve) e.valve.master = legacyEqValve;
 
 // Control parameters
 e.control = e.control || {};
@@ -411,6 +413,9 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     cfg.tuv.enabled = !!cfg.tuv.enabled;
     cfg.tuv.demandInput = Number.isFinite(Number(cfg.tuv.demandInput)) ? Number(cfg.tuv.demandInput) : 0; // 1..8
     cfg.tuv.requestRelay = Number.isFinite(Number(cfg.tuv.requestRelay)) ? Number(cfg.tuv.requestRelay) : 0; // 1..8
+    const legacyTuvRelay = Number.isFinite(Number(cfg.tuv.relay)) ? Number(cfg.tuv.relay) : 0;
+    if (!cfg.tuv.requestRelay && legacyTuvRelay) cfg.tuv.requestRelay = legacyTuvRelay;
+    cfg.tuv.relay = cfg.tuv.requestRelay;
     cfg.tuv.eqValveTargetPct = Number.isFinite(Number(cfg.tuv.eqValveTargetPct)) ? Number(cfg.tuv.eqValveTargetPct) : 0;
     cfg.tuv.valveMaster = Number.isFinite(Number(cfg.tuv.valveMaster)) ? Number(cfg.tuv.valveMaster) : 0;
     cfg.tuv.valveTargetPct = Number.isFinite(Number(cfg.tuv.valveTargetPct)) ? Number(cfg.tuv.valveTargetPct) : 0;
