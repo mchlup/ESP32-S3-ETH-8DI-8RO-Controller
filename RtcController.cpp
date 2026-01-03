@@ -1,5 +1,6 @@
 #include "RtcController.h"
 #include "config_pins.h"
+#include "I2cBus.h"
 
 #include <Wire.h>
 #include <time.h>
@@ -41,8 +42,8 @@ static bool i2cWrite(uint8_t reg, const uint8_t* buf, size_t len) {
 }
 
 void rtcInit() {
-  // Ensure Wire is up (RelayController also calls Wire.begin with same pins)
-  Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN);
+  // I2C init je centralizovaný (jeden begin + nastavení frekvence).
+  i2cInit();
 
   Wire.beginTransmission(RTC_ADDR);
   s_present = (Wire.endTransmission() == 0);

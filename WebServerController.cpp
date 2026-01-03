@@ -40,8 +40,10 @@ static void applyAllConfig(const String& json){
     dallasApplyConfig(json);
     thermometersApplyConfig(json);
     openthermApplyConfig(json);
-    mqttApplyConfig(json);
+    // Logika může doplnit/změnit seznam MQTT topiců (např. ekviterm + MQTT teploměry).
+    // Proto aplikuj logiku dříve a MQTT až poté (aby subscribe odpovídal nové konfiguraci).
     logicApplyConfig(json);
+    mqttApplyConfig(json);
 }
 
 
@@ -131,27 +133,80 @@ static bool handleFileUploadWrite() {
 
 // ===== Konfigurace (config.json) =====
 
+static bool loadFileToString(const char* path, String& out) {
+    File f = LittleFS.open(path, "r");
+    if (!f) return false;
+
+    const size_t sz = (size_t)f.size();
+    out = "";
+    out.reserve(sz + 1);
+
+    char buf[512];
+    while (f.available()) {
+        const size_t n = f.readBytes(buf, sizeof(buf));
+        if (n == 0) break;
+        out.concat(buf, (unsigned int)n);
+    }
+
+    f.close();
+    return true;
+}
+
+static bool isValidJsonObject(const String& json) {
+    // Validace konfigurace – musí to být JSON objekt.
+    // Pozor: pro jistotu necháváme větší buffer, aby validní config nebyl odmítnut jen kvůli velikosti.
+    DynamicJsonDocument doc(32768);
+    DeserializationError err = deserializeJson(doc, json);
+    return (!err) && doc.is<JsonObject>();
+}
+
 static void loadConfigFromFS() {
-    if (!LittleFS.exists("/config.json")) {
+    const char* cfgPath = "/config.json";
+    const char* bakPath = "/config.json.bak";
+
+    if (!LittleFS.exists(cfgPath)) {
         g_configJson = "{}";
         Serial.println(F("[CFG] No config.json, using {}"));
         applyAllConfig(g_configJson);
         return;
     }
 
-    File f = LittleFS.open("/config.json", "r");
-    if (!f) {
+    String cfg;
+    if (!loadFileToString(cfgPath, cfg)) {
         g_configJson = "{}";
         Serial.println(F("[CFG] config.json open failed, using {}"));
         applyAllConfig(g_configJson);
         return;
     }
 
-    g_configJson = "";
-    while (f.available()) g_configJson += (char)f.read();
-    f.close();
+    cfg.trim();
+    if (!cfg.length()) cfg = "{}";
 
-    if (!g_configJson.length()) g_configJson = "{}";
+    // Pokud je config poškozený, zkusíme obnovu ze zálohy.
+    if (!isValidJsonObject(cfg)) {
+        Serial.println(F("[CFG] config.json invalid, trying .bak"));
+        if (LittleFS.exists(bakPath)) {
+            String bak;
+            if (loadFileToString(bakPath, bak)) {
+                bak.trim();
+                if (bak.length() && isValidJsonObject(bak)) {
+                    cfg = bak;
+                    Serial.println(F("[CFG] Restored config from /config.json.bak"));
+                } else {
+                    Serial.println(F("[CFG] config.json.bak invalid, using {}"));
+                    cfg = "{}";
+                }
+            } else {
+                Serial.println(F("[CFG] config.json.bak read failed, using {}"));
+                cfg = "{}";
+            }
+        } else {
+            Serial.println(F("[CFG] No config.json.bak, using {}"));
+            cfg = "{}";
+        }
+    }
+
+    g_configJson = cfg;
 
     applyAllConfig(g_configJson);
 
@@ -161,9 +216,7 @@ static void loadConfigFromFS() {
 
 // ===== API dash (Dashboard V2) =====
 static void handleApiDash() {
-        // Config může růst (pravidla, teploměry, BLE, ...). Pro validaci POST /api/config
-        // používáme větší JSON buffer, aby se konfigurace neodmítala jen kvůli velikosti.
-        DynamicJsonDocument doc(32768);
+    DynamicJsonDocument doc(32768);
 
     JsonArray temps = doc.createNestedArray("temps");
     JsonArray tempsValid = doc.createNestedArray("tempsValid");
@@ -200,8 +253,6 @@ static void handleApiDash() {
         }
     }
 
-
-    
     // --- BLE temps (např. meteostanice) ---
     {
         JsonArray bleTemps = doc.createNestedArray("bleTemps");
@@ -254,7 +305,7 @@ static void handleApiDash() {
         }
     }
 
-JsonArray valves = doc.createNestedArray("valves");
+    JsonArray valves = doc.createNestedArray("valves");
     for (uint8_t r=1;r<=8;r++){
         ValveUiStatus vs;
         if (!logicGetValveUiStatus(r, vs)) continue;
@@ -592,7 +643,7 @@ void handleApiConfigPost() {
     filter["autoDefaultOffUnmapped"] = true;
     filter["auto_default_off_unmapped"] = true;
 
-    StaticJsonDocument<2048> doc;
+    DynamicJsonDocument doc(16384);
     DeserializationError err = deserializeJson(doc, body, DeserializationOption::Filter(filter));
     if (err) {
         server.send(400, "application/json", "{\"error\":\"invalid json\"}");
@@ -747,13 +798,6 @@ void handleApiModeCtrlPost() {
                 server.send(400, "application/json", "{\"error\":\"relay must be 1-8\"}");
                 return;
             }
-    if (action == "relay_raw") {
-        const uint8_t relay = (uint8_t)(doc["relay"] | 0);
-        const bool on = (bool)(doc["on"] | false);
-        logicSetRelayRaw(relay, on);
-        server.send(200, "application/json", "{\"ok\":true}");
-        return;
-    }
 
             // Bezpečné chování: ruční zásah => MANUAL
             if (logicGetControlMode() == ControlMode::AUTO) {
@@ -769,16 +813,29 @@ void handleApiModeCtrlPost() {
             return;
         }
 
+        if (action == "relay_raw") {
+            const uint8_t relay = (uint8_t)(doc["relay"] | 0); // 1..8
+            const bool on = (bool)(doc["on"] | false);
+            if (relay < 1 || relay > RELAY_COUNT) {
+                server.send(400, "application/json", "{\"error\":\"relay must be 1-8\"}");
+                return;
+            }
+            logicSetRelayRaw(relay, on);
+            server.send(200, "application/json", "{\"ok\":true}");
+            return;
+        }
+
         if (action == "mqtt_discovery") {
             mqttRepublishDiscovery();
             server.send(200, "application/json", "{\"status\":\"ok\"}");
             return;
         }
-if (action == "auto_recompute") {
-    logicRecomputeFromInputs();
-    handleApiModeCtrlGet();
-    return;
-}
+
+        if (action == "auto_recompute") {
+            logicRecomputeFromInputs();
+            handleApiModeCtrlGet();
+            return;
+        }
 
         server.send(400, "application/json", "{\"error\":\"unknown action\"}");
         return;
@@ -1088,7 +1145,6 @@ void webserverInit() {
     server.on("/api/time", HTTP_GET, handleApiTime);
     server.on("/api/caps", HTTP_GET, handleApiCaps);
 
-
     server.on("/api/relay", HTTP_GET, handleApiRelay);
 
     server.on("/api/config", HTTP_GET, handleApiConfigGet);
@@ -1105,7 +1161,6 @@ void webserverInit() {
     server.on("/api/ble/pair", HTTP_POST, handleApiBlePairPost);
     server.on("/api/ble/pair/stop", HTTP_POST, handleApiBleStopPairPost);
     server.on("/api/ble/remove", HTTP_POST, handleApiBleRemovePost);
-
 
     server.on("/api/mode_ctrl", HTTP_GET, handleApiModeCtrlGet);
     server.on("/api/mode_ctrl", HTTP_POST, handleApiModeCtrlPost);

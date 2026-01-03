@@ -459,40 +459,40 @@ void mqttLoop() {
     mqttClient.loop();
 
     uint32_t now = millis();
-    if ((now - lastPublishMs) < 200) {
-        // publish změn (rychlé)
-    }
-    lastPublishMs = now;
+    // Detekce/publikace změn nechceme spouštět zbytečně často.
+    // MQTT client.loop() ale musí běžet stále.
+    const bool allowFastPublish = (now - lastPublishMs) >= 200;
+    if (allowFastPublish) {
+        lastPublishMs = now;
 
-    // změny relé
-    for (uint8_t i = 0; i < RELAY_COUNT; i++) {
-        bool s = relayGetState(static_cast<RelayId>(i));
-        if (s != lastRelayState[i]) {
-            lastRelayState[i] = s;
-            publishRelayState(i);
+        // změny relé
+        for (uint8_t i = 0; i < RELAY_COUNT; i++) {
+            bool s = relayGetState(static_cast<RelayId>(i));
+            if (s != lastRelayState[i]) {
+                lastRelayState[i] = s;
+                publishRelayState(i);
+            }
         }
-    }
-
     // změny vstupů
-    for (uint8_t i = 0; i < INPUT_COUNT; i++) {
-        bool s = inputGetState(static_cast<InputId>(i));
-        if (s != lastInputState[i]) {
-            lastInputState[i] = s;
-            publishInputState(i);
+        for (uint8_t i = 0; i < INPUT_COUNT; i++) {
+            bool s = inputGetState(static_cast<InputId>(i));
+            if (s != lastInputState[i]) {
+                lastInputState[i] = s;
+                publishInputState(i);
+            }
         }
-    }
-
     // změny módů
-    SystemMode m = logicGetMode();
-    if (m != lastMode) {
-        lastMode = m;
-        publishModeState();
-    }
+        SystemMode m = logicGetMode();
+        if (m != lastMode) {
+            lastMode = m;
+            publishModeState();
+        }
 
-    ControlMode cm = logicGetControlMode();
-    if (cm != lastControlMode) {
-        lastControlMode = cm;
-        publishControlModeState();
+     ControlMode cm = logicGetControlMode();
+        if (cm != lastControlMode) {
+            lastControlMode = cm;
+            publishControlModeState();
+        }
     }
 
     // full state periodicky (pro jistotu)

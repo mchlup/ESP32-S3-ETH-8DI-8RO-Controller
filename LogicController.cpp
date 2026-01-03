@@ -956,16 +956,18 @@ bool logicSetManualModeByName(const String& name) {
 }
 
 void logicInit() {
-    // Výchozí stav po startu: MANUAL, režim neřídí vstupy
+    // Výchozí stav po startu: AUTO (řídí vstupy/relayMap, pokud nejsou aktivní pravidla)
     currentControlMode = ControlMode::AUTO;
     manualMode         = SystemMode::MODE1;
-    currentMode        = SystemMode::MODE1;
+    currentMode        = manualMode;
 
     s_autoStatus = AutoStatus{ false, 0, currentMode, false, false };
 
-    updateRelaysForMode(currentMode);
+    // V AUTO rovnou dopočítej výstupy podle vstupů (ať po bootu odpovídá skutečnému stavu).
+    // Rule Engine se inicializuje až po logicInit(), takže zde poběží legacy AUTO.
+    logicRecomputeFromInputs();
 
-    Serial.print(F("[LOGIC] Init, control=MANUAL, mode="));
+    Serial.print(F("[LOGIC] Init, control=AUTO, mode="));
     Serial.println(logicModeToString(currentMode));
 }
 
