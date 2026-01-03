@@ -299,6 +299,20 @@ details.fold > summary::-webkit-details-marker{ opacity: .65; }
 #cfg-ekviterm .row3 > *,
 #cfg-ekviterm .row4 > *{ min-width: 0; }
 
+/* ---------- TUV konfigurace ---------- */
+#cfg-tuv .ioGrid{ grid-template-columns: 1fr !important; }
+#cfg-tuv .ioRow{
+  border:1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px;
+  background: rgba(255,255,255,.02);
+  min-width: 0;
+}
+#cfg-tuv .ioLabel{ font-weight: 720; margin-bottom: 8px; }
+#cfg-tuv .ioValue{ min-width: 0; }
+#cfg-tuv .row2{ min-width: 0; }
+#cfg-tuv .row2 > *{ min-width: 0; }
+
 
 .io{
   border:1px solid var(--line);

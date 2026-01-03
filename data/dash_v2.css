@@ -87,6 +87,7 @@
   grid-template-columns: 1.55fr .85fr;
   grid-template-areas:
     "equitherm modes"
+    "tuv modes"
     "relays inputs"
     "valves temps";
   gap: 14px;
@@ -94,6 +95,7 @@
 
 /* Při skrytí karet (display:none) se layout automaticky zabalí */
 #page-dash #cardEquitherm{ grid-area: equitherm; }
+#page-dash #cardTuv{ grid-area: tuv; }
 #page-dash #cardModes{ grid-area: modes; }
 #page-dash #cardRelays{ grid-area: relays; }
 #page-dash #cardInputs{ grid-area: inputs; }
@@ -127,6 +129,7 @@
     grid-template-columns: 1fr;
     grid-template-areas:
       "equitherm"
+      "tuv"
       "modes"
       "relays"
       "inputs"

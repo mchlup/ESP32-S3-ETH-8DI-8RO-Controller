@@ -307,13 +307,15 @@
     if (src === "mqtt"){
       const idx = Number(role?.mqttIdx || role?.preset || 0);
       const mt = Array.isArray(dash.mqttTemps) ? dash.mqttTemps.find(x => Number(x.idx) === idx) : null;
-      if (mt && mt.valid && isFiniteNum(mt.valueC)) return { valid:true, tempC: mt.valueC, ageMs: mt.ageMs };
+      const val = (mt && typeof mt.tempC === "number") ? mt.tempC : (mt ? mt.valueC : NaN);
+      if (mt && mt.valid && isFiniteNum(val)) return { valid:true, tempC: val, ageMs: mt.ageMs };
       return { valid:false };
     }
     if (src === "ble"){
       const id = String(role?.bleId || role?.id || "").trim();
       const bt = Array.isArray(dash.bleTemps) ? dash.bleTemps.find(x => String(x.id||"") === id) : null;
-      if (bt && bt.valid && isFiniteNum(bt.valueC)) return { valid:true, tempC: bt.valueC, ageMs: bt.ageMs };
+      const val = (bt && typeof bt.tempC === "number") ? bt.tempC : (bt ? bt.valueC : NaN);
+      if (bt && bt.valid && isFiniteNum(val)) return { valid:true, tempC: val, ageMs: bt.ageMs };
       return { valid:false };
     }
     if (src && src.startsWith("temp")){
@@ -419,6 +421,7 @@
       const key = (row.querySelector("input.mqttKey")?.value || "").trim();
       cfg.thermometers.mqtt[idx] = { name, topic, jsonKey: key || "tempC" };
       App.setConfig?.(cfg);
+      renderTempRolesCfg();
       return;
     }
 
@@ -427,6 +430,7 @@
       const id = (row.querySelector("input.bleId")?.value || "").trim();
       cfg.thermometers.ble = { name: name || "BLE Meteo", id: id || "meteo.tempC" };
       App.setConfig?.(cfg);
+      renderTempRolesCfg();
       return;
     }
   }

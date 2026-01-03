@@ -28,6 +28,9 @@
         <button class="navItem" data-page="config" data-ctab="ekviterm">
           <span class="ico">📈</span><span>Ekviterm</span>
         </button>
+        <button class="navItem" data-page="config" data-ctab="tuv">
+          <span class="ico">♨</span><span>Ohřev TUV</span>
+        </button>
         <button class="navItem" data-page="mqtt">
           <span class="ico">⇄</span><span>MQTT / HA</span>
         </button>
@@ -78,6 +81,16 @@
                         </div>
                       </div>
                       <div class="ioGrid" id="eqDashGrid"></div>
+                    </div>
+
+          <div class="card" id="cardTuv" style="display:none">
+                      <div class="cardHead">
+                        <div>
+                          <div class="cardTitle">Ohřev TUV</div>
+                          <div class="muted">Stav režimu pro dohřev bojleru a přepínací ventily</div>
+                        </div>
+                      </div>
+                      <div class="ioGrid" id="tuvDashGrid"></div>
                     </div>
 
           <div class="card" id="cardModes">
@@ -178,6 +191,7 @@
           <button class="tab active" data-ctab="io">Vstupy & relé</button>
           <button class="tab" data-ctab="modes">Režimy</button>
           <button class="tab" data-ctab="ekviterm">Ekviterm</button>
+          <button class="tab" data-ctab="tuv">Ohřev TUV</button>
           <button class="tab" data-ctab="opentherm">OpenTherm</button>
           <button class="tab" data-ctab="iofun">Funkce I/O</button>
           <button class="tab" data-ctab="tempscfg">Teploměry</button>
@@ -641,6 +655,86 @@
           </div>
         </details>
 
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="tabPage" id="cfg-tuv">
+  <div class="grid2">
+    <div class="card">
+      <div class="cardHead">
+        <div>
+          <div class="cardTitle">Ohřev TUV</div>
+          <div class="cardSub">Režim pro dohřev bojleru: sepnutí výstupu + přepnutí ventilů</div>
+        </div>
+        <button class="btn" id="btnSaveTuv">Uložit</button>
+      </div>
+
+      <div class="ioGrid">
+        <div class="ioRow">
+          <div class="ioLabel">Povolit režim</div>
+          <div class="ioValue"><label class="switch"><input id="tuvEnabled" type="checkbox"><span class="slider"></span></label></div>
+        </div>
+
+        <div class="ioRow">
+          <div class="ioLabel">Požadavek (vstup)</div>
+          <div class="ioValue">
+            <select id="tuvDemandInput"></select>
+            <div class="hint mt4">Při změně stavu vstupu se aktivuje režim ohřevu TUV.</div>
+          </div>
+        </div>
+
+        <div class="ioRow">
+          <div class="ioLabel">Výstup požadavku</div>
+          <div class="ioValue">
+            <select id="tuvRequestRelay"></select>
+            <div class="hint mt4">Relé, které sepne požadavek na dohřev TUV (např. povolení kotle).</div>
+          </div>
+        </div>
+
+        <div class="ioRow">
+          <div class="ioLabel">Směšovací ventil (ekviterm)</div>
+          <div class="ioValue">
+            <div class="row2">
+              <div><label class="mini">Cílová poloha %</label><input id="tuvEqValveTargetPct" type="number" min="0" max="100" step="1"></div>
+            </div>
+            <div class="hint mt4">Použije se master ventil nastavený v ekvitermu. Výchozí poloha = 0 %.</div>
+          </div>
+        </div>
+
+        <div class="ioRow">
+          <div class="ioLabel">Přepínací ventil TUV</div>
+          <div class="ioValue">
+            <select id="tuvValveMaster"></select>
+            <div class="row2 mt8">
+              <div><label class="mini">Cílová poloha %</label><input id="tuvValveTargetPct" type="number" min="0" max="100" step="1"></div>
+            </div>
+            <div class="hint mt4">Ventil zkrátí okruh pouze přes bojler (akumulační nádrž se uzavře).</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="cardHead">
+        <div>
+          <div class="cardTitle">Stav a diagnostika</div>
+          <div class="muted">Rychlý přehled režimu a použitých ventilů</div>
+        </div>
+      </div>
+
+      <div class="ioGrid">
+        <div class="ioRow">
+          <div class="ioLabel">Stav režimu</div>
+          <div class="ioValue"><div id="tuvStatusBox" class="mono small"></div></div>
+        </div>
+        <div class="ioRow">
+          <div class="ioLabel">Poznámka</div>
+          <div class="ioValue">
+            <div class="hint">TUV režim má přednost před ekvitermem – při aktivaci nastaví ventily na požadované polohy.</div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -1220,6 +1314,7 @@
 
   <script src="/app.js?v=2"></script>
   <script src="/equitherm.js?v=3"></script>
+  <script src="/tuv.js?v=1"></script>
   <script src="/iofunc.js?v=3"></script>
   <script src="/temps_tab.js?v=1"></script>
   <script src="/opentherm.js?v=1"></script>

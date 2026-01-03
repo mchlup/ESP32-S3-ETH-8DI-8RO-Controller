@@ -101,6 +101,21 @@
     return v;
   }
 
+  function readNumber(value, fallback) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+  }
+  function readInt(value, fallback) {
+    const n = parseInt(value, 10);
+    return Number.isFinite(n) ? n : fallback;
+  }
+  function clampPct(value) {
+    const n = Number.isFinite(value) ? value : 0;
+    if (n < 0) return 0;
+    if (n > 100) return 100;
+    return n;
+  }
+
 
   function computeTargetFlow(tout, slope, shift, minFlow, maxFlow) {
     // stejný vzorec jako firmware/UI: Tflow = (20 - Tout) * slope + 20 + shift
@@ -627,35 +642,36 @@
     e.valve.master = Number.isFinite(vm) ? vm : 0;
 
     // curve
-    e.minFlow = parseFloat(el.minFlow.value);
-    e.maxFlow = parseFloat(el.maxFlow.value);
-    e.slopeDay = parseFloat(el.slopeDay.value);
-    e.shiftDay = parseFloat(el.shiftDay.value);
-    e.slopeNight = parseFloat(el.slopeNight.value);
-    e.shiftNight = parseFloat(el.shiftNight.value);
+    e.minFlow = readNumber(el.minFlow.value, e.minFlow ?? 25);
+    e.maxFlow = readNumber(el.maxFlow.value, e.maxFlow ?? 55);
+    e.slopeDay = readNumber(el.slopeDay.value, e.slopeDay ?? 1.0);
+    e.shiftDay = readNumber(el.shiftDay.value, e.shiftDay ?? 5.0);
+    e.slopeNight = readNumber(el.slopeNight.value, e.slopeNight ?? 1.0);
+    e.shiftNight = readNumber(el.shiftNight.value, e.shiftNight ?? 0.0);
 
     // control
     e.control = e.control || {};
-    e.control.deadbandC = parseFloat(el.deadbandC.value);
-    e.control.stepPct   = parseInt(el.stepPct.value, 10);
+    e.control.deadbandC = readNumber(el.deadbandC.value, e.control.deadbandC ?? 0.5);
+    e.control.stepPct   = clamp(readInt(el.stepPct.value, e.control.stepPct ?? 4), 1, 25);
     // Default: 30 s (anti-hunt). Clamp to >= 500 ms.
-    e.control.periodMs  = Math.max(500, (parseInt(el.periodS.value, 10) || 30) * 1000);
-    e.control.minPct    = parseInt(el.minPct.value, 10);
-    e.control.maxPct    = parseInt(el.maxPct.value, 10);
+    const periodS = readNumber(el.periodS.value, Math.round((e.control.periodMs ?? 30000) / 1000));
+    e.control.periodMs  = Math.max(500, Math.round(periodS * 1000));
+    e.control.minPct    = clampPct(readInt(el.minPct.value, e.control.minPct ?? 0));
+    e.control.maxPct    = clampPct(readInt(el.maxPct.value, e.control.maxPct ?? 100));
 
     // legacy refs
     e.refs = e.refs || {};
     e.refs.day = e.refs.day || {};
     e.refs.night = e.refs.night || {};
-    e.refs.day.tout1  = parseFloat(el.heatTout1.value);
-    e.refs.day.tflow1 = parseFloat(el.heatTflow1.value);
-    e.refs.day.tout2  = parseFloat(el.heatTout2.value);
-    e.refs.day.tflow2 = parseFloat(el.heatTflow2.value);
+    e.refs.day.tout1  = readNumber(el.heatTout1.value, e.refs.day.tout1 ?? -10);
+    e.refs.day.tflow1 = readNumber(el.heatTflow1.value, e.refs.day.tflow1 ?? 55);
+    e.refs.day.tout2  = readNumber(el.heatTout2.value, e.refs.day.tout2 ?? 15);
+    e.refs.day.tflow2 = readNumber(el.heatTflow2.value, e.refs.day.tflow2 ?? 30);
 
-    e.refs.night.tout1  = parseFloat(el.nightTout1.value);
-    e.refs.night.tflow1 = parseFloat(el.nightTflow1.value);
-    e.refs.night.tout2  = parseFloat(el.nightTout2.value);
-    e.refs.night.tflow2 = parseFloat(el.nightTflow2.value);
+    e.refs.night.tout1  = readNumber(el.nightTout1.value, e.refs.night.tout1 ?? -10);
+    e.refs.night.tflow1 = readNumber(el.nightTflow1.value, e.refs.night.tflow1 ?? 50);
+    e.refs.night.tout2  = readNumber(el.nightTout2.value, e.refs.night.tout2 ?? 15);
+    e.refs.night.tflow2 = readNumber(el.nightTflow2.value, e.refs.night.tflow2 ?? 25);
   }
 
   function updateValveOptions(dash, cfg, keep) {

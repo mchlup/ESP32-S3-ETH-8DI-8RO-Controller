@@ -322,6 +322,19 @@ static void relayApplyLogical(uint8_t r0, bool on){
             return; // nezasahovat
         }
     }
+    // TUV režim: chránit ekvitermní a TUV přepínací ventil před relayMap
+    if (s_tuvModeActive) {
+        auto isProtectedValveRelay = [&](int8_t master0) -> bool {
+            if (master0 < 0 || master0 >= (int8_t)RELAY_COUNT) return false;
+            const uint8_t m0 = (uint8_t)master0;
+            if (r0 == m0) return true;
+            if (isValvePeer(r0) && s_valvePeerOf[r0] == master0) return true;
+            return false;
+        };
+        if (isProtectedValveRelay(s_eqValveMaster0) || isProtectedValveRelay(s_tuvValveMaster0)) {
+            return;
+        }
+    }
 
     if (isValvePeer(r0)){
         // peer relé je řízené masterem, vynucujeme OFF
@@ -360,6 +373,11 @@ static int8_t s_tuvDemandInput = -1;  // 0..7 or -1
 static int8_t s_tuvRequestRelay = -1; // 0..7 or -1
 static bool s_tuvScheduleEnabled = false;
 static bool s_tuvDemandActive = false;
+static bool s_tuvModeActive = false;
+static int8_t s_tuvValveMaster0 = -1; // 0..7 or -1 (TUV přepínací ventil)
+static uint8_t s_tuvValveTargetPct = 0;
+static uint8_t s_tuvEqValveTargetPct = 0;
+static uint32_t s_tuvLastValveCmdMs = 0;
 static bool s_nightMode = false;
 
 // Equitherm konfigurace + stav
@@ -592,6 +610,12 @@ static void equithermRecompute(){
         s_eqStatus.valveMoving = v.moving;
     }
 
+    if (s_tuvModeActive) {
+        s_eqReason = "tuv mode";
+        s_eqStatus.reason = s_eqReason;
+        return;
+    }
+
     // If enabled, but not in AUTO, expose reason (řízení se aplikuje jen v AUTO)
     if (currentControlMode != ControlMode::AUTO) {
         s_eqReason = "needs AUTO";
@@ -618,6 +642,7 @@ static void equithermRecompute(){
 static void equithermControlTick(uint32_t nowMs){
     if (!s_eqEnabled) return;
     if (currentControlMode != ControlMode::AUTO) return;
+    if (s_tuvModeActive) return;
 
     // musí být spočtený target
     if (!s_eqStatus.active || !isfinite(s_eqStatus.targetFlowC)) return;
@@ -684,6 +709,32 @@ static void applyTuvRequest() {
     relaySet(static_cast<RelayId>(s_tuvRequestRelay), want);
 }
 
+static uint8_t clampPctInt(int v) {
+    if (v < 0) return 0;
+    if (v > 100) return 100;
+    return (uint8_t)v;
+}
+
+static void applyTuvModeValves(uint32_t nowMs) {
+    if (!s_tuvModeActive) return;
+    if (s_tuvLastValveCmdMs != 0 && (uint32_t)(nowMs - s_tuvLastValveCmdMs) < 500) return;
+
+    bool issued = false;
+    if (s_eqValveMaster0 >= 0 && s_eqValveMaster0 < (int8_t)RELAY_COUNT && isValveMaster((uint8_t)s_eqValveMaster0)) {
+        valveMoveToPct((uint8_t)s_eqValveMaster0, s_tuvEqValveTargetPct);
+        issued = true;
+    }
+    if (s_tuvValveMaster0 >= 0 && s_tuvValveMaster0 < (int8_t)RELAY_COUNT && isValveMaster((uint8_t)s_tuvValveMaster0)) {
+        valveMoveToPct((uint8_t)s_tuvValveMaster0, s_tuvValveTargetPct);
+        issued = true;
+    }
+    if (issued) s_tuvLastValveCmdMs = nowMs;
+}
+
+static void updateTuvModeState(uint32_t nowMs) {
+    s_tuvModeActive = (s_tuvScheduleEnabled || s_tuvDemandActive);
+    applyTuvModeValves(nowMs);
+}
 
 
 static const RelayProfile* profileForMode(SystemMode mode) {
@@ -747,6 +798,19 @@ bool logicGetTuvEnabled() {
 
 bool logicGetNightMode() {
     return s_nightMode;
+}
+
+TuvStatus logicGetTuvStatus() {
+    TuvStatus st;
+    st.enabled = (s_tuvScheduleEnabled || s_tuvDemandActive);
+    st.scheduleEnabled = s_tuvScheduleEnabled;
+    st.demandActive = s_tuvDemandActive;
+    st.modeActive = s_tuvModeActive;
+    st.eqValveMaster = (s_eqValveMaster0 >= 0) ? (uint8_t)(s_eqValveMaster0 + 1) : 0;
+    st.eqValveTargetPct = s_tuvEqValveTargetPct;
+    st.valveMaster = (s_tuvValveMaster0 >= 0) ? (uint8_t)(s_tuvValveMaster0 + 1) : 0;
+    st.valveTargetPct = s_tuvValveTargetPct;
+    return st;
 }
 
 
@@ -898,6 +962,7 @@ void logicUpdate() {
     }
     equithermRecompute();
     equithermControlTick(nowMs);
+    updateTuvModeState(nowMs);
     if (nowMs - lastTickMs < 250) {
         // still enforce TUV output frequently (no flicker)
         applyTuvRequest();
@@ -917,6 +982,7 @@ void logicUpdate() {
         } else {
             s_tuvDemandActive = false;
         }
+        updateTuvModeState(nowMs);
 
         for (uint8_t i=0;i<s_scheduleCount;i++) {
             ScheduleItem &s = s_schedules[i];
@@ -950,6 +1016,7 @@ void logicUpdate() {
 
                 case ScheduleKind::TUV_ENABLE:
                     s_tuvScheduleEnabled = s.enableValue;
+                    updateTuvModeState(nowMs);
                     Serial.printf("[SCHED] TUV -> %s\n", s_tuvScheduleEnabled ? "ON" : "OFF");
                     break;
 
@@ -966,6 +1033,7 @@ void logicUpdate() {
         } else {
             s_tuvDemandActive = false;
         }
+        updateTuvModeState(nowMs);
     }
 
     // Always enforce TUV request relay after mode/rules have run
@@ -978,6 +1046,7 @@ void logicOnInputChanged(InputId id, bool newState) {
     // TUV demand input (works in MANUAL/AUTO)
     if (s_tuvDemandInput >= 0 && id == static_cast<InputId>(s_tuvDemandInput)) {
         s_tuvDemandActive = inputGetState(id);
+        updateTuvModeState(millis());
         applyTuvRequest();
     }
 
@@ -1403,6 +1472,9 @@ void logicApplyConfig(const String& json) {
     // --- TUV config (Nest plan -> DI demand -> DO request) ---
     s_tuvDemandInput = -1;
     s_tuvRequestRelay = -1;
+    s_tuvValveMaster0 = -1;
+    s_tuvValveTargetPct = 0;
+    s_tuvEqValveTargetPct = 0;
 
     JsonObject tuv = doc["tuv"].as<JsonObject>();
     if (!tuv.isNull()) {
@@ -1411,6 +1483,11 @@ void logicApplyConfig(const String& json) {
         if (din >= 1 && din <= INPUT_COUNT) s_tuvDemandInput = (int8_t)(din - 1);
         if (rel >= 1 && rel <= RELAY_COUNT) s_tuvRequestRelay = (int8_t)(rel - 1);
         if (tuv.containsKey("enabled")) s_tuvScheduleEnabled = (bool)tuv["enabled"];
+
+        int valve1 = tuv["valveMaster"] | tuv["shortValveMaster"] | 0;
+        if (valve1 >= 1 && valve1 <= RELAY_COUNT) s_tuvValveMaster0 = (int8_t)(valve1 - 1);
+        s_tuvValveTargetPct = clampPctInt((int)(tuv["valveTargetPct"] | tuv["targetPct"] | s_tuvValveTargetPct));
+        s_tuvEqValveTargetPct = clampPctInt((int)(tuv["eqValveTargetPct"] | tuv["mixValveTargetPct"] | s_tuvEqValveTargetPct));
     } else {
         // legacy keys
         int din = doc["tuvDemandInput"] | doc["tuv_demand_input"] | 0;
@@ -1418,7 +1495,13 @@ void logicApplyConfig(const String& json) {
         if (din >= 1 && din <= INPUT_COUNT) s_tuvDemandInput = (int8_t)(din - 1);
         if (rel >= 1 && rel <= RELAY_COUNT) s_tuvRequestRelay = (int8_t)(rel - 1);
         if (doc.containsKey("tuvEnabled")) s_tuvScheduleEnabled = (bool)doc["tuvEnabled"];
+
+        int valve1 = doc["tuvValveMaster"] | doc["tuv_valve_master"] | 0;
+        if (valve1 >= 1 && valve1 <= RELAY_COUNT) s_tuvValveMaster0 = (int8_t)(valve1 - 1);
+        s_tuvValveTargetPct = clampPctInt((int)(doc["tuvValveTargetPct"] | doc["tuv_valve_target_pct"] | s_tuvValveTargetPct));
+        s_tuvEqValveTargetPct = clampPctInt((int)(doc["tuvEqValveTargetPct"] | doc["tuv_eq_valve_target_pct"] | s_tuvEqValveTargetPct));
     }
+    if (s_tuvValveMaster0 >= 0 && !isValveMaster((uint8_t)s_tuvValveMaster0)) s_tuvValveMaster0 = -1;
 
     // --- schedules (UI stores cfg.schedules[]) ---
     s_scheduleCount = 0;

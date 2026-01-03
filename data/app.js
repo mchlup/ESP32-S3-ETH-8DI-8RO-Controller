@@ -153,13 +153,19 @@
     const sys = st.systemMode || st.mode || "—";
     const ctrl = st.controlMode || "—";
     const eq = st.equitherm || {};
+    const tuv = st.tuv || {};
     let eqHint = "";
+    let tuvHint = "";
     if (typeof eq.enabled !== "undefined") {
       if (!eq.enabled) eqHint = " • Ekviterm: vypnuto";
       else if (eq.active) eqHint = " • Ekviterm: aktivní";
       else eqHint = ` • Ekviterm: čeká${eq.reason ? " ("+eq.reason+")" : ""}`;
     }
-    $("#topHint").textContent = `System: ${sys} • Control: ${ctrl}${eqHint}`;
+    if (typeof tuv.modeActive !== "undefined") {
+      if (tuv.modeActive) tuvHint = " • TUV: aktivní";
+      else if (tuv.enabled) tuvHint = " • TUV: čeká";
+    }
+    $("#topHint").textContent = `System: ${sys} • Control: ${ctrl}${eqHint}${tuvHint}`;
   }
 
     $("#kvSystemMode").textContent = st.systemMode || st.mode || "—";
@@ -400,6 +406,15 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
       value: (s && typeof s.value === "object") ? s.value : {},
     }));
 
+    // ---------- TUV (ohřev bojleru) ----------
+    cfg.tuv = (cfg.tuv && typeof cfg.tuv === "object") ? cfg.tuv : {};
+    cfg.tuv.enabled = !!cfg.tuv.enabled;
+    cfg.tuv.demandInput = Number.isFinite(Number(cfg.tuv.demandInput)) ? Number(cfg.tuv.demandInput) : 0; // 1..8
+    cfg.tuv.requestRelay = Number.isFinite(Number(cfg.tuv.requestRelay)) ? Number(cfg.tuv.requestRelay) : 0; // 1..8
+    cfg.tuv.eqValveTargetPct = Number.isFinite(Number(cfg.tuv.eqValveTargetPct)) ? Number(cfg.tuv.eqValveTargetPct) : 0;
+    cfg.tuv.valveMaster = Number.isFinite(Number(cfg.tuv.valveMaster)) ? Number(cfg.tuv.valveMaster) : 0;
+    cfg.tuv.valveTargetPct = Number.isFinite(Number(cfg.tuv.valveTargetPct)) ? Number(cfg.tuv.valveTargetPct) : 0;
+
     // ---------- Dallas header thermometers (GPIO0..3) ----------
     // Independent from 8 terminal DI inputs; used for DS18B20 on pin header.
     cfg.dallasNames = Array.isArray(cfg.dallasNames) ? cfg.dallasNames : ["","","",""];
@@ -468,7 +483,11 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
   window.App.getConfig = () => state.config;
   window.App.getStatus = () => state.status;
   window.App.setConfig = (cfg) => { state.config = cfg; ensureConfigShape(); };
-  window.App.saveConfig = async () => apiPostJson("/api/config", state.config);
+  window.App.saveConfig = async (cfg) => {
+    if (cfg && typeof cfg === "object") state.config = cfg;
+    ensureConfigShape();
+    return apiPostJson("/api/config", state.config);
+  };
   window.App.onConfigLoaded = window.App.onConfigLoaded || null;
   window.App.onStatusLoaded = window.App.onStatusLoaded || null;
 

@@ -1,0 +1,174 @@
+/* TUV (ohřev bojleru) – režim + přepínací ventily */
+(() => {
+  const $ = (id) => document.getElementById(id);
+
+  const el = {
+    btnSave: $("btnSaveTuv"),
+    enabled: $("tuvEnabled"),
+    demandInput: $("tuvDemandInput"),
+    requestRelay: $("tuvRequestRelay"),
+    eqValveTargetPct: $("tuvEqValveTargetPct"),
+    valveMaster: $("tuvValveMaster"),
+    valveTargetPct: $("tuvValveTargetPct"),
+    statusBox: $("tuvStatusBox"),
+  };
+
+  if (!window.App || !el.btnSave) return;
+
+  const clampPct = (v) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return 0;
+    if (n < 0) return 0;
+    if (n > 100) return 100;
+    return Math.round(n);
+  };
+
+  const readInt = (v, fallback = 0) => {
+    const n = parseInt(v, 10);
+    return Number.isFinite(n) ? n : fallback;
+  };
+
+  function setSelectOptions(selectEl, options, keepValue) {
+    if (!selectEl) return;
+    const prev = keepValue ? selectEl.value : null;
+    selectEl.innerHTML = "";
+    for (const o of options) {
+      const opt = document.createElement("option");
+      opt.value = o.value;
+      opt.textContent = o.label;
+      if (o.disabled) opt.disabled = true;
+      selectEl.appendChild(opt);
+    }
+    if (keepValue && prev) {
+      const exists = Array.from(selectEl.options).some((o) => o.value === prev);
+      if (exists) selectEl.value = prev;
+    }
+  }
+
+  function buildInputOptions(cfg) {
+    const opts = [{ value: "0", label: "— (nepoužívat)" }];
+    const names = Array.isArray(cfg?.inputNames) ? cfg.inputNames : [];
+    for (let i = 0; i < 8; i++) {
+      const name = String(names[i] || "").trim() || `Vstup ${i + 1}`;
+      opts.push({ value: String(i + 1), label: `${i + 1} – ${name}` });
+    }
+    return opts;
+  }
+
+  function buildRelayOptions(cfg) {
+    const opts = [{ value: "0", label: "— (nepoužívat)" }];
+    const names = Array.isArray(cfg?.relayNames) ? cfg.relayNames : [];
+    for (let i = 0; i < 8; i++) {
+      const name = String(names[i] || "").trim() || `Relé ${i + 1}`;
+      opts.push({ value: String(i + 1), label: `${i + 1} – ${name}` });
+    }
+    return opts;
+  }
+
+  function updateValveOptions(dash, cfg, keep) {
+    const opts = [{ value: "0", label: "Nepoužívat" }];
+    const valves = (dash && Array.isArray(dash.valves)) ? dash.valves : [];
+    for (const v of valves) {
+      if (!v || typeof v.master !== "number") continue;
+      const m = v.master;
+      const label = v.label ? String(v.label) : `Ventil ${m}`;
+      const peer = (typeof v.peer === "number" && v.peer) ? ` / peer ${v.peer}` : "";
+      opts.push({ value: String(m), label: `${label} (master ${m}${peer})` });
+    }
+
+    const cur = cfg?.tuv?.valveMaster || 0;
+    if (cur && !opts.some((o) => o.value === String(cur))) {
+      opts.push({ value: String(cur), label: `Relé ${cur} (nenakonfigurováno jako 3c)` });
+    }
+
+    setSelectOptions(el.valveMaster, opts, keep);
+  }
+
+  function loadFromConfig(cfg) {
+    App.ensureConfigShape(cfg);
+    const t = cfg.tuv || {};
+    el.enabled.checked = !!t.enabled;
+    el.demandInput.value = String(t.demandInput || 0);
+    el.requestRelay.value = String(t.requestRelay || 0);
+    el.eqValveTargetPct.value = clampPct(t.eqValveTargetPct ?? 0);
+    el.valveMaster.value = String(t.valveMaster || 0);
+    el.valveTargetPct.value = clampPct(t.valveTargetPct ?? 0);
+  }
+
+  function saveToConfig(cfg) {
+    App.ensureConfigShape(cfg);
+    cfg.tuv = cfg.tuv || {};
+    cfg.tuv.enabled = !!el.enabled.checked;
+    cfg.tuv.demandInput = readInt(el.demandInput.value, 0);
+    cfg.tuv.requestRelay = readInt(el.requestRelay.value, 0);
+    cfg.tuv.eqValveTargetPct = clampPct(el.eqValveTargetPct.value);
+    cfg.tuv.valveMaster = readInt(el.valveMaster.value, 0);
+    cfg.tuv.valveTargetPct = clampPct(el.valveTargetPct.value);
+  }
+
+  function updateStatusBox(status, cfg) {
+    const st = status?.tuv || {};
+    const lines = [];
+    const active = !!st.modeActive;
+    lines.push(`Režim: ${active ? "AKTIVNÍ" : "neaktivní"}`);
+    if (typeof st.demandActive !== "undefined") lines.push(`Požadavek: ${st.demandActive ? "ANO" : "ne"}`);
+    if (typeof st.scheduleEnabled !== "undefined") lines.push(`Plán: ${st.scheduleEnabled ? "ON" : "OFF"}`);
+
+    const eqMaster = Number(st.eqValveMaster || cfg?.equitherm?.valve?.master || 0);
+    if (eqMaster > 0) lines.push(`Směšovací ventil (ekviterm): master ${eqMaster} → ${clampPct(st.eqValveTargetPct ?? cfg?.tuv?.eqValveTargetPct ?? 0)}%`);
+
+    const tuvMaster = Number(st.valveMaster || cfg?.tuv?.valveMaster || 0);
+    if (tuvMaster > 0) lines.push(`Přepínací ventil TUV: master ${tuvMaster} → ${clampPct(st.valveTargetPct ?? cfg?.tuv?.valveTargetPct ?? 0)}%`);
+
+    el.statusBox.textContent = lines.join("\n");
+  }
+
+  async function refreshDash(cfg, keep) {
+    try {
+      const dash = await App.apiGetJson("/api/dash");
+      updateValveOptions(dash, cfg, keep);
+    } catch (_) {
+      // ignore
+    }
+  }
+
+  function bindEvents() {
+    el.btnSave.addEventListener("click", async () => {
+      const cfg = App.getConfig();
+      saveToConfig(cfg);
+      await App.saveConfig(cfg);
+      refreshDash(cfg, true);
+    });
+  }
+
+  const prevOnConfigLoaded = App.onConfigLoaded;
+  App.onConfigLoaded = (cfg) => {
+    if (typeof prevOnConfigLoaded === "function") prevOnConfigLoaded(cfg);
+    const inputOpts = buildInputOptions(cfg);
+    const relayOpts = buildRelayOptions(cfg);
+    setSelectOptions(el.demandInput, inputOpts, false);
+    setSelectOptions(el.requestRelay, relayOpts, false);
+    loadFromConfig(cfg);
+    refreshDash(cfg, true);
+  };
+
+  const prevOnStatusLoaded = App.onStatusLoaded;
+  App.onStatusLoaded = (status) => {
+    if (typeof prevOnStatusLoaded === "function") prevOnStatusLoaded(status);
+    updateStatusBox(status, App.getConfig());
+  };
+
+  window.addEventListener("DOMContentLoaded", () => {
+    bindEvents();
+    const cfg = App.getConfig();
+    if (cfg) {
+      const inputOpts = buildInputOptions(cfg);
+      const relayOpts = buildRelayOptions(cfg);
+      setSelectOptions(el.demandInput, inputOpts, false);
+      setSelectOptions(el.requestRelay, relayOpts, false);
+      loadFromConfig(cfg);
+      refreshDash(cfg, true);
+      updateStatusBox(App.getStatus(), cfg);
+    }
+  });
+})();
