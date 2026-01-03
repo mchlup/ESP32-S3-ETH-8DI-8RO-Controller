@@ -324,6 +324,8 @@ for (const s of [e.outdoor, e.flow]) {
   s.gpio   = (typeof s.gpio === "number") ? s.gpio : 0;
   s.rom    = s.rom || s.addr || "";   // addr legacy
   s.topic  = s.topic || "";
+  s.jsonKey = s.jsonKey || s.key || s.field || "";
+  s.mqttIdx = Number.isFinite(Number(s.mqttIdx || s.preset)) ? Number(s.mqttIdx || s.preset) : 0;
   s.bleId  = s.bleId || s.id || "";
 }
 
@@ -335,18 +337,22 @@ e.valve.master = (typeof e.valve.master === "number") ? e.valve.master : 0; // 0
 e.control = e.control || {};
 e.control.deadbandC = (typeof e.control.deadbandC === "number") ? e.control.deadbandC : 0.5;
 e.control.stepPct   = (typeof e.control.stepPct === "number") ? e.control.stepPct : 4;
-e.control.periodMs  = (typeof e.control.periodMs === "number") ? e.control.periodMs : 6000;
+// Default minimum adjustment period for 3c valve: 30 s (anti-hunt)
+e.control.periodMs  = (typeof e.control.periodMs === "number") ? e.control.periodMs : 30000;
 e.control.minPct    = (typeof e.control.minPct === "number") ? e.control.minPct : 0;
 e.control.maxPct    = (typeof e.control.maxPct === "number") ? e.control.maxPct : 100;
 
 // Curve
-e.minFlow = (typeof e.minFlow === "number") ? e.minFlow : 22;
-e.maxFlow = (typeof e.maxFlow === "number") ? e.maxFlow : 50;
+e.minFlow = (typeof e.minFlow === "number") ? e.minFlow : 25;
+e.maxFlow = (typeof e.maxFlow === "number") ? e.maxFlow : 55;
 
-e.slopeDay   = (typeof e.slopeDay === "number") ? e.slopeDay : 1.25;
-e.shiftDay   = (typeof e.shiftDay === "number") ? e.shiftDay : 30;
-e.slopeNight = (typeof e.slopeNight === "number") ? e.slopeNight : 1.00;
-e.shiftNight = (typeof e.shiftNight === "number") ? e.shiftNight : 25;
+// Formula: Tflow = (20 - Tout) * slope + 20 + shift
+// Defaults correspond to refs: day (-10 -> 55), (15 -> 30) => slope=1, shift=5
+// and night (-10 -> 50), (15 -> 25) => slope=1, shift=0
+e.slopeDay   = (typeof e.slopeDay === "number") ? e.slopeDay : 1.0;
+e.shiftDay   = (typeof e.shiftDay === "number") ? e.shiftDay : 5.0;
+e.slopeNight = (typeof e.slopeNight === "number") ? e.slopeNight : 1.0;
+e.shiftNight = (typeof e.shiftNight === "number") ? e.shiftNight : 0.0;
 
 // Legacy refs (fallback)
 e.refs = e.refs || {};
@@ -422,6 +428,24 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     cfg.thermometers.ble = (cfg.thermometers.ble && typeof cfg.thermometers.ble === "object") ? cfg.thermometers.ble : {};
     cfg.thermometers.ble.name = String(cfg.thermometers.ble.name || "BLE Meteo");
     cfg.thermometers.ble.id   = String(cfg.thermometers.ble.id || "meteo.tempC");
+
+    // ---------- System temperature roles (meaning within the heating system) ----------
+    // Each role points to a temperature source (Dallas/MQTT/BLE/legacy tempX).
+    // Other parts of the system can then reference the role instead of duplicating sensor selection.
+    cfg.thermometers.roles = (cfg.thermometers.roles && typeof cfg.thermometers.roles === "object") ? cfg.thermometers.roles : {};
+    const roles = cfg.thermometers.roles;
+    const ensureRole = (key) => {
+      const r = (roles[key] && typeof roles[key] === "object") ? roles[key] : {};
+      r.source  = String(r.source || "none");
+      r.gpio    = Number.isFinite(r.gpio) ? r.gpio : 0;
+      r.rom     = String(r.rom || r.addr || "");
+      r.topic   = String(r.topic || "");
+      r.jsonKey = String(r.jsonKey || r.key || r.field || "");
+      r.mqttIdx = Number.isFinite(Number(r.mqttIdx || r.preset)) ? Number(r.mqttIdx || r.preset) : 0;
+      r.bleId   = String(r.bleId || r.id || "");
+      roles[key] = r;
+    };
+    ["outdoor","flow","return","dhw","tankTop","tankMid","tankBottom"].forEach(ensureRole);
 
     // ---------- OpenTherm (kotle) ----------
     cfg.opentherm = (cfg.opentherm && typeof cfg.opentherm === "object") ? cfg.opentherm : {};

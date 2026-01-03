@@ -4,8 +4,8 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>ESP Heat Controller</title>
-  <link rel="stylesheet" href="/styles.css?v=4" />
-  <link rel="stylesheet" href="/dash_v2.css?v=2" />
+  <link rel="stylesheet" href="/styles.css" />
+  <link rel="stylesheet" href="/dash_v2.css" />
 </head>
 <body>
   <div class="app">
@@ -68,105 +68,109 @@
       </header>
 
       <section class="page active" id="page-dash">
-<div class="dashGrid" id="dashGrid">
-  <div class="card" id="cardModes">
-    <div class="cardHead">
-      <div>
-        <div class="cardTitle">Režimy</div>
-        <div class="muted">Řízení AUTO / MANUAL a aktivní režim</div>
-      </div>
-      <div class="cardActions">
-        <button class="btn" id="btnApplyMode">Použít</button>
-        <button class="btn ghost" id="btnAutoRecompute" title="Přepočítat AUTO podle vstupů">AUTO přepočítat</button>
-      </div>
-    </div>
 
-    <div class="row compact">
-      <div class="field">
-        <label>Control mode</label>
-        <select id="selControlMode">
-          <option value="auto">AUTO</option>
-          <option value="manual">MANUAL</option>
-        </select>
-      </div>
-      <div class="field">
-        <label>Aktivní režim</label>
-        <select id="selSystemMode"></select>
-      </div>
-</div>
+        <div class="dashLayout">
+          <div class="card" id="cardEquitherm" style="display:none">
+                      <div class="cardHead">
+                        <div>
+                          <div class="cardTitle">Ekviterm</div>
+                          <div class="muted">Venkovní teplota + stav trojcestného ventilu pro ekvitermní řízení</div>
+                        </div>
+                      </div>
+                      <div class="ioGrid" id="eqDashGrid"></div>
+                    </div>
 
-    <details class="details">
-      <summary>Detaily (RSSI, BLE)</summary>
-      <div class="split">
-        <div class="kv">
-          <div class="k">SystemMode</div><div class="v" id="kvSystemMode">—</div>
-          <div class="k">ControlMode</div><div class="v" id="kvControlMode">—</div>
-          <div class="k">RSSI</div><div class="v" id="kvRssi">—</div>
+          <div class="card" id="cardModes">
+                      <div class="cardHead">
+                        <div>
+                          <div class="cardTitle">Režimy</div>
+                          <div class="muted">Řízení AUTO / MANUAL a aktivní režim</div>
+                        </div>
+                      </div>
+          
+                      <div class="row stack">
+                        <div class="field">
+                          <label>Control mode</label>
+                          <select id="selControlMode">
+                            <option value="auto">AUTO</option>
+                            <option value="manual">MANUAL</option>
+                          </select>
+                        </div>
+                        <div class="field">
+                          <label>Aktivní režim</label>
+                          <select id="selSystemMode"></select>
+                        </div>
+                        <div class="field">
+                          <label>Akce</label>
+                          <div class="btnRow">
+                            <button class="btn" id="btnApplyMode">Použít</button>
+                            <button class="btn ghost" id="btnAutoRecompute" title="Přepočítat AUTO podle vstupů">AUTO přepočítat</button>
+                          </div>
+                        </div>
+                      </div>
+          
+                      <details class="fold">
+                        <summary class="muted">Detaily (RSSI, BLE)</summary>
+                        <div class="split">
+                          <div class="kv">
+                            <div class="k">SystemMode</div><div class="v" id="kvSystemMode">—</div>
+                            <div class="k">ControlMode</div><div class="v" id="kvControlMode">—</div>
+                            <div class="k">RSSI</div><div class="v" id="kvRssi">—</div>
+                          </div>
+          
+                          <div class="kv">
+                            <div class="k">BLE</div><div class="v" id="kvBle">—</div>
+                            <div class="k">Párování</div><div class="v" id="kvPairing">—</div>
+                            <div class="k">Meteo</div><div class="v" id="kvMeteo">—</div>
+                          </div>
+                        </div>
+                      </details>
+                    </div>
+
+          <div class="card" id="cardRelays">
+                      <div class="cardHead">
+                        <div>
+                          <div class="cardTitle">Relé</div>
+                          <div class="muted">Kliknutím zapneš/vypneš relé (v MANUAL)</div>
+                        </div>
+                        <div class="right">
+                          <span class="badge" id="badgeControl">—</span>
+                        </div>
+                      </div>
+          
+                      <div class="ioGrid" id="relayGrid"></div>
+                    </div>
+
+          <div class="card" id="cardInputs">
+                    <div class="cardHead">
+                      <div>
+                        <div class="cardTitle">Vstupy</div>
+                        <div class="muted">Stav vstupů (logický stav podle activeLevel)</div>
+                      </div>
+                    </div>
+                    <div class="ioGrid" id="inputGrid"></div>
+                  </div>
+
+          <div class="card" id="cardValves" style="display:none">
+                  <div class="cardHead">
+                    <div>
+                      <div class="cardTitle">Trojcestné ventily</div>
+                      <div class="muted">Pozice 0–100 %, indikace pohybu; kliknutí přepne A/B (v MANUAL)</div>
+                    </div>
+                  </div>
+                  <div class="ioGrid" id="valveGrid"></div>
+                </div>
+
+          <div class="card" id="cardTemps" style="display:none">
+                  <div class="cardHead">
+                    <div>
+                      <div class="cardTitle">Teploty</div>
+                      <div class="muted">Poslední naměřené teploty pro vstupy s rolí teploměru (NTC / Dallas)</div>
+                    </div>
+                  </div>
+                  <div class="ioGrid" id="tempGrid"></div>
+                </div>
         </div>
-
-        <div class="kv">
-          <div class="k">BLE</div><div class="v" id="kvBle">—</div>
-          <div class="k">Párování</div><div class="v" id="kvPairing">—</div>
-          <div class="k">Meteo</div><div class="v" id="kvMeteo">—</div>
-        </div>
-      </div>
-    </details>
-  </div>
-
-  <div class="card" id="cardEquitherm" style="display:none">
-    <div class="cardHead">
-      <div>
-        <div class="cardTitle">Ekviterm</div>
-        <div class="muted">Venkovní teplota + stav trojcestného ventilu pro ekvitermní řízení</div>
-      </div>
-    </div>
-    <div class="ioGrid" id="eqDashGrid"></div>
-  </div>
-
-  <div class="card" id="cardRelays">
-    <div class="cardHead">
-      <div>
-        <div class="cardTitle">Relé</div>
-        <div class="muted">Kliknutím zapneš/vypneš relé (v MANUAL)</div>
-      </div>
-      <div class="right">
-        <span class="badge" id="badgeControl">—</span>
-      </div>
-    </div>
-
-    <div class="ioGrid" id="relayGrid"></div>
-  </div>
-
-  <div class="card" id="cardInputs">
-    <div class="cardHead">
-      <div>
-        <div class="cardTitle">Vstupy</div>
-        <div class="muted">Stav vstupů (logický stav podle activeLevel)</div>
-      </div>
-    </div>
-    <div class="ioGrid" id="inputGrid"></div>
-  </div>
-
-  <div class="card" id="cardValves" style="display:none">
-    <div class="cardHead">
-      <div>
-        <div class="cardTitle">Trojcestné ventily</div>
-        <div class="muted">Pozice 0–100 %, indikace pohybu; kliknutí přepne A/B (v MANUAL)</div>
-      </div>
-    </div>
-    <div class="ioGrid" id="valveGrid"></div>
-  </div>
-
-  <div class="card" id="cardTemps" style="display:none">
-    <div class="cardHead">
-      <div>
-        <div class="cardTitle">Teploty</div>
-        <div class="muted">Poslední naměřené teploty pro vstupy s rolí teploměru (NTC / Dallas)</div>
-      </div>
-    </div>
-    <div class="ioGrid" id="tempGrid"></div>
-  </div>
-</div>
       </section>
 
       <section class="page" id="page-config">
@@ -249,6 +253,17 @@
               <div class="pad" style="padding-top:8px">
                 <div class="muted" style="font-size:12px">Tip: MQTT payload může být číslo (např. <code>21.5</code>) nebo JSON (např. <code>{"tempC":21.5}</code>). Do <b>jsonKey</b> můžeš zadat i cestu (např. <code>sensor.tempC</code>).</div>
               </div>
+            </div>
+
+            <div class="card">
+              <div class="cardHead">
+                <div>
+                  <div class="cardTitle">Význam teploměrů</div>
+                  <div class="muted">Přiřaď zdroj teploty k typům v otopném systému (venkovní, topná voda, vratka, TUV, akumulační nádrž…). Tyto typy pak může používat ekviterm i další logika bez duplicitních voleb.</div>
+                </div>
+                <button class="btn" id="btnSaveTempRoles">Uložit</button>
+              </div>
+              <div class="table" id="tblTempRolesCfg"></div>
             </div>
 
             <div class="card">
@@ -421,16 +436,14 @@
           <div class="cardTitle">Ekviterm</div>
           <div class="cardSub">Dynamická volba teploměrů DS18B20 / MQTT / BLE + řízení 3c ventilu (AUTO)</div>
         </div>
-        <div class="cardActions">
-          <div class="toggleInline">
-            <span class="mini">Aktivní</span>
-            <label class="switch"><input id="eqEnabled" type="checkbox"><span class="slider"></span></label>
-          </div>
-          <button class="btn" id="btnSaveEquitherm">Uložit</button>
-        </div>
+        <button class="btn" id="btnSaveEquitherm">Uložit</button>
       </div>
 
       <div class="ioGrid">
+        <div class="ioRow">
+          <div class="ioLabel">Povolit</div>
+          <div class="ioValue"><label class="switch"><input id="eqEnabled" type="checkbox"><span class="slider"></span></label></div>
+        </div>
 
         <div class="ioRow">
           <div class="ioLabel">Poznámka</div>
@@ -453,7 +466,10 @@
               <option value="mqtt">MQTT</option>
               <option value="ble">BLE teploměr</option>
               <option value="none">Nepoužít</option>
-            </select>
+              </select>
+              <div class="mt8">
+                <button class="btn ghost mini" id="btnEqUseRoleOutdoor" type="button">Použít přiřazení z „Teploměry“</button>
+              </div>
             <div class="mt8" id="eqOutdoorDallasRow">
               <select id="eqOutdoorDallas"></select>
             </div>
@@ -492,6 +508,9 @@
               <option value="ble">BLE teploměr</option>
               <option value="none">Nepoužít</option>
             </select>
+            <div class="mt8">
+              <button class="btn ghost mini" id="btnEqUseRoleFlow" type="button">Použít přiřazení z „Teploměry“</button>
+            </div>
             <div class="mt8" id="eqFlowDallasRow">
               <select id="eqFlowDallas"></select>
               <div class="hint mt4">Pro řízení ventilu je potřeba mít nastavený feedback senzor (flow).</div>
@@ -538,7 +557,8 @@
         <div class="mini mt4">Graf: ekvitermní křivka (den/noc) + aktuální bod (Tout → Target).</div>
       </div>
 
-      <div class="ioGrid">
+      <!-- Controls grid: max 2 sloupce (auto-fit), aby se nerozbilo na širokých displejích v 2-sloupcovém layoutu -->
+      <div class="eqCurveGrid">
 
         <div class="ioRow">
           <div class="ioLabel">Limity T<sub>flow</sub></div>
@@ -1207,7 +1227,7 @@
   <script src="/valve_calib.js?v=2"></script>
   <script src="/time_ntp.js?v=1"></script>
   <script src="/schedules.js?v=1"></script>
-  <script src="/dash_v2.js?v=3"></script>
+  <script src="/dash_v2.js?v=1"></script>
 
 </body>
 </html>

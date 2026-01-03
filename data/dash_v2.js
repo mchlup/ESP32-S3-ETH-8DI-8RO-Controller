@@ -20,12 +20,13 @@
     const e = (cfg && typeof cfg === "object" && cfg.equitherm && typeof cfg.equitherm === "object") ? cfg.equitherm : {};
     return {
       enabled: !!e.enabled,
-      minFlow: (typeof e.minFlow === "number") ? e.minFlow : 22,
-      maxFlow: (typeof e.maxFlow === "number") ? e.maxFlow : 50,
-      slopeDay: (typeof e.slopeDay === "number") ? e.slopeDay : 1.25,
-      shiftDay: (typeof e.shiftDay === "number") ? e.shiftDay : 30,
+      // sane defaults (match refs: day -10->55 / 15->30 ; night -10->50 / 15->25)
+      minFlow: (typeof e.minFlow === "number") ? e.minFlow : 25,
+      maxFlow: (typeof e.maxFlow === "number") ? e.maxFlow : 55,
+      slopeDay: (typeof e.slopeDay === "number") ? e.slopeDay : 1.0,
+      shiftDay: (typeof e.shiftDay === "number") ? e.shiftDay : 5.0,
       slopeNight: (typeof e.slopeNight === "number") ? e.slopeNight : 1.0,
-      shiftNight: (typeof e.shiftNight === "number") ? e.shiftNight : 25,
+      shiftNight: (typeof e.shiftNight === "number") ? e.shiftNight : 0.0,
       outdoor: (e.outdoor && typeof e.outdoor === "object") ? e.outdoor : {},
       flow: (e.flow && typeof e.flow === "object") ? e.flow : {},
       valve: (e.valve && typeof e.valve === "object") ? e.valve : {},
@@ -68,10 +69,23 @@
       };
     }
     if (s === "mqtt") {
-      const topic = String(srcCfg?.topic || "").trim();
-      const jsonKey = String(srcCfg?.jsonKey || "").trim();
-      const mt = findMqttThermoByTopic(cfg, topic, jsonKey);
-      const nm = (mt && mt.name) ? mt.name : ((kind === "outdoor") ? "Venkovní teplota" : "Teplota vody");
+      const idx = Number(srcCfg?.mqttIdx || srcCfg?.preset || 0);
+      const list = Array.isArray(cfg?.thermometers?.mqtt) ? cfg.thermometers.mqtt : [];
+      let topic = String(srcCfg?.topic || "").trim();
+      let jsonKey = String(srcCfg?.jsonKey || "").trim();
+      let nm = (kind === "outdoor") ? "Venkovní teplota" : "Teplota vody";
+      if (Number.isFinite(idx) && idx >= 1 && idx <= 2) {
+        const it = list[idx - 1] || {};
+        const t = String(it.topic || "").trim();
+        const k = String(it.jsonKey || "tempC").trim();
+        if (t) topic = t;
+        if (k) jsonKey = k;
+        const n = String(it.name || "").trim();
+        if (n) nm = n;
+      } else {
+        const mt = findMqttThermoByTopic(cfg, topic, jsonKey);
+        if (mt && mt.name) nm = mt.name;
+      }
       return {
         type: "mqtt",
         key: `mqtt:${topic}:${jsonKey}`,
@@ -129,7 +143,7 @@
     if (!Number.isFinite(yMax)) yMax = 50;
     if (Math.abs(yMax - yMin) < 0.1) yMax = yMin + 1;
 
-    const padL = 32, padR = 10, padT = 10, padB = 26;
+    const padL = 32, padR = 10, padT = 10, padB = 18;
     const x2px = (x) => padL + ((x - xMin) / (xMax - xMin)) * (W - padL - padR);
     const y2px = (y) => (H - padB) - ((y - yMin) / (yMax - yMin)) * (H - padT - padB);
 
@@ -154,6 +168,17 @@
     }
     ctx.stroke();
     ctx.restore();
+    // popisky os + rozsahy
+    ctx.save();
+    ctx.fillStyle = fg;
+    ctx.globalAlpha = 0.70;
+    ctx.font = `${11*dpr}px system-ui, -apple-system, Segoe UI, Roboto, Arial`;
+    // X label
+    ctx.fillText(`T venku (°C)  ${xMin}…${xMax}`, padL, H - 4*dpr);
+    // Y label (nahoře vlevo)
+    ctx.fillText(`T vody (°C)  ${Math.round(yMin)}…${Math.round(yMax)}`, 6*dpr, padT + 12*dpr);
+    ctx.restore();
+
 
     // axes
     ctx.save();
@@ -166,45 +191,6 @@
     ctx.lineTo(W - padR, H - padB);
     ctx.stroke();
     ctx.restore();
-
-
-// axis labels
-ctx.save();
-ctx.fillStyle = fg;
-ctx.globalAlpha = 0.65;
-ctx.font = `${11*dpr}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
-ctx.textAlign = "center";
-ctx.textBaseline = "alphabetic";
-ctx.fillText("Tout (°C)", padL + (W - padL - padR) / 2, H - 6 * dpr);
-
-// Y label (rotated)
-ctx.translate(10 * dpr, padT + (H - padT - padB) / 2);
-ctx.rotate(-Math.PI / 2);
-ctx.textAlign = "center";
-ctx.textBaseline = "middle";
-ctx.fillText("Tflow (°C)", 0, 0);
-ctx.restore();
-
-    // axis ranges (min/max)
-    ctx.save();
-    ctx.fillStyle = fg;
-    ctx.globalAlpha = 0.55;
-    ctx.font = `${10*dpr}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
-    // X min/max
-    ctx.textBaseline = "alphabetic";
-    ctx.textAlign = "left";
-    ctx.fillText(`${xMin}`, padL, H - 6 * dpr);
-    ctx.textAlign = "right";
-    ctx.fillText(`${xMax}`, W - padR, H - 6 * dpr);
-    // Y min/max
-    const yMinLbl = Math.round(yMin * 10) / 10;
-    const yMaxLbl = Math.round(yMax * 10) / 10;
-    ctx.textBaseline = "middle";
-    ctx.textAlign = "left";
-    ctx.fillText(`${yMaxLbl}`, 4 * dpr, y2px(yMax));
-    ctx.fillText(`${yMinLbl}`, 4 * dpr, y2px(yMin));
-    ctx.restore();
-
 
     const slopeDay = Number(eqCfg?.slopeDay ?? 1.25);
     const shiftDay = Number(eqCfg?.shiftDay ?? 30);
@@ -315,8 +301,6 @@ ctx.restore();
     const eq = (st && st.equitherm) ? st.equitherm : {};
     const eqCfg = getEqCfg(cfg);
     const eqEnabled = !!eq.enabled;
-    const cardModes = $id("cardModes");
-    if (cardModes) cardModes.classList.toggle("span2", !eqEnabled);
     let eqValveMaster0 = -1;
     if (eqEnabled && eq){
       const vm = Number(eq.valveMaster || 0);
@@ -391,6 +375,15 @@ ctx.restore();
         `;
         eqGrid.appendChild(tValve);
 
+        // Curve ranges for popis os
+        const xMinCurve = -20, xMaxCurve = 20;
+        let yMinCurve = Number(eqCfg?.minFlow ?? 22);
+        let yMaxCurve = Number(eqCfg?.maxFlow ?? 50);
+        if (!Number.isFinite(yMinCurve)) yMinCurve = 22;
+        if (!Number.isFinite(yMaxCurve)) yMaxCurve = 50;
+        if (Math.abs(yMaxCurve - yMinCurve) < 0.1) yMaxCurve = yMinCurve + 1;
+        const rangeTxt = `Osy: venku ${xMinCurve}…${xMaxCurve} °C, voda ${Math.round(yMinCurve)}…${Math.round(yMaxCurve)} °C`;
+
         // Curve tile (wide)
         const tCurve = document.createElement("div");
         tCurve.className = "ioTile eqCurveTile";
@@ -398,7 +391,7 @@ ctx.restore();
         tCurve.innerHTML = `
           <div>
             <div class="ioName">Ekvitermní křivka</div>
-            <div class="ioSub">Denní (plná) + noční (čárkovaná). Tečka = aktuální venkovní teplota.</div>
+            <div class="ioSub">Denní (plná) + noční (čárkovaná). Tečka = aktuální venkovní teplota. <span class="muted">${rangeTxt}</span></div>
           </div>
           <div class="ioRight" style="width:100%">
             <canvas id="eqMiniCurve" class="eqMiniCurve" aria-label="Ekvitermní křivka"></canvas>

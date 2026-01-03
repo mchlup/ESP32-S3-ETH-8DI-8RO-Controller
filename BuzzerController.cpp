@@ -5,15 +5,21 @@
 #include <ArduinoJson.h>
 
 namespace {
-  struct Step { bool on; uint16_t ms; };
+  struct Step { bool on; uint16_t ms; uint16_t freqHz; /*0=default*/ };
 
-  // Patterny (jednoduché ON/OFF, funguje pro aktivní i pasivní buzzer)
-  const Step P_OFF[]    = { {false, 0} };
-  const Step P_SHORT[]  = { {true,  80}, {false, 120} };
-  const Step P_LONG[]   = { {true,  350}, {false, 200} };
-  const Step P_DOUBLE[] = { {true,  80}, {false, 120}, {true, 80}, {false, 200} };
-  const Step P_TRIPLE[] = { {true,  80}, {false, 120}, {true, 80}, {false, 120}, {true, 80}, {false, 250} };
-  const Step P_ERROR[]  = { {true,  120}, {false, 120}, {true, 120}, {false, 120}, {true, 200}, {false, 300} };
+  // Patterny (neblokující) – pro modernější zvuk umí i měnit frekvenci.
+  // Pokud je buzzer aktivní (jen HIGH/LOW), frekvence se ignoruje.
+  const Step P_OFF[]       = { {false, 0,   0} };
+  const Step P_SHORT[]     = { {true,  80,  0}, {false, 120, 0} };
+  const Step P_LONG[]      = { {true,  350, 0}, {false, 200, 0} };
+  const Step P_DOUBLE[]    = { {true,  80,  0}, {false, 120, 0}, {true, 80,  0}, {false, 200, 0} };
+  const Step P_TRIPLE[]    = { {true,  80,  0}, {false, 120, 0}, {true, 80,  0}, {false, 120, 0}, {true, 80, 0}, {false, 250, 0} };
+  const Step P_ERROR[]     = { {true,  120, 0}, {false, 120, 0}, {true, 120, 0}, {false, 120, 0}, {true, 200, 0}, {false, 300, 0} };
+
+  // "Modernější" notifikace (chirp) – vhodné jako default místo pípnutí
+  const Step P_CHIRP_UP[]  = { {true,  45, 2000}, {true, 45, 2400}, {true, 45, 2800}, {false, 160, 0} };
+  const Step P_CHIRP_DOWN[]= { {true,  45, 2800}, {true, 45, 2400}, {true, 45, 2000}, {false, 160, 0} };
+  const Step P_NOTIFY[]    = { {true,  70, 2200}, {false, 60, 0}, {true, 70, 3200}, {false, 200, 0} };
 
   struct Cfg {
     bool enabled = true;
@@ -24,9 +30,10 @@ namespace {
     uint8_t pwmDutyPct = 50;     // 10–80 %, podle hlasitosti
 
     // mapování událostí -> pattern name
-    char ev_control_auto[12]   = "short";
-    char ev_control_manual[12] = "short";
-    char ev_manual_mode[12]    = "short";
+    // Defaulty jsou "modernější" než prosté pípnutí (chirp/notify).
+    char ev_control_auto[12]   = "chirp";
+    char ev_control_manual[12] = "chirpDown";
+    char ev_manual_mode[12]    = "notify";
     char ev_relay_on[12]       = "off";
     char ev_relay_off[12]      = "off";
     char ev_error[12]          = "error";
@@ -65,14 +72,15 @@ namespace {
     g_pwmAttached = false;
   }
 
-  void pwmOn() {
+  void pwmOn(uint16_t freqHz) {
 #if defined(ARDUINO_ARCH_ESP32)
     pwmAttachIfNeeded();
     // nastav duty (0..255)
     const uint8_t duty = (uint8_t)((uint16_t)g_cfg.pwmDutyPct * 255u / 100u);
     ledcWrite(BUZZER_PIN, duty);
     // pro jistotu nastav i frekvenci (když se změnila v configu)
-    ledcWriteTone(BUZZER_PIN, g_cfg.pwmFreqHz);
+    const uint16_t f = (freqHz > 0) ? freqHz : g_cfg.pwmFreqHz;
+    ledcWriteTone(BUZZER_PIN, f);
 #endif
   }
 
@@ -93,7 +101,7 @@ namespace {
     digitalWrite(BUZZER_PIN, g_cfg.activeHigh ? HIGH : LOW);
   }
 
-  void pinWriteOn(bool on) {
+  void pinWriteOn(bool on, uint16_t freqHz) {
     if (!g_cfg.enabled) {
       // při zakázání držet OFF
       if (g_cfg.usePwm) pwmOff();
@@ -101,7 +109,7 @@ namespace {
       return;
     }
     if (g_cfg.usePwm) {
-      if (on) pwmOn();
+      if (on) pwmOn(freqHz);
       else pwmOff();
     } else {
       // DC režim (aktivní buzzer)
@@ -126,6 +134,9 @@ namespace {
     if (s == "long")   { outCount = (uint8_t)(sizeof(P_LONG)/sizeof(P_LONG[0])); return P_LONG; }
     if (s == "double") { outCount = (uint8_t)(sizeof(P_DOUBLE)/sizeof(P_DOUBLE[0])); return P_DOUBLE; }
     if (s == "triple") { outCount = (uint8_t)(sizeof(P_TRIPLE)/sizeof(P_TRIPLE[0])); return P_TRIPLE; }
+    if (s == "chirp" || s == "chirpup")    { outCount = (uint8_t)(sizeof(P_CHIRP_UP)/sizeof(P_CHIRP_UP[0])); return P_CHIRP_UP; }
+    if (s == "chirpdown")              { outCount = (uint8_t)(sizeof(P_CHIRP_DOWN)/sizeof(P_CHIRP_DOWN[0])); return P_CHIRP_DOWN; }
+    if (s == "notify" || s == "notification") { outCount = (uint8_t)(sizeof(P_NOTIFY)/sizeof(P_NOTIFY[0])); return P_NOTIFY; }
     if (s == "error")  { outCount = (uint8_t)(sizeof(P_ERROR)/sizeof(P_ERROR[0])); return P_ERROR; }
     outCount = (uint8_t)(sizeof(P_SHORT)/sizeof(P_SHORT[0])); return P_SHORT;
   }
@@ -162,16 +173,16 @@ void buzzerLoop() {
   if (g_stepUntilMs == 0 || (int32_t)(now - g_stepUntilMs) >= 0) {
     if (!g_steps || g_stepIndex >= g_stepCount) {
       g_running = false;
-      pinWriteOn(false);
+      pinWriteOn(false, 0);
       return;
     }
 
     const Step st = g_steps[g_stepIndex++];
-    pinWriteOn(st.on);
+    pinWriteOn(st.on, st.freqHz);
     if (st.ms == 0) {
       // "off" pattern
       g_running = false;
-      pinWriteOn(false);
+      pinWriteOn(false, 0);
       return;
     }
     g_stepUntilMs = now + st.ms;
@@ -192,7 +203,7 @@ void buzzerStop() {
   g_stepCount = 0;
   g_stepIndex = 0;
   g_stepUntilMs = 0;
-  pinWriteOn(false); // zajistí i vypnutí PWM
+  pinWriteOn(false, 0); // zajistí i vypnutí PWM
 }
 
 void buzzerOnControlModeChanged(bool isAuto) {

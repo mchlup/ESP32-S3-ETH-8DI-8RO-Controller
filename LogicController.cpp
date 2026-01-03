@@ -60,7 +60,7 @@ static bool s_autoDefaultOffUnmapped = true;
 static AutoStatus s_autoStatus = { false, 0, SystemMode::MODE1, false, false };
 
 // Aktuální řízení a režim
-static ControlMode currentControlMode = ControlMode::MANUAL;
+static ControlMode currentControlMode = ControlMode::AUTO;
 static SystemMode  manualMode         = SystemMode::MODE1;
 static SystemMode  currentMode        = SystemMode::MODE1;
 
@@ -369,7 +369,8 @@ struct EqSourceCfg {
     int    gpio   = 0;        // pro dallas (0..3)
     String romHex = "";       // pro dallas (16 hex), prázdné => první validní
     String topic  = "";       // pro mqtt
-    String jsonKey = "";    // pro mqtt (JSON klíč), prázdné => payload je číslo / autodetekce
+    String jsonKey = "";      // pro mqtt (JSON klíč), prázdné => payload je číslo / autodetekce
+    uint8_t mqttIdx = 0;      // 1..2 => použij přednastavený MQTT teploměr (z "Teploměry")
     String bleId  = "";       // do budoucna
 };
 
@@ -377,22 +378,24 @@ static EqSourceCfg s_eqOutdoorCfg; // venkovní
 static EqSourceCfg s_eqFlowCfg;    // otopná voda (feedback)
 
 // Křivka (stejný vzorec jako UI): Tflow = (20 - Tout) * slope + 20 + shift
-static float  s_eqSlopeDay   = 1.25f;
-static float  s_eqShiftDay   = 30.0f;
+// Defaulty jsou zvolené tak, aby dávaly smysl bez okamžité saturace na max.
+// (typicky: 55°C při -10°C venku a ~30°C při +15°C venku)
+static float  s_eqSlopeDay   = 1.00f;
+static float  s_eqShiftDay   = 5.00f;
 static float  s_eqSlopeNight = 1.00f;
-static float  s_eqShiftNight = 25.0f;
+static float  s_eqShiftNight = 0.00f;
 
 // Legacy refs (fallback, když slope/shift nejsou v configu)
 static float  s_eqHeatTout1 = -10, s_eqHeatTflow1 = 55, s_eqHeatTout2 = 15, s_eqHeatTflow2 = 30;
 static float  s_eqNightTout1 = -10, s_eqNightTflow1 = 50, s_eqNightTout2 = 15, s_eqNightTflow2 = 25;
 
 // limity teploty otopné vody
-static float  s_eqMinFlow = 22, s_eqMaxFlow = 50;
+static float  s_eqMinFlow = 25, s_eqMaxFlow = 55;
 
 // Řízení 3c ventilu (B varianta = plynulá korekce po krocích)
 static float    s_eqDeadbandC = 0.5f;      // necitlivost (°C)
 static uint8_t  s_eqStepPct   = 4;         // krok změny pozice (%)
-static uint32_t s_eqPeriodMs  = 6000;      // minimální perioda korekcí (ms)
+static uint32_t s_eqPeriodMs  = 30000;     // minimální perioda korekcí (ms)
 static uint8_t  s_eqMinPct    = 0;         // clamp pozice
 static uint8_t  s_eqMaxPct    = 100;
 
@@ -472,12 +475,23 @@ static bool tryGetTempFromSource(const EqSourceCfg& src, float &outC){
     }
 
     if (s == "mqtt"){
-        if (!src.topic.length()) return false;
+        String topic = src.topic;
+        String jsonKey = src.jsonKey;
+
+        // Pokud je nastavené mqttIdx (přednastavený MQTT teploměr z "Teploměry"),
+        // vždy preferujeme aktuální topic/jsonKey z tohoto nastavení.
+        if (src.mqttIdx >= 1 && src.mqttIdx <= 2) {
+            const MqttThermometerCfg &mc = thermometersGetMqtt((uint8_t)(src.mqttIdx - 1));
+            if (mc.topic.length()) topic = mc.topic;
+            if (mc.jsonKey.length()) jsonKey = mc.jsonKey;
+        }
+
+        if (!topic.length()) return false;
         String payload;
-        if (!mqttGetLastValue(src.topic, &payload)) return false;
+        if (!mqttGetLastValue(topic, &payload)) return false;
 
         float tC = NAN;
-        if (!tempParseFromPayload(payload, src.jsonKey, tC)) return false;
+        if (!tempParseFromPayload(payload, jsonKey, tC)) return false;
         outC = tC;
         return isfinite(outC);
     }
@@ -859,9 +873,9 @@ bool logicSetManualModeByName(const String& name) {
 
 void logicInit() {
     // Výchozí stav po startu: MANUAL, režim neřídí vstupy
-    currentControlMode = ControlMode::MANUAL;
+    currentControlMode = ControlMode::AUTO;
     manualMode         = SystemMode::MODE1;
-    currentMode        = manualMode;
+    currentMode        = SystemMode::MODE1;
 
     s_autoStatus = AutoStatus{ false, 0, currentMode, false, false };
 
@@ -1190,6 +1204,7 @@ void logicApplyConfig(const String& json) {
             dst.romHex = String((const char*)(o["rom"] | o["addr"] | dst.romHex.c_str()));
             dst.topic  = String((const char*)(o["topic"] | dst.topic.c_str()));
             dst.jsonKey = String((const char*)(o["jsonKey"] | o["key"] | o["field"] | dst.jsonKey.c_str()));
+            dst.mqttIdx = (uint8_t)(o["mqttIdx"] | o["preset"] | dst.mqttIdx);
             dst.bleId  = String((const char*)(o["bleId"] | o["id"] | dst.bleId.c_str()));
         };
 
@@ -1561,8 +1576,20 @@ uint8_t logicGetMqttSubscribeTopics(String* outTopics, uint8_t maxTopics) {
 
     // Ekviterm topicy
     if (s_eqEnabled) {
-        if (s_eqOutdoorCfg.source == "mqtt") add(s_eqOutdoorCfg.topic);
-        if (s_eqFlowCfg.source == "mqtt") add(s_eqFlowCfg.topic);
+        if (s_eqOutdoorCfg.source == "mqtt") {
+            if (s_eqOutdoorCfg.mqttIdx >= 1 && s_eqOutdoorCfg.mqttIdx <= 2) {
+                add(thermometersGetMqtt((uint8_t)(s_eqOutdoorCfg.mqttIdx - 1)).topic);
+            } else {
+                add(s_eqOutdoorCfg.topic);
+            }
+        }
+        if (s_eqFlowCfg.source == "mqtt") {
+            if (s_eqFlowCfg.mqttIdx >= 1 && s_eqFlowCfg.mqttIdx <= 2) {
+                add(thermometersGetMqtt((uint8_t)(s_eqFlowCfg.mqttIdx - 1)).topic);
+            } else {
+                add(s_eqFlowCfg.topic);
+            }
+        }
     }
 
     // MQTT teploměry z konfigurace (záložka "Teploměry")

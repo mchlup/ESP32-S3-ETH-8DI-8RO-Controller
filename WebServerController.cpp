@@ -534,7 +534,9 @@ void handleApiConfigPost() {
 
     // validace JSON
     // UI může posílat delší popisy / názvy, 4kB bývá málo
-    DynamicJsonDocument doc(12288);
+    // Konfigurace postupně roste (teploměry, ekviterm, pravidla, BLE, ...),
+    // proto necháváme větší buffer, ať se POST z UI zbytečně neodmítá.
+    DynamicJsonDocument doc(32768);
     DeserializationError err = deserializeJson(doc, body);
     if (err) {
         server.send(400, "application/json", "{\"error\":\"invalid json\"}");

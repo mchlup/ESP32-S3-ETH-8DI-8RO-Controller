@@ -38,6 +38,22 @@
     cfg.thermometers.ble = (cfg.thermometers.ble && typeof cfg.thermometers.ble === "object") ? cfg.thermometers.ble : {};
     cfg.thermometers.ble.name = String(cfg.thermometers.ble.name || "BLE Meteo");
     cfg.thermometers.ble.id   = String(cfg.thermometers.ble.id || "meteo.tempC");
+
+    // System roles (meaning within heating system)
+    cfg.thermometers.roles = (cfg.thermometers.roles && typeof cfg.thermometers.roles === "object") ? cfg.thermometers.roles : {};
+    const roles = cfg.thermometers.roles;
+    const ensureRole = (key) => {
+      const r = (roles[key] && typeof roles[key] === "object") ? roles[key] : {};
+      r.source  = String(r.source || "none");
+      r.gpio    = Number.isFinite(r.gpio) ? r.gpio : 0;
+      r.rom     = String(r.rom || r.addr || "");
+      r.topic   = String(r.topic || "");
+      r.jsonKey = String(r.jsonKey || r.key || r.field || "");
+      r.mqttIdx = Number.isFinite(Number(r.mqttIdx || r.preset)) ? Number(r.mqttIdx || r.preset) : 0;
+      r.bleId   = String(r.bleId || r.id || "");
+      roles[key] = r;
+    };
+    ["outdoor","flow","return","dhw","tankTop","tankMid","tankBottom"].forEach(ensureRole);
     return cfg;
   }
 
@@ -85,6 +101,245 @@
     }
 
     renderExtraTempsCfg();
+    renderTempRolesCfg();
+  }
+
+  let lastDash = null;
+
+  const ROLE_LABELS = {
+    outdoor: "Venkovní teplota",
+    flow: "Teplota topné vody (výstup)",
+    return: "Teplota vratky",
+    dhw: "TUV / bojler",
+    tankTop: "Akumulační nádrž – horní",
+    tankMid: "Akumulační nádrž – střed",
+    tankBottom: "Akumulační nádrž – spodní",
+  };
+
+  function encodeRoleVal(cfg, role){
+    const src = String(role?.source || "none");
+    if (src === "dallas"){
+      const gpio = Number(role?.gpio ?? 0);
+      const rom = String(role?.rom || "").trim();
+      return `dallas:${gpio}:${rom}`;
+    }
+    if (src === "mqtt"){
+      const idx = Number(role?.mqttIdx || role?.preset || 0);
+      if (Number.isFinite(idx) && idx >= 1 && idx <= 2) return `mqtt:${idx}`;
+      // try to match by topic
+      const t = String(role?.topic || "").trim();
+      const k = String(role?.jsonKey || "").trim();
+      const list = Array.isArray(cfg?.thermometers?.mqtt) ? cfg.thermometers.mqtt : [];
+      for (let i=0;i<Math.min(2,list.length);i++){
+        const it = list[i] || {};
+        if (String(it.topic||"").trim() === t && String(it.jsonKey||"tempC").trim() === k) return `mqtt:${i+1}`;
+      }
+      return "none";
+    }
+    if (src === "ble"){
+      const id = String(role?.bleId || role?.id || "").trim();
+      return `ble:${id}`;
+    }
+    if (src && src.startsWith("temp")) return src;
+    return "none";
+  }
+
+  function applyRoleFromValue(cfg, roleObj, val){
+    const v = String(val || "none");
+    // reset
+    roleObj.source = "none";
+    roleObj.gpio = 0;
+    roleObj.rom = "";
+    roleObj.topic = "";
+    roleObj.jsonKey = "";
+    roleObj.bleId = "";
+    roleObj.mqttIdx = 0;
+
+    if (v === "none") return;
+    if (v.startsWith("dallas:")){
+      const parts = v.split(":");
+      const gpio = parseInt(parts[1] || "0", 10);
+      const rom = (parts[2] || "").trim();
+      roleObj.source = "dallas";
+      roleObj.gpio = Number.isFinite(gpio) ? gpio : 0;
+      roleObj.rom = rom;
+      return;
+    }
+    if (v.startsWith("mqtt:")){
+      const idx = parseInt(v.split(":")[1] || "0", 10);
+      if (Number.isFinite(idx) && idx >= 1 && idx <= 2){
+        const list = Array.isArray(cfg?.thermometers?.mqtt) ? cfg.thermometers.mqtt : [];
+        const it = list[idx-1] || {};
+        roleObj.source = "mqtt";
+        roleObj.mqttIdx = idx;
+        roleObj.topic = String(it.topic || "").trim();
+        roleObj.jsonKey = String(it.jsonKey || "tempC").trim();
+        return;
+      }
+      return;
+    }
+    if (v.startsWith("ble:")){
+      roleObj.source = "ble";
+      roleObj.bleId = v.substring(4);
+      return;
+    }
+    if (/^temp[1-8]$/.test(v)){
+      roleObj.source = v;
+      return;
+    }
+  }
+
+  function buildRoleOptionsHtml(cfg){
+    const out = [];
+    out.push(`<option value="none">Nepřiřazeno</option>`);
+
+    // Dallas header GPIO0..3
+    out.push(`<optgroup label="Dallas DS18B20 (GPIO0..3)">`);
+    for (let gpio=0; gpio<GPIO_COUNT; gpio++){
+      const nm = String(cfg.dallasNames[gpio] || "").trim() || defaultName(gpio);
+      out.push(`<option value="dallas:${gpio}:">${escapeHtml(nm)} • GPIO${gpio} (auto)</option>`);
+      // known devices (if available)
+      const d = Array.isArray(lastDash?.dallas) ? lastDash.dallas[gpio] : null;
+      const devs = Array.isArray(d?.devices) ? d.devices : [];
+      for (const dv of devs){
+        const rom = String(dv?.rom || "").trim();
+        if (!rom) continue;
+        out.push(`<option value="dallas:${gpio}:${escapeHtml(rom)}">${escapeHtml(nm)} • GPIO${gpio} • ${escapeHtml(rom.toUpperCase())}</option>`);
+      }
+    }
+    out.push(`</optgroup>`);
+
+    // MQTT presets (2×)
+    out.push(`<optgroup label="MQTT teploměry (záložka Teploměry)">`);
+    const ml = Array.isArray(cfg?.thermometers?.mqtt) ? cfg.thermometers.mqtt : [];
+    for (let i=0;i<2;i++){
+      const it = ml[i] || {};
+      const name = String(it.name || "").trim() || `MQTT ${i+1}`;
+      const topic = String(it.topic || "").trim();
+      const key = String(it.jsonKey || "tempC").trim();
+      const dis = topic ? "" : "disabled";
+      const sub = topic ? `${topic}${key ? ` • ${key}` : ""}` : "(nenastaveno)";
+      out.push(`<option value="mqtt:${i+1}" ${dis}>${escapeHtml(name)} • ${escapeHtml(sub)}</option>`);
+    }
+    out.push(`</optgroup>`);
+
+    // BLE
+    out.push(`<optgroup label="BLE">`);
+    {
+      const b = cfg?.thermometers?.ble || {};
+      const name = String(b.name || "BLE").trim();
+      const id = String(b.id || "meteo.tempC").trim();
+      out.push(`<option value="ble:${escapeHtml(id)}">${escapeHtml(name)} • ${escapeHtml(id)}</option>`);
+    }
+    out.push(`</optgroup>`);
+
+    // Legacy TEMP1..8 (terminal inputs)
+    out.push(`<optgroup label="Vstupy TEMP (legacy)">`);
+    for (let i=1;i<=8;i++) out.push(`<option value="temp${i}">Vstup TEMP${i}</option>`);
+    out.push(`</optgroup>`);
+
+    return out.join("");
+  }
+
+  function renderTempRolesCfg(){
+    const host = $id("tblTempRolesCfg");
+    if (!host) return;
+
+    const cfg = ensureShape(App.getConfig?.() || {});
+    host.innerHTML = "";
+
+    const head = document.createElement("div");
+    head.className = "trow head";
+    head.innerHTML = `
+      <div class="col1">Typ</div>
+      <div class="col2">Zdroj</div>
+      <div class="col3">Teplota</div>
+      <div class="col4">Stav</div>
+    `;
+    host.appendChild(head);
+
+    const optsHtml = buildRoleOptionsHtml(cfg);
+
+    const roles = cfg.thermometers.roles || {};
+    for (const key of Object.keys(ROLE_LABELS)){
+      const role = roles[key] || { source: "none" };
+      const row = document.createElement("div");
+      row.className = "trow";
+      row.dataset.role = key;
+      row.innerHTML = `
+        <div class="col1">${escapeHtml(ROLE_LABELS[key])}</div>
+        <div class="col2"><select class="pfield roleSel" data-role="${escapeHtml(key)}"></select></div>
+        <div class="col3 tempCell" id="roleTempCell_${escapeHtml(key)}">—</div>
+        <div class="col4 muted" id="roleTempState_${escapeHtml(key)}">—</div>
+      `;
+      host.appendChild(row);
+      const sel = row.querySelector("select");
+      sel.innerHTML = optsHtml;
+      sel.value = encodeRoleVal(cfg, role);
+    }
+
+    updateRoleTempCells(cfg, lastDash);
+  }
+
+  function tryGetRoleTemp(cfg, dash, role){
+    const src = String(role?.source || "none");
+    if (!dash) return { valid:false };
+    if (src === "dallas"){
+      const gpio = Number(role?.gpio ?? 0);
+      const rom = String(role?.rom || "").trim().toUpperCase();
+      const d = Array.isArray(dash.dallas) ? dash.dallas[gpio] : null;
+      const devs = Array.isArray(d?.devices) ? d.devices : [];
+      let best = null;
+      for (const dv of devs){
+        const r = String(dv?.rom || "").trim().toUpperCase();
+        if (rom && r !== rom) continue;
+        if (dv && dv.valid && isFiniteNum(dv.tempC)) { best = dv; break; }
+      }
+      if (!best && !rom){
+        // first valid
+        for (const dv of devs){
+          if (dv && dv.valid && isFiniteNum(dv.tempC)) { best = dv; break; }
+        }
+      }
+      if (best) return { valid:true, tempC: best.tempC };
+      return { valid:false };
+    }
+    if (src === "mqtt"){
+      const idx = Number(role?.mqttIdx || role?.preset || 0);
+      const mt = Array.isArray(dash.mqttTemps) ? dash.mqttTemps.find(x => Number(x.idx) === idx) : null;
+      if (mt && mt.valid && isFiniteNum(mt.valueC)) return { valid:true, tempC: mt.valueC, ageMs: mt.ageMs };
+      return { valid:false };
+    }
+    if (src === "ble"){
+      const id = String(role?.bleId || role?.id || "").trim();
+      const bt = Array.isArray(dash.bleTemps) ? dash.bleTemps.find(x => String(x.id||"") === id) : null;
+      if (bt && bt.valid && isFiniteNum(bt.valueC)) return { valid:true, tempC: bt.valueC, ageMs: bt.ageMs };
+      return { valid:false };
+    }
+    if (src && src.startsWith("temp")){
+      const i = parseInt(src.substring(4) || "0", 10) - 1;
+      if (i>=0 && i<8){
+        const v = dash.temps?.[i];
+        const ok = dash.tempValid?.[i];
+        if (ok && isFiniteNum(v)) return { valid:true, tempC: v };
+      }
+      return { valid:false };
+    }
+    return { valid:false };
+  }
+
+  function updateRoleTempCells(cfg, dash){
+    const roles = cfg?.thermometers?.roles || {};
+    for (const key of Object.keys(ROLE_LABELS)){
+      const role = roles[key] || {};
+      const cell = $id(`roleTempCell_${key}`);
+      const state = $id(`roleTempState_${key}`);
+      if (!cell || !state) continue;
+      const r = tryGetRoleTemp(cfg, dash, role);
+      cell.textContent = (r.valid && isFiniteNum(r.tempC)) ? `${r.tempC.toFixed(1)} °C` : "—";
+      state.textContent = r.valid ? "OK" : "Bez dat";
+      state.className = r.valid ? "" : "muted";
+    }
   }
 
   function renderExtraTempsCfg(){
@@ -176,11 +431,27 @@
     }
   }
 
+  function applyFromRoleRow(row){
+    const key = String(row?.dataset?.role || "");
+    if (!key || !(key in ROLE_LABELS)) return;
+    const sel = row.querySelector("select.roleSel");
+    if (!sel) return;
+
+    const cfg = ensureShape(App.getConfig?.() || {});
+    cfg.thermometers.roles = cfg.thermometers.roles || {};
+    const r = (cfg.thermometers.roles[key] && typeof cfg.thermometers.roles[key] === "object") ? cfg.thermometers.roles[key] : {};
+    applyRoleFromValue(cfg, r, sel.value);
+    cfg.thermometers.roles[key] = r;
+    App.setConfig?.(cfg);
+    updateRoleTempCells(cfg, lastDash);
+  }
+
   async function refreshTempsAndDiag(){
     try{
       const r = await fetch("/api/dash", {cache:"no-store"});
       if(!r.ok) return;
       const j = await r.json();
+      lastDash = j;
       const temps = Array.isArray(j?.temps) ? j.temps : [];
       const vArr  = Array.isArray(j?.tempsValid) ? j.tempsValid : [];
       const mqttTemps = Array.isArray(j?.mqttTemps) ? j.mqttTemps : [];
@@ -232,6 +503,9 @@
           cell.title = valid ? "" : "Neplatné / bez fix";
         }
       }
+
+      // Update role temperature preview cells
+      updateRoleTempCells(ensureShape(App.getConfig?.() || {}), lastDash);
     }catch(e){}
   }
 
@@ -380,7 +654,16 @@
       });
     }
 
-    $id("btnSaveTempsCfg")?.addEventListener("click", async ()=>{
+    const host3 = $id("tblTempRolesCfg");
+    if (host3){
+      host3.addEventListener("change", (ev)=>{
+        const row = ev.target.closest(".trow");
+        if (!row) return;
+        if (ev.target.matches("select.roleSel")) applyFromRoleRow(row);
+      });
+    }
+
+    const doSave = async ()=>{
       try{
         // Migration: header thermometers are independent; clear old temp roles on terminal inputs 1..4
         const cfg = App.getConfig?.();
@@ -398,7 +681,10 @@
       }catch(e){
         App.toast?.("Chyba při ukládání.");
       }
-    });
+    };
+
+    $id("btnSaveTempsCfg")?.addEventListener("click", doSave);
+    $id("btnSaveTempRoles")?.addEventListener("click", doSave);
   }
 
   const prev = App.onConfigLoaded;

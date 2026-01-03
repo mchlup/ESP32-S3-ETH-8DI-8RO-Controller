@@ -8,6 +8,8 @@
 
   const el = {
     btnSave: $("btnSaveEquitherm"),
+    btnUseRoleOutdoor: $("btnEqUseRoleOutdoor"),
+    btnUseRoleFlow: $("btnEqUseRoleFlow"),
     enabled: $("eqEnabled"),
 
     outdoorSource: $("eqOutdoorSource"),
@@ -75,6 +77,31 @@
     return v;
   }
 
+  // Normalizace hodnot z configu (kompatibilita se staršími verzemi, kde se ukládalo např. v desetinách).
+  function normFlow(v, defV){
+    if (typeof v !== 'number' || !isFinite(v)) return defV;
+    // typicky 250 = 25.0
+    if (v > 120 && v <= 2000) return v / 10.0;
+    return v;
+  }
+  function normShift(v, defV){
+    if (typeof v !== 'number' || !isFinite(v)) return defV;
+    if (Math.abs(v) > 60 && Math.abs(v) <= 600) return v / 10.0;
+    return v;
+  }
+  function normSlope(v, defV){
+    if (typeof v !== 'number' || !isFinite(v)) return defV;
+    // někde se ukládalo v setinách (např. 100 = 1.00)
+    if (v > 10 && v <= 500) return v / 100.0;
+    return v;
+  }
+  function normDeadband(v, defV){
+    if (typeof v !== 'number' || !isFinite(v)) return defV;
+    if (v > 5 && v <= 50) return v / 10.0;
+    return v;
+  }
+
+
   function computeTargetFlow(tout, slope, shift, minFlow, maxFlow) {
     // stejný vzorec jako firmware/UI: Tflow = (20 - Tout) * slope + 20 + shift
     const t = (20 - tout) * slope + 20 + shift;
@@ -86,6 +113,20 @@
     if (!c || !c.getContext) return;
     const ctx = c.getContext("2d");
 
+    // Canvas je v DOM často škálovaný přes CSS. Při změně šířky okna (layout 1/2 sloupce)
+    // proto přepočítáme interní rozlišení na aktuální velikost v px, aby se nerozbilo vykreslení.
+    const rect = c.getBoundingClientRect();
+    const dpr = (window.devicePixelRatio || 1);
+    const cssW = Math.max(10, Math.round(rect.width));
+    const cssH = Math.max(10, Math.round(rect.height));
+    const needW = Math.round(cssW * dpr);
+    const needH = Math.round(cssH * dpr);
+    if (c.width !== needW || c.height !== needH) {
+      c.width = needW;
+      c.height = needH;
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
     // čti hodnoty z UI (i když nejsou uložené)
     const slopeDay = parseFloat(el.slopeDay.value || "1");
     const shiftDay = parseFloat(el.shiftDay.value || "0");
@@ -94,7 +135,7 @@
     const minFlow = parseFloat(el.minFlow.value || "0");
     const maxFlow = parseFloat(el.maxFlow.value || "100");
 
-    const W = c.width, H = c.height;
+    const W = cssW, H = cssH;
     const fg = (window.getComputedStyle ? getComputedStyle(c).color : "#000") || "#000";
     ctx.clearRect(0, 0, W, H);
 
@@ -252,52 +293,67 @@
     return opts.length ? opts : [{ value: "meteo.tempC", label: "BLE — žádná data" }];
   }
 
-  function buildMqttPresetOptions(cfg, currentTopic, currentJsonKey) {
+  function buildMqttPresetOptions(cfg, currentMqttIdx, currentTopic, currentJsonKey) {
     const list = (cfg?.thermometers && Array.isArray(cfg.thermometers.mqtt)) ? cfg.thermometers.mqtt : [];
     const opts = [];
 
+    // Always allow custom (manual) MQTT topic
     opts.push({ value: "custom", label: "Vlastní (ruční)" });
 
+    // Build preset choices (1..2). If not configured => keep visible but disabled.
     for (let i = 0; i < 2; i++) {
       const it = list[i] || {};
       const topic = String(it.topic || "").trim();
       const name = String(it.name || "").trim() || `MQTT teploměr ${i + 1}`;
       const key = String(it.jsonKey || "tempC").trim();
-      if (!topic) continue;
-      // Požadavek: pokud je MQTT teploměr konfigurován v "Teploměry",
-      // tak ho v ekvitermu nelze přímo zvolit (musí být "Vlastní").
-      // Necháme ho pouze informativně jako disabled položku.
-      const label = `${name} • ${topic}${key ? ` • ${key}` : ""} (spravováno v Teploměry)`;
-      opts.push({ value: String(i + 1), label, disabled: true });
+      const label = topic
+        ? `${name} • ${topic}${key ? ` • ${key}` : ""}`
+        : `${name} (nenastaveno)`;
+      opts.push({ value: String(i + 1), label, disabled: !topic });
     }
 
-    // pokud je aktuální konfigurace MQTT a neodpovídá žádnému přednastavení, přidáme ji jako readonly položku
-    const curT = String(currentTopic || "").trim();
-    const curK = String(currentJsonKey || "").trim();
-    if (curT) {
-      const match = opts.some(o => {
-        if (!o || !o.value || o.value === "custom") return false;
-        const idx = Number(o.value) - 1;
-        const it = list[idx] || {};
-        return String(it.topic || "").trim() === curT && String(it.jsonKey || "").trim() === curK;
-      });
-      if (!match) {
-        opts.push({ value: "custom-cur", label: `Vlastní: ${curT}${curK ? ` • ${curK}` : ""}` });
+    // Determine which preset should be selected based on config
+    let selectedValue = "custom";
+    const idx = Number(currentMqttIdx || 0);
+    if (Number.isFinite(idx) && idx >= 1 && idx <= 2) {
+      const it = list[idx - 1] || {};
+      if (String(it.topic || "").trim()) selectedValue = String(idx);
+    }
+    if (selectedValue === "custom") {
+      const curT = String(currentTopic || "").trim();
+      const curK = String(currentJsonKey || "").trim();
+      if (curT) {
+        for (let i = 0; i < 2; i++) {
+          const it = list[i] || {};
+          const t = String(it.topic || "").trim();
+          const k = String(it.jsonKey || "tempC").trim();
+          if (t && t === curT && k === curK) {
+            selectedValue = String(i + 1);
+            break;
+          }
+        }
       }
     }
 
-    return opts;
+    return { options: opts, selectedValue };
   }
 
   function applyMqttPresetToInputs(presetValue, cfg, topicInput, jsonKeyInput) {
     if (!topicInput || !jsonKeyInput) return;
     const list = (cfg?.thermometers && Array.isArray(cfg.thermometers.mqtt)) ? cfg.thermometers.mqtt : [];
     const v = String(presetValue || "");
+
+    // custom => keep editable
+    if (v === "custom") {
+      topicInput.readOnly = false;
+      jsonKeyInput.readOnly = false;
+      topicInput.classList.remove("ro");
+      jsonKeyInput.classList.remove("ro");
+      return;
+    }
+
     const idx = Number(v);
     if (!Number.isFinite(idx) || idx < 1 || idx > 2) return;
-
-    // Viz buildMqttPresetOptions(): položky 1..2 jsou disabled (informativní),
-    // takže se sem běžně nedostaneme. Necháváme jako kompatibilitu.
 
     const it = list[idx - 1] || {};
     const topic = String(it.topic || "").trim();
@@ -306,6 +362,12 @@
 
     topicInput.value = topic;
     jsonKeyInput.value = key;
+
+    // if user picked preset, lock fields to make intent clear
+    topicInput.readOnly = true;
+    jsonKeyInput.readOnly = true;
+    topicInput.classList.add("ro");
+    jsonKeyInput.classList.add("ro");
   }
 
   function setSelectOptions(selectEl, options, keepValue) {
@@ -366,6 +428,71 @@
     el.flowBleRow.style.display    = (fs === "ble") ? "" : "none";
   }
 
+  // Quick helper: copy the system role assignment (Teploměry -> "Význam teploměrů") into the ekviterm source UI.
+  function applyRoleToEq(kind, roleCfg, cfg) {
+    if (!roleCfg || typeof roleCfg !== "object") return false;
+    const src = String(roleCfg.source || "none").trim();
+    if (src === "none") return false;
+
+    const isOutdoor = (kind === "outdoor");
+    const sourceSel = isOutdoor ? el.outdoorSource : el.flowSource;
+    const dallasSel = isOutdoor ? el.outdoorDallas : el.flowDallas;
+    const presetSel = isOutdoor ? el.outdoorMqttPreset : el.flowMqttPreset;
+    const topicInp  = isOutdoor ? el.outdoorTopic : el.flowTopic;
+    const keyInp    = isOutdoor ? el.outdoorJsonKey : el.flowJsonKey;
+    const bleSel    = isOutdoor ? el.outdoorBle : el.flowBle;
+
+    // set source + toggle rows
+    if (sourceSel) sourceSel.value = src;
+    updateSourceRows();
+
+    if (src === "dallas") {
+      const gpio = Number.isFinite(Number(roleCfg.gpio)) ? Number(roleCfg.gpio) : 0;
+      const rom = String(roleCfg.rom || roleCfg.addr || "").toUpperCase();
+      const v = makeDallasValue(gpio, rom);
+      if (dallasSel) {
+        dallasSel.value = v;
+        // fallback if specific ROM isn't present in the current option set
+        if (String(dallasSel.value) !== v) dallasSel.value = makeDallasValue(gpio, "");
+      }
+      return true;
+    }
+
+    if (src === "mqtt") {
+      const idx = Number(roleCfg.mqttIdx || roleCfg.preset || 0);
+      if (presetSel) {
+        if (idx >= 1 && idx <= 2) {
+          presetSel.value = String(idx);
+          applyMqttPresetToInputs(presetSel.value, cfg, topicInp, keyInp);
+        } else {
+          presetSel.value = "custom";
+          applyMqttPresetToInputs("custom", cfg, topicInp, keyInp);
+          if (topicInp) topicInp.value = String(roleCfg.topic || "");
+          if (keyInp) keyInp.value = String(roleCfg.jsonKey || roleCfg.key || roleCfg.field || "");
+        }
+      } else {
+        if (topicInp) topicInp.value = String(roleCfg.topic || "");
+        if (keyInp) keyInp.value = String(roleCfg.jsonKey || roleCfg.key || roleCfg.field || "");
+      }
+      return true;
+    }
+
+    if (src === "ble") {
+      const id = String(roleCfg.bleId || roleCfg.id || cfg?.thermometers?.ble?.id || "meteo.tempC");
+      if (bleSel) bleSel.value = id;
+      return true;
+    }
+
+    // legacy temp1..temp8
+    if (/^temp\d+$/.test(src)) {
+      if (sourceSel) sourceSel.value = src;
+      updateSourceRows();
+      return true;
+    }
+
+    return false;
+  }
+
   function loadFromConfig(cfg) {
     App.ensureConfigShape(cfg);
     const e = cfg.equitherm || {};
@@ -399,20 +526,24 @@
     const vm = (e.valve && typeof e.valve.master === "number") ? e.valve.master : 0;
     el.valveMaster.value = String(vm || 0);
 
-    // curve
-    el.minFlow.value = (typeof e.minFlow === "number") ? e.minFlow : 22;
-    el.maxFlow.value = (typeof e.maxFlow === "number") ? e.maxFlow : 50;
+    // curve – sane defaults (do not saturate maxFlow in common temps)
+    el.minFlow.value = normFlow(e.minFlow, 25);
+    el.maxFlow.value = normFlow(e.maxFlow, 55);
 
-    el.slopeDay.value   = (typeof e.slopeDay === "number") ? e.slopeDay : 1.25;
-    el.shiftDay.value   = (typeof e.shiftDay === "number") ? e.shiftDay : 30;
-    el.slopeNight.value = (typeof e.slopeNight === "number") ? e.slopeNight : 1.0;
-    el.shiftNight.value = (typeof e.shiftNight === "number") ? e.shiftNight : 25;
+    // Formula: Tflow = (20 - Tout) * slope + 20 + shift
+    // Defaults correspond to day refs: (-10 -> 55), (15 -> 30) => slope=1, shift=5
+    // and night refs: (-10 -> 50), (15 -> 25) => slope=1, shift=0
+    el.slopeDay.value   = normSlope(e.slopeDay, 1.0);
+    el.shiftDay.value   = normShift(e.shiftDay, 5.0);
+    el.slopeNight.value = normSlope(e.slopeNight, 1.0);
+    el.shiftNight.value = normShift(e.shiftNight, 0.0);
 
     // control
     const c = e.control || {};
-    el.deadbandC.value = (typeof c.deadbandC === "number") ? c.deadbandC : 0.5;
+    el.deadbandC.value = normDeadband(c.deadbandC, 0.5);
     el.stepPct.value   = (typeof c.stepPct === "number") ? c.stepPct : 4;
-    el.periodS.value   = Math.round(((typeof c.periodMs === "number") ? c.periodMs : 6000) / 1000);
+    // Default minimum adjustment period for 3c valve: 30 s
+    el.periodS.value   = Math.round(((typeof c.periodMs === "number") ? c.periodMs : 30000) / 1000);
     el.minPct.value    = (typeof c.minPct === "number") ? c.minPct : 0;
     el.maxPct.value    = (typeof c.maxPct === "number") ? c.maxPct : 100;
 
@@ -449,12 +580,16 @@
     e.outdoor.topic = "";
     e.outdoor.jsonKey = "";
     e.outdoor.bleId = "";
+    e.outdoor.mqttIdx = 0;
 
     if (os === "dallas") {
       const sel = parseDallasValue(el.outdoorDallas.value) || { gpio: 0, rom: "" };
       e.outdoor.gpio = sel.gpio;
       e.outdoor.rom  = sel.rom || "";
     } else if (os === "mqtt") {
+      const preset = el.outdoorMqttPreset ? String(el.outdoorMqttPreset.value || "custom") : "custom";
+      const idx = Number(preset);
+      if (Number.isFinite(idx) && idx >= 1 && idx <= 2) e.outdoor.mqttIdx = idx;
       e.outdoor.topic = (el.outdoorTopic.value || "").trim();
       e.outdoor.jsonKey = (el.outdoorJsonKey.value || "").trim();
     } else if (os === "ble") {
@@ -470,12 +605,16 @@
     e.flow.topic = "";
     e.flow.jsonKey = "";
     e.flow.bleId = "";
+    e.flow.mqttIdx = 0;
 
     if (fs === "dallas") {
       const sel = parseDallasValue(el.flowDallas.value) || { gpio: 0, rom: "" };
       e.flow.gpio = sel.gpio;
       e.flow.rom  = sel.rom || "";
     } else if (fs === "mqtt") {
+      const preset = el.flowMqttPreset ? String(el.flowMqttPreset.value || "custom") : "custom";
+      const idx = Number(preset);
+      if (Number.isFinite(idx) && idx >= 1 && idx <= 2) e.flow.mqttIdx = idx;
       e.flow.topic = (el.flowTopic.value || "").trim();
       e.flow.jsonKey = (el.flowJsonKey.value || "").trim();
     } else if (fs === "ble") {
@@ -499,7 +638,8 @@
     e.control = e.control || {};
     e.control.deadbandC = parseFloat(el.deadbandC.value);
     e.control.stepPct   = parseInt(el.stepPct.value, 10);
-    e.control.periodMs  = Math.max(500, (parseInt(el.periodS.value, 10) || 6) * 1000);
+    // Default: 30 s (anti-hunt). Clamp to >= 500 ms.
+    e.control.periodMs  = Math.max(500, (parseInt(el.periodS.value, 10) || 30) * 1000);
     e.control.minPct    = parseInt(el.minPct.value, 10);
     e.control.maxPct    = parseInt(el.maxPct.value, 10);
 
@@ -560,22 +700,26 @@
 
       // MQTT presets from "Teploměry" (2×)
       {
-        const outCurTopic = (cfg?.equitherm?.outdoor?.source === "mqtt") ? String(cfg.equitherm.outdoor.topic || "") : "";
-        const outCurKey = (cfg?.equitherm?.outdoor?.source === "mqtt") ? String(cfg.equitherm.outdoor.jsonKey || "") : "";
-        const flowCurTopic = (cfg?.equitherm?.flow?.source === "mqtt") ? String(cfg.equitherm.flow.topic || "") : "";
-        const flowCurKey = (cfg?.equitherm?.flow?.source === "mqtt") ? String(cfg.equitherm.flow.jsonKey || "") : "";
+        const outSrc = cfg?.equitherm?.outdoor || {};
+        const flowSrc = cfg?.equitherm?.flow || {};
+        const outCurTopic = (outSrc.source === "mqtt") ? String(outSrc.topic || "") : "";
+        const outCurKey   = (outSrc.source === "mqtt") ? String(outSrc.jsonKey || "") : "";
+        const outCurIdx   = (outSrc.source === "mqtt") ? Number(outSrc.mqttIdx || outSrc.preset || 0) : 0;
+        const flowCurTopic = (flowSrc.source === "mqtt") ? String(flowSrc.topic || "") : "";
+        const flowCurKey   = (flowSrc.source === "mqtt") ? String(flowSrc.jsonKey || "") : "";
+        const flowCurIdx   = (flowSrc.source === "mqtt") ? Number(flowSrc.mqttIdx || flowSrc.preset || 0) : 0;
 
         if (el.outdoorMqttPreset) {
-          const opts = buildMqttPresetOptions(cfg, outCurTopic, outCurKey);
-          setSelectOptions(el.outdoorMqttPreset, opts, false);
-          const sel = opts.find(o => o.selected);
-          el.outdoorMqttPreset.value = sel ? sel.value : "custom";
+          const res = buildMqttPresetOptions(cfg, outCurIdx, outCurTopic, outCurKey);
+          setSelectOptions(el.outdoorMqttPreset, res.options, false);
+          el.outdoorMqttPreset.value = res.selectedValue;
+          applyMqttPresetToInputs(res.selectedValue, cfg, el.outdoorTopic, el.outdoorJsonKey);
         }
         if (el.flowMqttPreset) {
-          const opts = buildMqttPresetOptions(cfg, flowCurTopic, flowCurKey);
-          setSelectOptions(el.flowMqttPreset, opts, false);
-          const sel = opts.find(o => o.selected);
-          el.flowMqttPreset.value = sel ? sel.value : "custom";
+          const res = buildMqttPresetOptions(cfg, flowCurIdx, flowCurTopic, flowCurKey);
+          setSelectOptions(el.flowMqttPreset, res.options, false);
+          el.flowMqttPreset.value = res.selectedValue;
+          applyMqttPresetToInputs(res.selectedValue, cfg, el.flowTopic, el.flowJsonKey);
         }
       }
 
@@ -617,6 +761,30 @@
     el.outdoorSource.addEventListener("change", updateSourceRows);
     el.flowSource.addEventListener("change", updateSourceRows);
 
+    // Quick apply: copy "Význam teploměrů" (Teploměry) into ekviterm sources
+    if (el.btnUseRoleOutdoor) {
+      el.btnUseRoleOutdoor.addEventListener("click", () => {
+        const cfg = (App.ensureConfigShape ? App.ensureConfigShape() : App.getConfig());
+        const role = cfg?.thermometers?.roles?.outdoor;
+        if (!applyRoleToEq("outdoor", role, cfg)) {
+          App.toast("Role 'Venkovní teplota' není nastavena (Teploměry -> Význam teploměrů).", true);
+        } else {
+          App.toast("Použito přiřazení role: Venkovní teplota.");
+        }
+      });
+    }
+    if (el.btnUseRoleFlow) {
+      el.btnUseRoleFlow.addEventListener("click", () => {
+        const cfg = (App.ensureConfigShape ? App.ensureConfigShape() : App.getConfig());
+        const role = cfg?.thermometers?.roles?.flow;
+        if (!applyRoleToEq("flow", role, cfg)) {
+          App.toast("Role 'Teplota otopné vody' není nastavena (Teploměry -> Význam teploměrů).", true);
+        } else {
+          App.toast("Použito přiřazení role: Teplota otopné vody.");
+        }
+      });
+    }
+
     // MQTT presets (záložka "Teploměry")
     if (el.outdoorMqttPreset) {
       el.outdoorMqttPreset.addEventListener("change", () => {
@@ -637,6 +805,13 @@
       if (x) x.addEventListener("input", redraw);
     });
 
+    // Při změně velikosti okna se často přepíná layout (1/2 sloupce) => přepočítat canvas.
+    let resizeT = null;
+    window.addEventListener("resize", () => {
+      if (resizeT) clearTimeout(resizeT);
+      resizeT = setTimeout(() => drawCurve(lastStatus), 120);
+    });
+
     el.btnSave.addEventListener("click", async () => {
       const cfg = App.getConfig();
       saveToConfig(cfg);
@@ -653,7 +828,8 @@
     bindEvents();
     loadFromConfig(cfg);
     refreshDash(cfg, true);
-    drawCurve(lastStatus);
+    // po prvním renderu layoutu dej šanci layoutu dopočítat velikosti
+    setTimeout(() => drawCurve(lastStatus), 0);
   };
 
   const prevOnStatusLoaded = App.onStatusLoaded;

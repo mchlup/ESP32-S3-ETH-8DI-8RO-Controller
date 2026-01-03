@@ -1,7 +1,17 @@
 (() => {
   "use strict";
 
-  const patterns = ["off","short","long","double","triple","error"];
+  const patterns = [
+    "off",
+    "short",
+    "chirp",
+    "chirpDown",
+    "notify",
+    "long",
+    "double",
+    "triple",
+    "error",
+  ];
 
   const apiGet = () => window.App.apiGetJson("/api/buzzer");
   const apiSet = (cfg) => window.App.apiPostJson("/api/buzzer", { action: "set_config", config: cfg });

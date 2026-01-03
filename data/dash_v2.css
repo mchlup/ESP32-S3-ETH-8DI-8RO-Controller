@@ -1,106 +1,137 @@
-/* Dashboard V2 – widgety dle aktivních funkcí (ekviterm, ventily, teploty)
-   Pozn.: používá CSS proměnné z /styles.css, aby to vypadalo dobře v dark/light. */
+/* Dashboard V2 – sekce dle aktivních funkcí (ventily, teploty) */
 
-.ioTile{
-  display:grid;
+.ioTile {
+  display: grid;
   grid-template-columns: 1fr auto;
   gap: 10px;
   padding: 12px;
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: 12px;
   background: rgba(255,255,255,.02);
 }
-:root.light .ioTile{ background: var(--panel); }
 
-.ioTile .ioName{ font-weight: 750; }
-.ioTile .ioSub{ font-size: 12px; color: var(--muted); margin-top: 4px; }
+.ioTile .ioName { font-weight: 700; }
+.ioTile .ioSub { font-size: 12px; color: var(--muted); margin-top: 4px; }
 
-.ioRight{
-  display:grid;
-  align-content:center;
-  justify-items:center;
+.ioRight {
+  display: grid;
+  align-content: center;
+  justify-items: center;
   gap: 8px;
 }
 
-.dial{
+.dial {
   width: 48px;
   height: 48px;
   border-radius: 999px;
   background: conic-gradient(
-    var(--text) 0%,
-    var(--text) var(--p),
-    rgba(255,255,255,.14) var(--p),
-    rgba(255,255,255,.14) 100%
+    var(--accent) 0%,
+    var(--accent) var(--p),
+    rgba(255,255,255,.10) var(--p),
+    rgba(255,255,255,.10) 100%
   );
-  display:grid;
-  place-items:center;
+  display: grid;
+  place-items: center;
   position: relative;
 }
-:root.light .dial{
-  background: conic-gradient(
-    var(--text) 0%,
-    var(--text) var(--p),
-    rgba(0,0,0,.10) var(--p),
-    rgba(0,0,0,.10) 100%
-  );
-}
 
-.dial::after{
-  content:"";
+.dial::after {
+  content: "";
   width: 36px;
   height: 36px;
   border-radius: 999px;
-  background: rgba(255,255,255,.03);
+  background: var(--panel);
   border: 1px solid var(--line);
-  position:absolute;
+  position: absolute;
   inset: 6px;
 }
-:root.light .dial::after{ background: rgba(255,255,255,.92); }
 
 .dial .dialTxt{
   position: relative;
   z-index: 1;
   font-size: 12px;
   font-weight: 800;
-  color: var(--text);
 }
 
-.ioTile.moving .dial{ animation: dialPulse 1s ease-in-out infinite; }
+.ioTile.moving .dial {
+  animation: dialPulse 1s ease-in-out infinite;
+}
 
-@keyframes dialPulse{
+@keyframes dialPulse {
   0% { transform: scale(1.00); }
   50% { transform: scale(1.05); }
   100% { transform: scale(1.00); }
 }
 
-.tempValue{
+.tempValue {
   font-size: 18px;
-  font-weight: 850;
-  color: var(--text);
+  font-weight: 800;
 }
 
 /* Ekviterm – miniaturní graf */
 .ioTile.eqCurveTile{ grid-column: 1 / -1; }
 .ioTile.eqCurveTile .ioRight{ justify-items: stretch; width:100%; }
-
 .eqMiniCurve{
   width: 100%;
   max-width: 340px;
   height: 120px;
-  border-radius: 12px;
-  background: rgba(255,255,255,.03);
+  border-radius: 10px;
+  background: rgba(255,255,255,.02);
   border: 1px solid var(--line);
 }
-:root.light .eqMiniCurve{ background: rgba(0,0,0,.03); }
 
-/* Ekviterm blok na dashboardu – 3 dlaždice v řádku + graf přes celou šířku */
-#eqDashGrid{
+
+/* Dashboard layout – Ekviterm jako hlavní widget */
+#page-dash .dashLayout{
+  display:grid;
+  grid-template-columns: 1.55fr .85fr;
+  grid-template-areas:
+    "equitherm modes"
+    "relays inputs"
+    "valves temps";
+  gap: 14px;
+}
+
+/* Při skrytí karet (display:none) se layout automaticky zabalí */
+#page-dash #cardEquitherm{ grid-area: equitherm; }
+#page-dash #cardModes{ grid-area: modes; }
+#page-dash #cardRelays{ grid-area: relays; }
+#page-dash #cardInputs{ grid-area: inputs; }
+#page-dash #cardValves{ grid-area: valves; }
+#page-dash #cardTemps{ grid-area: temps; }
+
+/* Režimy – pole pod sebou (užší karta) */
+#page-dash .row.stack{
+  flex-direction: column;
+  align-items: stretch;
+}
+#page-dash .row.stack .field{ width: 100%; }
+#page-dash .row.stack .btnRow{ justify-content: flex-start; }
+
+/* Ekviterm dlaždice – kompaktnější a vyvážené */
+#page-dash #eqDashGrid{
   grid-template-columns: repeat(3, minmax(0,1fr));
+  gap: 10px;
 }
-@media (max-width: 1050px){
-  #eqDashGrid{ grid-template-columns: repeat(2, minmax(0,1fr)); }
+#page-dash #eqDashGrid .ioTile{ padding: 10px; }
+
+/* Ekviterm – větší graf + popisky */
+#page-dash .eqMiniCurve{
+  max-width: 520px;
+  height: 160px;
 }
-@media (max-width: 620px){
-  #eqDashGrid{ grid-template-columns: 1fr; }
-  .eqMiniCurve{ max-width: 100%; }
+
+/* Responsive */
+@media (max-width: 1100px){
+  #page-dash .dashLayout{
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "equitherm"
+      "modes"
+      "relays"
+      "inputs"
+      "valves"
+      "temps";
+  }
+  #page-dash .eqMiniCurve{ max-width: 100%; }
 }
