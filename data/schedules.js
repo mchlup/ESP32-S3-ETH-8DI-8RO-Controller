@@ -345,7 +345,7 @@
               : `<input type="time" class="pAt" value="${s.at}">`
             }
             <span class="pill pDays">${daysStr(s.days)}</span>
-            <button class="btn ghost pEditDays">Dny…</button>
+            <button class="btn ghost pEditDays">Dny...</button>
           </div>
         </div>
 
@@ -378,7 +378,7 @@
           } else {
             const enVal = !!s.value?.enable;
             params.innerHTML = `<select class="pBool">${boolSel(enVal)}</select>
-                                <button class="btn ghost pToInterval">Od–Do…</button>`;
+                                <button class="btn ghost pToInterval">Od–Do...</button>`;
           }
         } else {
           params.innerHTML = `<span class="muted">—</span>`;

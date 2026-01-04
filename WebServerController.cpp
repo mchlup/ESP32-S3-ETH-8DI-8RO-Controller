@@ -542,8 +542,11 @@ void handleApiStatus() {
     tuv["modeActive"] = ts.modeActive;
     tuv["eqValveMaster"] = ts.eqValveMaster;
     tuv["eqValveTargetPct"] = ts.eqValveTargetPct;
+    tuv["eqValveSavedPct"] = ts.eqValveSavedPct;
+    tuv["eqValveSavedValid"] = ts.eqValveSavedValid;
     tuv["valveMaster"] = ts.valveMaster;
     tuv["valveTargetPct"] = ts.valveTargetPct;
+    tuv["valvePosPct"] = ts.valvePosPct;
     tuv["nightMode"] = logicGetNightMode();
 
     // --- equitherm ---
@@ -561,12 +564,46 @@ void handleApiStatus() {
         if (es.outdoorReason.length()) eq["outdoorReason"] = es.outdoorReason; else eq["outdoorReason"] = nullptr;
         if (isfinite(es.flowC))    eq["flowC"]    = es.flowC;    else eq["flowC"]    = nullptr;
         if (isfinite(es.targetFlowC)) eq["targetFlowC"] = es.targetFlowC; else eq["targetFlowC"] = nullptr;
+        if (isfinite(es.actualC)) eq["actualC"] = es.actualC; else eq["actualC"] = nullptr;
+        if (isfinite(es.targetC)) eq["targetC"] = es.targetC; else eq["targetC"] = nullptr;
+        eq["akuSupportActive"] = es.akuSupportActive;
+        if (es.akuSupportReason.length()) eq["akuSupportReason"] = es.akuSupportReason; else eq["akuSupportReason"] = nullptr;
+        if (isfinite(es.akuTopC)) eq["akuTopC"] = es.akuTopC; else eq["akuTopC"] = nullptr;
+        if (isfinite(es.akuMidC)) eq["akuMidC"] = es.akuMidC; else eq["akuMidC"] = nullptr;
+        if (isfinite(es.akuBottomC)) eq["akuBottomC"] = es.akuBottomC; else eq["akuBottomC"] = nullptr;
+        eq["akuTopValid"] = es.akuTopValid;
+        eq["akuMidValid"] = es.akuMidValid;
+        eq["akuBottomValid"] = es.akuBottomValid;
 
         eq["valveMaster"]   = es.valveMaster;     // 0 = none
         eq["valvePosPct"]   = es.valvePosPct;
         eq["valveTargetPct"]= es.valveTargetPct;
         eq["valveMoving"]   = es.valveMoving;
         eq["lastAdjustMs"]  = es.lastAdjustMs;
+    }
+
+    // --- sensors ---
+    {
+        EquithermStatus es = logicGetEquithermStatus();
+        JsonObject sensors = doc.createNestedObject("sensors");
+        JsonObject outdoor = sensors.createNestedObject("outdoor");
+        outdoor["valid"] = es.outdoorValid;
+        outdoor["ageMs"] = es.outdoorAgeMs;
+        outdoor["source"] = "equitherm";
+    }
+
+    // --- recirc ---
+    {
+        RecircStatus rs = logicGetRecircStatus();
+        JsonObject rec = doc.createNestedObject("recirc");
+        rec["enabled"] = rs.enabled;
+        rec["active"] = rs.active;
+        rec["mode"] = rs.mode;
+        rec["untilMs"] = rs.untilMs;
+        rec["remainingMs"] = rs.remainingMs;
+        rec["stopReached"] = rs.stopReached;
+        if (isfinite(rs.returnTempC)) rec["returnTempC"] = rs.returnTempC; else rec["returnTempC"] = nullptr;
+        rec["returnTempValid"] = rs.returnTempValid;
     }
 
     // --- opentherm ---
@@ -664,6 +701,9 @@ void handleApiConfigPost() {
     filter["iofunc"] = true;
     filter["equitherm"] = true;
     filter["tuv"] = true;
+    filter["dhwRecirc"] = true;
+    filter["system"] = true;
+    filter["sensors"] = true;
     filter["schedules"] = true;
     filter["mqtt"] = true;
     filter["time"] = true;

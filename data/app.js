@@ -315,6 +315,38 @@ const renderIO = () => {
     // MQTT group
     cfg.mqtt = (cfg.mqtt && typeof cfg.mqtt === "object") ? cfg.mqtt : {};
 
+    // System profile
+    cfg.system = (cfg.system && typeof cfg.system === "object") ? cfg.system : {};
+    cfg.system.profile = cfg.system.profile || "standard";
+    cfg.system.nightModeSource = cfg.system.nightModeSource || "input";
+    cfg.system.nightModeManual = !!cfg.system.nightModeManual;
+
+    // Sensors
+    cfg.sensors = (cfg.sensors && typeof cfg.sensors === "object") ? cfg.sensors : {};
+    cfg.sensors.outdoor = (cfg.sensors.outdoor && typeof cfg.sensors.outdoor === "object") ? cfg.sensors.outdoor : {};
+    cfg.sensors.outdoor.maxAgeMs = (typeof cfg.sensors.outdoor.maxAgeMs === "number") ? cfg.sensors.outdoor.maxAgeMs : 900000;
+
+    // DHW recirc
+    cfg.dhwRecirc = (cfg.dhwRecirc && typeof cfg.dhwRecirc === "object") ? cfg.dhwRecirc : {};
+    const r = cfg.dhwRecirc;
+    r.enabled = !!r.enabled;
+    r.mode = r.mode || "on_demand";
+    r.demandInput = Number.isFinite(Number(r.demandInput)) ? Number(r.demandInput) : 0;
+    r.pumpRelay = Number.isFinite(Number(r.pumpRelay)) ? Number(r.pumpRelay) : 0;
+    r.onDemandRunMs = (typeof r.onDemandRunMs === "number") ? r.onDemandRunMs : 120000;
+    r.minOffMs = (typeof r.minOffMs === "number") ? r.minOffMs : 300000;
+    r.minOnMs = (typeof r.minOnMs === "number") ? r.minOnMs : 30000;
+    r.stopTempC = (typeof r.stopTempC === "number") ? r.stopTempC : 42;
+    r.tempReturnSource = (r.tempReturnSource && typeof r.tempReturnSource === "object") ? r.tempReturnSource : {};
+    r.tempReturnSource.source = r.tempReturnSource.source || "none";
+    r.tempReturnSource.gpio = (typeof r.tempReturnSource.gpio === "number") ? r.tempReturnSource.gpio : 0;
+    r.tempReturnSource.rom = r.tempReturnSource.rom || r.tempReturnSource.addr || "";
+    r.tempReturnSource.topic = r.tempReturnSource.topic || "";
+    r.tempReturnSource.jsonKey = r.tempReturnSource.jsonKey || r.tempReturnSource.key || r.tempReturnSource.field || "";
+    r.tempReturnSource.mqttIdx = Number.isFinite(Number(r.tempReturnSource.mqttIdx || r.tempReturnSource.preset)) ? Number(r.tempReturnSource.mqttIdx || r.tempReturnSource.preset) : 0;
+    r.tempReturnSource.bleId = r.tempReturnSource.bleId || r.tempReturnSource.id || "";
+    r.windows = Array.isArray(r.windows) ? r.windows : [];
+
     
 // Ekviterm (weather compensation) + role-based I/O mapping
 cfg.equitherm = cfg.equitherm || {};
@@ -325,7 +357,11 @@ e.enabled = !!e.enabled;
 // Sources
 e.outdoor = e.outdoor || {};
 e.flow    = e.flow || {};
-for (const s of [e.outdoor, e.flow]) {
+e.boilerIn = e.boilerIn || {};
+e.akuTop = e.akuTop || {};
+e.akuMid = e.akuMid || {};
+e.akuBottom = e.akuBottom || {};
+for (const s of [e.outdoor, e.flow, e.boilerIn, e.akuTop, e.akuMid, e.akuBottom]) {
   s.source = s.source || "dallas"; // default DS18B20
   s.gpio   = (typeof s.gpio === "number") ? s.gpio : 0;
   s.rom    = s.rom || s.addr || "";   // addr legacy
@@ -333,6 +369,15 @@ for (const s of [e.outdoor, e.flow]) {
   s.jsonKey = s.jsonKey || s.key || s.field || "";
   s.mqttIdx = Number.isFinite(Number(s.mqttIdx || s.preset)) ? Number(s.mqttIdx || s.preset) : 0;
   s.bleId  = s.bleId || s.id || "";
+}
+if (!e.boilerIn.source || e.boilerIn.source === "none") {
+  e.boilerIn.source = e.flow.source;
+  e.boilerIn.gpio = e.flow.gpio;
+  e.boilerIn.rom = e.flow.rom;
+  e.boilerIn.topic = e.flow.topic;
+  e.boilerIn.jsonKey = e.flow.jsonKey;
+  e.boilerIn.mqttIdx = e.flow.mqttIdx;
+  e.boilerIn.bleId = e.flow.bleId;
 }
 
 // Valve (3c)
@@ -349,10 +394,26 @@ e.control.stepPct   = (typeof e.control.stepPct === "number") ? e.control.stepPc
 e.control.periodMs  = (typeof e.control.periodMs === "number") ? e.control.periodMs : 30000;
 e.control.minPct    = (typeof e.control.minPct === "number") ? e.control.minPct : 0;
 e.control.maxPct    = (typeof e.control.maxPct === "number") ? e.control.maxPct : 100;
+e.deadbandC = (typeof e.deadbandC === "number") ? e.deadbandC : e.control.deadbandC;
+e.stepPct = (typeof e.stepPct === "number") ? e.stepPct : e.control.stepPct;
+e.controlPeriodMs = (typeof e.controlPeriodMs === "number") ? e.controlPeriodMs : e.control.periodMs;
 
 // Curve
 e.minFlow = (typeof e.minFlow === "number") ? e.minFlow : 25;
 e.maxFlow = (typeof e.maxFlow === "number") ? e.maxFlow : 55;
+e.curveOffsetC = (typeof e.curveOffsetC === "number") ? e.curveOffsetC : 0;
+e.requireHeatCall = (typeof e.requireHeatCall === "boolean") ? e.requireHeatCall : true;
+e.noHeatCallBehavior = e.noHeatCallBehavior || "hold";
+e.akuSupportEnabled = (typeof e.akuSupportEnabled === "boolean") ? e.akuSupportEnabled : true;
+e.akuMinTopC = (typeof e.akuMinTopC === "number") ? e.akuMinTopC : 40;
+e.akuMinDeltaC = (typeof e.akuMinDeltaC === "number") ? e.akuMinDeltaC : 3;
+e.akuMinDeltaToTargetC = (typeof e.akuMinDeltaToTargetC === "number") ? e.akuMinDeltaToTargetC : 2;
+e.akuMinDeltaToBoilerInC = (typeof e.akuMinDeltaToBoilerInC === "number") ? e.akuMinDeltaToBoilerInC : 3;
+e.akuNoSupportBehavior = e.akuNoSupportBehavior || "close";
+e.maxBoilerInC = (typeof e.maxBoilerInC === "number") ? e.maxBoilerInC : 55;
+e.noFlowDetectEnabled = (typeof e.noFlowDetectEnabled === "boolean") ? e.noFlowDetectEnabled : true;
+e.noFlowTimeoutMs = (typeof e.noFlowTimeoutMs === "number") ? e.noFlowTimeoutMs : 180000;
+e.fallbackOutdoorC = (typeof e.fallbackOutdoorC === "number") ? e.fallbackOutdoorC : 0;
 
 // Formula: Tflow = (20 - Tout) * slope + 20 + shift
 // Defaults correspond to refs: day (-10 -> 55), (15 -> 30) => slope=1, shift=5
@@ -1217,7 +1278,7 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
 
   const reboot = async () => {
     await apiPostJson("/api/reboot", { reboot: true });
-    toast("Restart…");
+    toast("Restart...");
   };
 
   // ---------- render: BLE ----------

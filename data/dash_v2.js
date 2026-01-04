@@ -26,8 +26,8 @@
     return v;
   };
 
-  const computeTargetFlow = (tout, slope, shift, minFlow, maxFlow) => {
-    const t = (20 - tout) * slope + 20 + shift;
+  const computeTargetFlow = (tout, slope, shift, minFlow, maxFlow, offset = 0) => {
+    const t = (20 - tout) * slope + 20 + shift + offset;
     const cl = clamp(t, minFlow, maxFlow);
     return cl;
   };
@@ -43,8 +43,12 @@
       shiftDay: normShift(e.shiftDay, 5.0),
       slopeNight: normSlope(e.slopeNight, 1.0),
       shiftNight: normShift(e.shiftNight, 0.0),
+      curveOffsetC: (typeof e.curveOffsetC === "number") ? e.curveOffsetC : 0,
       outdoor: (e.outdoor && typeof e.outdoor === "object") ? e.outdoor : {},
-      flow: (e.flow && typeof e.flow === "object") ? e.flow : {},
+      flow: (e.boilerIn && typeof e.boilerIn === "object") ? e.boilerIn : ((e.flow && typeof e.flow === "object") ? e.flow : {}),
+      akuTop: (e.akuTop && typeof e.akuTop === "object") ? e.akuTop : {},
+      akuMid: (e.akuMid && typeof e.akuMid === "object") ? e.akuMid : {},
+      akuBottom: (e.akuBottom && typeof e.akuBottom === "object") ? e.akuBottom : {},
       valve: (e.valve && typeof e.valve === "object") ? e.valve : {},
     };
   };
@@ -79,7 +83,7 @@
       return {
         type: "dallas",
         key: `dallas:${gpio}`,
-        name: (kind === "outdoor") ? "Venkovní teplota" : "Teplota vody",
+        name: (kind === "outdoor") ? "Venkovní teplota" : (kind === "boilerIn" ? "Teplota boiler_in" : "Teplota vody"),
         sub: `Dallas • GPIO${gpio}${rom ? ` • ${rom.toUpperCase()}` : ""}`,
         dallasGpio: gpio,
       };
@@ -116,7 +120,7 @@
       return {
         type: "ble",
         key: `ble:${id}`,
-        name: (kind === "outdoor") ? "Venkovní teplota" : "Teplota vody",
+        name: (kind === "outdoor") ? "Venkovní teplota" : (kind === "boilerIn" ? "Teplota boiler_in" : "Teplota vody"),
         sub: `BLE • ${id || "—"}`,
         bleId: id,
       };
@@ -126,14 +130,14 @@
       return {
         type: "temp",
         key: s,
-        name: (kind === "outdoor") ? "Venkovní teplota" : "Teplota vody",
+        name: (kind === "outdoor") ? "Venkovní teplota" : (kind === "boilerIn" ? "Teplota boiler_in" : "Teplota vody"),
         sub: `${s.toUpperCase()} (legacy)`
       };
     }
     return {
       type: "none",
       key: "none",
-      name: (kind === "outdoor") ? "Venkovní teplota" : "Teplota vody",
+      name: (kind === "outdoor") ? "Venkovní teplota" : (kind === "boilerIn" ? "Teplota boiler_in" : "Teplota vody"),
       sub: "Nepoužito"
     };
   }
@@ -190,9 +194,9 @@
     ctx.globalAlpha = 0.70;
     ctx.font = `${11*dpr}px system-ui, -apple-system, Segoe UI, Roboto, Arial`;
     // X label
-    ctx.fillText(`T venku (°C)  ${xMin}…${xMax}`, padL, H - 4*dpr);
+    ctx.fillText(`T venku (°C)  ${xMin}...${xMax}`, padL, H - 4*dpr);
     // Y label (nahoře vlevo)
-    ctx.fillText(`T vody (°C)  ${Math.round(yMin)}…${Math.round(yMax)}`, 6*dpr, padT + 12*dpr);
+    ctx.fillText(`T vody (°C)  ${Math.round(yMin)}...${Math.round(yMax)}`, 6*dpr, padT + 12*dpr);
     ctx.restore();
 
 
@@ -212,6 +216,7 @@
     const shiftDay = Number(eqCfg?.shiftDay ?? 30);
     const slopeNight = Number(eqCfg?.slopeNight ?? 1.0);
     const shiftNight = Number(eqCfg?.shiftNight ?? 25);
+    const offsetC = Number(eqCfg?.curveOffsetC ?? 0);
 
     function plotLine(slope, shift, dashed){
       ctx.save();
@@ -222,7 +227,7 @@
       ctx.beginPath();
       let first = true;
       for (let x = xMin; x <= xMax; x += 1) {
-        const y = computeTargetFlow(x, slope, shift, yMin, yMax);
+        const y = computeTargetFlow(x, slope, shift, yMin, yMax, offsetC);
         const px = x2px(x);
         const py = y2px(y);
         if (first) { ctx.moveTo(px, py); first = false; }
@@ -242,7 +247,7 @@
       const slope = isNight ? slopeNight : slopeDay;
       const shift = isNight ? shiftNight : shiftDay;
       const x = clamp(tout, xMin, xMax);
-      const y = computeTargetFlow(x, slope, shift, yMin, yMax);
+      const y = computeTargetFlow(x, slope, shift, yMin, yMax, offsetC);
       const px = x2px(x);
       const py = y2px(y);
       ctx.save();
@@ -310,6 +315,12 @@
   function render() {
     const cfg = getCfg();
     const st  = getStatus();
+    const valves = Array.isArray(dash.valves) ? dash.valves : [];
+    const vByMaster = new Map();
+    for (const v of valves){
+      const m = Number(v.master||0);
+      if (m>=1 && m<=RELAY_COUNT) vByMaster.set(m-1, v);
+    }
 
     // --- Ekviterm widget (ventil + venkovní teplota) ---
     const cardEq = $id("cardEquitherm");
@@ -330,15 +341,17 @@
         cardEq.style.display = "";
 
         const outdoorOk = Number.isFinite(eq.outdoorC);
-        const flowOk    = Number.isFinite(eq.flowC);
-        const targetOk  = Number.isFinite(eq.targetFlowC);
+        const flowVal   = Number.isFinite(eq.actualC) ? eq.actualC : eq.flowC;
+        const flowOk    = Number.isFinite(flowVal);
+        const targetVal = Number.isFinite(eq.targetC) ? eq.targetC : eq.targetFlowC;
+        const targetOk  = Number.isFinite(targetVal);
 
         const outdoorTxt = outdoorOk ? fmtTemp(eq.outdoorC) : "—";
-        const flowTxt    = flowOk ? fmtTemp(eq.flowC) : "—";
-        const targetTxt  = targetOk ? fmtTemp(eq.targetFlowC) : "—";
+        const flowTxt    = flowOk ? fmtTemp(flowVal) : "—";
+        const targetTxt  = targetOk ? fmtTemp(targetVal) : "—";
 
         const outDesc = describeEqSource(cfg, eqCfg.outdoor, "outdoor");
-        const flowDesc = describeEqSource(cfg, eqCfg.flow, "flow");
+        const flowDesc = describeEqSource(cfg, eqCfg.flow, "boilerIn");
 
         let valveTitle = "Trojcestný ventil";
         if (eqValveMaster0 >= 0) valveTitle = `${getNameRelays(cfg, eqValveMaster0)}`;
@@ -398,7 +411,7 @@
         if (!Number.isFinite(yMinCurve)) yMinCurve = 22;
         if (!Number.isFinite(yMaxCurve)) yMaxCurve = 50;
         if (Math.abs(yMaxCurve - yMinCurve) < 0.1) yMaxCurve = yMinCurve + 1;
-        const rangeTxt = `Osy: venku ${xMinCurve}…${xMaxCurve} °C, voda ${Math.round(yMinCurve)}…${Math.round(yMaxCurve)} °C`;
+        const rangeTxt = `Osy: venku ${xMinCurve}...${xMaxCurve} °C, voda ${Math.round(yMinCurve)}...${Math.round(yMaxCurve)} °C`;
 
         // Curve tile (wide)
         const tCurve = document.createElement("div");
@@ -418,6 +431,83 @@
         // draw after inserted
         const canvas = tCurve.querySelector("#eqMiniCurve");
         if (canvas) drawEqMiniCurve(canvas, cfg, eqCfg, eq);
+      }
+    }
+
+    // --- AKU widget ---
+    const cardAku = $id("cardAku");
+    const akuGrid = $id("akuDashGrid");
+    const hasAkuCfg = ["akuTop", "akuMid", "akuBottom"].some((k) => String(eqCfg?.[k]?.source || "none") !== "none");
+    if (cardAku && akuGrid) {
+      if (!hasAkuCfg && !Number.isFinite(eq?.akuTopC)) {
+        cardAku.style.display = "none";
+        akuGrid.innerHTML = "";
+      } else {
+        cardAku.style.display = "";
+        const topTxt = Number.isFinite(eq.akuTopC) ? fmtTemp(eq.akuTopC) : "—";
+        const midTxt = Number.isFinite(eq.akuMidC) ? fmtTemp(eq.akuMidC) : "—";
+        const bottomTxt = Number.isFinite(eq.akuBottomC) ? fmtTemp(eq.akuBottomC) : "—";
+        const support = eq?.akuSupportActive ? "ON" : "OFF";
+        const supportReason = eq?.akuSupportReason ? ` (${eq.akuSupportReason})` : "";
+        akuGrid.innerHTML = `
+          <div class="akuTank">
+            <div class="akuRow"><div>Top</div><div class="tempValue">${escapeHtml(topTxt)}</div></div>
+            <div class="akuRow"><div>Mid</div><div class="tempValue">${escapeHtml(midTxt)}</div></div>
+            <div class="akuRow"><div>Bottom</div><div class="tempValue">${escapeHtml(bottomTxt)}</div></div>
+            <div class="akuStatus"><span class="akuDot ${eq?.akuSupportActive ? "on" : ""}"></span>Support: ${escapeHtml(support)}${escapeHtml(supportReason)}</div>
+          </div>
+        `;
+      }
+    }
+
+    // --- V2/V3 widget ---
+    const cardValveMix = $id("cardValveMix");
+    const valveMixGrid = $id("valveMixGrid");
+    if (cardValveMix && valveMixGrid) {
+      const v2Master = Number(eq?.valveMaster || 0);
+      const v3Master = Number(st?.tuv?.valveMaster || 0);
+      if (!v2Master && !v3Master) {
+        cardValveMix.style.display = "none";
+        valveMixGrid.innerHTML = "";
+      } else {
+        cardValveMix.style.display = "";
+        valveMixGrid.innerHTML = "";
+
+        if (v2Master >= 1 && v2Master <= RELAY_COUNT) {
+          const pos = clamp(Number(eq?.valvePosPct ?? 0), 0, 100);
+          const tgt = clamp(Number(eq?.valveTargetPct ?? pos), 0, 100);
+          const moving = !!eq?.valveMoving;
+          const tile = document.createElement("div");
+          tile.className = "ioTile" + (moving ? " moving" : "");
+          tile.innerHTML = `
+            <div>
+              <div class="ioName">V2 – AKU → kotel</div>
+              <div class="ioSub">${escapeHtml(getNameRelays(cfg, v2Master - 1))} • ${pos}% → ${tgt}%${moving ? " • pohyb" : ""}</div>
+            </div>
+            <div class="ioRight">
+              <div class="dial" style="--p:${pos}%"><div class="dialTxt">${pos}%</div></div>
+            </div>
+          `;
+          valveMixGrid.appendChild(tile);
+        }
+
+        if (v3Master >= 1 && v3Master <= RELAY_COUNT) {
+          const pos = clamp(Number(st?.tuv?.valvePosPct ?? st?.tuv?.valveTargetPct ?? 0), 0, 100);
+          const tgt = clamp(Number(st?.tuv?.valveTargetPct ?? pos), 0, 100);
+          const moving = !!vByMaster.get(v3Master - 1)?.moving;
+          const tile = document.createElement("div");
+          tile.className = "ioTile" + (moving ? " moving" : "");
+          tile.innerHTML = `
+            <div>
+              <div class="ioName">V3 – DHW bypass</div>
+              <div class="ioSub">${escapeHtml(getNameRelays(cfg, v3Master - 1))} • ${pos}% → ${tgt}%${moving ? " • pohyb" : ""}</div>
+            </div>
+            <div class="ioRight">
+              <div class="dial" style="--p:${pos}%"><div class="dialTxt">${pos}%</div></div>
+            </div>
+          `;
+          valveMixGrid.appendChild(tile);
+        }
       }
     }
 
@@ -492,18 +582,78 @@
       }
     }
 
+    // --- Recirc widget ---
+    const cardRecirc = $id("cardRecirc");
+    const recircGrid = $id("recircDashGrid");
+    const rec = st?.recirc || {};
+    if (cardRecirc && recircGrid) {
+      if (!rec?.enabled) {
+        cardRecirc.style.display = "none";
+        recircGrid.innerHTML = "";
+      } else {
+        cardRecirc.style.display = "";
+        const active = !!rec.active;
+        const remaining = Number(rec.remainingMs || 0) ? Math.round(rec.remainingMs / 1000) : 0;
+        const stopTxt = rec.stopReached ? "stop reached" : "stop: —";
+        const tempTxt = Number.isFinite(rec.returnTempC) ? fmtTemp(rec.returnTempC) : "—";
+        recircGrid.innerHTML = `
+          <div class="ioTile">
+            <div>
+              <div class="ioName">Cirkulace</div>
+              <div class="ioSub">Režim: ${escapeHtml(String(rec.mode || "—"))} • ${stopTxt}</div>
+            </div>
+            <div class="ioRight">
+              <div class="tempValue ${active ? "" : "muted"}">${active ? "ON" : "OFF"}</div>
+            </div>
+          </div>
+          <div class="ioTile">
+            <div>
+              <div class="ioName">Návrat</div>
+              <div class="ioSub">${escapeHtml(rec.returnTempValid ? "čidlo OK" : "čidlo —")}</div>
+            </div>
+            <div class="ioRight">
+              <div class="tempValue">${escapeHtml(tempTxt)}</div>
+            </div>
+          </div>
+          <div class="ioTile">
+            <div>
+              <div class="ioName">Zbývá</div>
+              <div class="ioSub">on-demand běh</div>
+            </div>
+            <div class="ioRight">
+              <div class="tempValue">${remaining ? `${remaining}s` : "—"}</div>
+            </div>
+          </div>
+        `;
+      }
+    }
+
+    // --- Reasons widget ---
+    const cardReasons = $id("cardReasons");
+    const reasonsGrid = $id("reasonsDashGrid");
+    if (cardReasons && reasonsGrid) {
+      cardReasons.style.display = "";
+      const heatCall = (cfg?.iofunc?.inputs || []).some((i) => ["thermostat", "heat_call"].includes(String(i?.role || ""))) ? (st?.equitherm?.reason === "no heat call" ? "OFF" : "ON") : "—";
+      const dhwMode = st?.tuv?.modeActive ? "ON" : "OFF";
+      const outdoorOk = st?.equitherm?.outdoorValid ? "OK" : "stale";
+      const outdoorAge = Number.isFinite(st?.equitherm?.outdoorAgeMs) ? `${Math.round(st.equitherm.outdoorAgeMs / 1000)}s` : "—";
+      const eqActive = st?.equitherm?.active ? "active" : "paused";
+      const eqReason = st?.equitherm?.reason || "OK";
+      const profile = cfg?.system?.profile || "standard";
+      reasonsGrid.innerHTML = `
+        <div class="ioTile"><div><div class="ioName">Heat call</div><div class="ioSub">${escapeHtml(heatCall)}</div></div></div>
+        <div class="ioTile"><div><div class="ioName">DHW mode</div><div class="ioSub">${escapeHtml(dhwMode)}</div></div></div>
+        <div class="ioTile"><div><div class="ioName">Outdoor</div><div class="ioSub">${escapeHtml(outdoorOk)} • ${escapeHtml(outdoorAge)}</div></div></div>
+        <div class="ioTile"><div><div class="ioName">Equitherm</div><div class="ioSub">${escapeHtml(eqActive)} • ${escapeHtml(eqReason)}</div></div></div>
+        <div class="ioTile"><div><div class="ioName">Profil</div><div class="ioSub">${escapeHtml(profile)}</div></div></div>
+      `;
+    }
+
     const inRoles = getRoleInputs(cfg);
     const reRoles = getRoleRelays(cfg);
 
     const cardValves = $id("cardValves");
     const valveGrid  = $id("valveGrid");
-
-    const valves = Array.isArray(dash.valves) ? dash.valves : [];
-    const vByMaster = new Map();
-    for (const v of valves){
-      const m = Number(v.master||0);
-      if (m>=1 && m<=RELAY_COUNT) vByMaster.set(m-1, v);
-    }
 
     let valveCount = 0;
     if (valveGrid) valveGrid.innerHTML = "";
@@ -550,7 +700,7 @@
 
     // Determine which temperature tiles should be hidden because they are part of Ekviterm block
     const eqOut = describeEqSource(cfg, eqCfg.outdoor, "outdoor");
-    const eqFlow = describeEqSource(cfg, eqCfg.flow, "flow");
+    const eqFlow = describeEqSource(cfg, eqCfg.flow, "boilerIn");
     const skip = {
       dallasGpio: new Set(),
       mqtt: new Set(),

@@ -68,6 +68,34 @@
   font-weight: 800;
 }
 
+.akuTank {
+  display: grid;
+  gap: 8px;
+}
+.akuRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255,255,255,.02);
+}
+.akuStatus {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.akuDot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: var(--muted);
+}
+.akuDot.on { background: var(--good); }
+
 /* Ekviterm – miniaturní graf */
 .ioTile.eqCurveTile{ grid-column: 1 / -1; }
 .ioTile.eqCurveTile .ioRight{ justify-items: stretch; width:100%; }
@@ -87,7 +115,9 @@
   grid-template-columns: 1.55fr .85fr;
   grid-template-areas:
     "equitherm modes"
-    "tuv modes"
+    "aku reasons"
+    "valvemix reasons"
+    "tuv recirc"
     "relays inputs"
     "valves temps";
   gap: 14px;
@@ -95,7 +125,11 @@
 
 /* Při skrytí karet (display:none) se layout automaticky zabalí */
 #page-dash #cardEquitherm{ grid-area: equitherm; }
+#page-dash #cardAku{ grid-area: aku; }
+#page-dash #cardValveMix{ grid-area: valvemix; }
 #page-dash #cardTuv{ grid-area: tuv; }
+#page-dash #cardRecirc{ grid-area: recirc; }
+#page-dash #cardReasons{ grid-area: reasons; }
 #page-dash #cardModes{ grid-area: modes; }
 #page-dash #cardRelays{ grid-area: relays; }
 #page-dash #cardInputs{ grid-area: inputs; }
@@ -129,7 +163,11 @@
     grid-template-columns: 1fr;
     grid-template-areas:
       "equitherm"
+      "aku"
+      "valvemix"
       "tuv"
+      "recirc"
+      "reasons"
       "modes"
       "relays"
       "inputs"

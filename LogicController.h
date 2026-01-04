@@ -40,6 +40,16 @@ struct EquithermStatus {
     String outdoorReason = "";
     float flowC    = NAN;     // teplota otopné vody / okruhu (feedback)
     float targetFlowC = NAN;  // požadovaná teplota podle křivky
+    float actualC = NAN;      // alias pro flowC (pro API)
+    float targetC = NAN;      // alias pro targetFlowC (pro API)
+    bool  akuSupportActive = false;
+    String akuSupportReason = "";
+    float akuTopC = NAN;
+    float akuMidC = NAN;
+    float akuBottomC = NAN;
+    bool  akuTopValid = false;
+    bool  akuMidValid = false;
+    bool  akuBottomValid = false;
 
     // Control (mixing valve)
     uint8_t valveMaster = 0;      // 1..8, 0 = none
@@ -109,10 +119,26 @@ struct TuvStatus {
     bool modeActive = false;     // TUV režim aktivní (přepnutí ventilu)
     uint8_t eqValveMaster = 0;   // 1..8 (ekvitermní ventil)
     uint8_t eqValveTargetPct = 0;
+    uint8_t eqValveSavedPct = 0;
+    bool    eqValveSavedValid = false;
     uint8_t valveMaster = 0;     // 1..8 (TUV přepínací ventil)
     uint8_t valveTargetPct = 0;
+    uint8_t valvePosPct = 0;
 };
 TuvStatus logicGetTuvStatus();
+
+// Smart cirkulace TUV
+struct RecircStatus {
+    bool enabled = false;
+    bool active = false;
+    String mode = "";
+    uint32_t untilMs = 0;
+    uint32_t remainingMs = 0;
+    bool stopReached = false;
+    float returnTempC = NAN;
+    bool returnTempValid = false;
+};
+RecircStatus logicGetRecircStatus();
 
 // Trojcestný ventil – stav pro dashboard (V2)
 struct ValveUiStatus {
