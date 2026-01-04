@@ -320,6 +320,18 @@ static void valveTick(uint32_t nowMs){
     }
 }
 
+// Pozn.: ekviterm se aplikuje pouze v CONTROL=AUTO, ale hodnoty počítáme pro diagnostiku i v MANUAL.
+struct EqSourceCfg {
+    String source = "none";   // "none" | "dallas" | "temp1..temp8" | "mqtt" | "ble"
+    int    gpio   = 0;        // pro dallas (0..3)
+    String romHex = "";       // pro dallas (16 hex), prázdné => první validní
+    String topic  = "";       // pro mqtt
+    String jsonKey = "";      // pro mqtt (JSON klíč), prázdné => payload je číslo / autodetekce
+    uint8_t mqttIdx = 0;      // 1..2 => použij přednastavený MQTT teploměr (z "Teploměry")
+    uint32_t maxAgeMs = 0;    // 0 = bez timeoutu (pro MQTT zdroje)
+    String bleId  = "";       // do budoucna
+};
+
 // TUV demand + request relay
 static int8_t s_tuvDemandInput = -1;  // 0..7 or -1
 static int8_t s_tuvRequestRelay = -1; // 0..7 or -1
@@ -437,16 +449,7 @@ static int8_t s_nightModeInput = -1; // 0..7 or -1 (Funkce I/O -> Aktivace nočn
 
 // Equitherm konfigurace + stav
 // Pozn.: ekviterm se aplikuje pouze v CONTROL=AUTO, ale hodnoty počítáme pro diagnostiku i v MANUAL.
-struct EqSourceCfg {
-    String source = "none";   // "none" | "dallas" | "temp1..temp8" | "mqtt" | "ble"
-    int    gpio   = 0;        // pro dallas (0..3)
-    String romHex = "";       // pro dallas (16 hex), prázdné => první validní
-    String topic  = "";       // pro mqtt
-    String jsonKey = "";      // pro mqtt (JSON klíč), prázdné => payload je číslo / autodetekce
-    uint8_t mqttIdx = 0;      // 1..2 => použij přednastavený MQTT teploměr (z "Teploměry")
-    uint32_t maxAgeMs = 0;    // 0 = bez timeoutu (pro MQTT zdroje)
-    String bleId  = "";       // do budoucna
-};
+
 
 static EqSourceCfg s_eqOutdoorCfg; // venkovní
 static EqSourceCfg s_eqBoilerInCfg; // boiler_in (feedback)
