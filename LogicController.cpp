@@ -348,12 +348,19 @@ static bool    s_tuvPrevModeActive    = false;
 static bool    s_tuvEqValveSavedValid = false;
 static uint8_t s_tuvEqValveSavedPct   = 0;
 static bool    s_tuvRestoreEqValveAfter = true;
+static bool    s_tuvBypassEnabled = true;
+static uint8_t s_tuvBypassPct = 100;
+static uint8_t s_tuvChPct = 100;
+static bool    s_tuvBypassInvert = false;
+static uint8_t s_tuvValveCurrentPct = 0;
+static String  s_tuvValveMode = "ch";
 
 // Smart cirkulace TUV
 static bool     s_recircEnabled = false;
 static String   s_recircMode = "on_demand"; // on_demand | time_windows | hybrid
 static int8_t   s_recircDemandInput = -1;
 static int8_t   s_recircPumpRelay = -1;
+static int8_t   s_recircPumpRelayRole = -1;
 static uint32_t s_recircOnDemandRunMs = 120000;
 static uint32_t s_recircMinOffMs = 300000;
 static uint32_t s_recircMinOnMs = 30000;
@@ -367,6 +374,31 @@ static uint32_t s_recircLastOffMs = 0;
 static bool     s_recircPrevDemand = false;
 static float    s_recircReturnC = NAN;
 static bool     s_recircReturnValid = false;
+
+// AKU heater
+static bool     s_akuHeaterEnabled = false;
+static String   s_akuHeaterMode = "manual"; // manual | schedule | thermostatic
+static int8_t   s_akuHeaterRelay = -1;
+static bool     s_akuHeaterManualOn = false;
+static float    s_akuHeaterTargetTopC = 50.0f;
+static float    s_akuHeaterHysteresisC = 2.0f;
+static uint32_t s_akuHeaterMaxOnMs = 2UL * 60UL * 60UL * 1000UL;
+static uint32_t s_akuHeaterMinOffMs = 10UL * 60UL * 1000UL;
+static uint32_t s_akuHeaterLastOnMs = 0;
+static uint32_t s_akuHeaterLastOffMs = 0;
+static bool     s_akuHeaterActive = false;
+static String   s_akuHeaterReason = "";
+
+struct HeaterWindow {
+    uint8_t startHour = 6;
+    uint8_t startMin = 0;
+    uint8_t endHour = 7;
+    uint8_t endMin = 0;
+    uint8_t daysMask = 0x7F;
+};
+static constexpr uint8_t MAX_HEATER_WINDOWS = 6;
+static HeaterWindow s_akuHeaterWindows[MAX_HEATER_WINDOWS];
+static uint8_t s_akuHeaterWindowCount = 0;
 
 struct RecircWindow {
     uint8_t startHour = 6;
@@ -382,7 +414,6 @@ static uint8_t s_recircWindowCount = 0;
 // Heat call (termostat / Nest)
 static int8_t s_heatCallInput = -1;  // 0..7 or -1
 static bool   s_heatCallActive = false;
-static bool   s_heatCallPrevActive = true;
 
 // Nastavení relé s respektem k šablonám (např. 3c ventil)
 // Pokud je ekviterm aktivní a používá 3c ventil, v AUTO režimu nenecháme relayMap přepisovat jeho relé.
@@ -446,6 +477,8 @@ static ScheduleItem s_schedules[MAX_SCHEDULES];
 static uint8_t s_scheduleCount = 0;
 static bool s_nightMode = false;
 static int8_t s_nightModeInput = -1; // 0..7 or -1 (Funkce I/O -> Aktivace nočního útlumu)
+static int8_t s_boilerNightRelay = -1;
+static int8_t s_boilerDhwRelay = -1;
 
 // Equitherm konfigurace + stav
 // Pozn.: ekviterm se aplikuje pouze v CONTROL=AUTO, ale hodnoty počítáme pro diagnostiku i v MANUAL.
@@ -478,22 +511,25 @@ static float    s_eqDeadbandC = 0.5f;      // necitlivost (°C)
 static uint8_t  s_eqStepPct   = 4;         // krok změny pozice (%)
 static uint32_t s_eqPeriodMs  = 30000;     // minimální perioda korekcí (ms)
 static uint8_t  s_eqMinPct    = 0;         // clamp pozice
-static uint8_t  s_eqMaxPct    = 100;
-static float    s_eqAkuMinTopC = 40.0f;
-static float    s_eqAkuMinDeltaC = 3.0f;
-static float    s_eqAkuMinDeltaToTargetC = 2.0f;
-static float    s_eqAkuMinDeltaToBoilerInC = 3.0f;
+static uint8_t  s_eqMaxPctDay    = 100;
+static uint8_t  s_eqMaxPctNight  = 100;
+static float    s_eqAkuMinTopCDay = 40.0f;
+static float    s_eqAkuMinTopCNight = 45.0f;
+static float    s_eqAkuMinDeltaToTargetCDay = 2.0f;
+static float    s_eqAkuMinDeltaToTargetCNight = 3.0f;
+static float    s_eqAkuMinDeltaToBoilerInCDay = 3.0f;
+static float    s_eqAkuMinDeltaToBoilerInCNight = 4.0f;
 static bool     s_eqAkuSupportEnabled = true;
 static String   s_eqAkuNoSupportBehavior = "close"; // close | hold
-static bool     s_eqRequireHeatCall = true;
-static String   s_eqNoHeatCallBehavior = "hold"; // hold | close
 static float    s_eqCurveOffsetC = 0.0f;
 static float    s_eqMaxBoilerInC = 55.0f;
 static bool     s_eqNoFlowDetectEnabled = true;
 static uint32_t s_eqNoFlowTimeoutMs = 180000;
+static uint32_t s_eqNoFlowTestPeriodMs = 180000;
 static float    s_eqLastFlowC = NAN;
 static uint32_t s_eqLastFlowChangeMs = 0;
 static bool     s_eqNoFlowActive = false;
+static uint32_t s_eqNoFlowLastTestMs = 0;
 
 static float    s_eqFallbackOutdoorC = 0.0f;
 static uint32_t s_eqOutdoorMaxAgeMs = 900000;
@@ -501,7 +537,7 @@ static float    s_eqLastOutdoorC = NAN;
 static uint32_t s_eqLastOutdoorMs = 0;
 
 static String   s_systemProfile = "standard";
-static String   s_nightModeSource = "input"; // input | schedule | manual
+static String   s_nightModeSource = "heat_call"; // heat_call | input | schedule | manual
 static bool     s_nightModeManual = false;
 
 static uint32_t s_eqLastAdjustMs = 0;
@@ -709,7 +745,7 @@ static float eqComputeTargetFromRefs(float tout, bool night){
     return tflow;
 }
 
-static bool isAkuMixingAllowed(float targetFlowC, float boilerInC, String* outReason = nullptr){
+static bool isAkuMixingAllowed(float targetFlowC, float boilerInC, bool night, String* outReason = nullptr){
     if (!s_eqAkuSupportEnabled) return true;
     if (!s_eqAkuTopCfg.source.length() || s_eqAkuTopCfg.source == "none") return true;
     float top = NAN;
@@ -718,20 +754,19 @@ static bool isAkuMixingAllowed(float targetFlowC, float boilerInC, String* outRe
         if (outReason) *outReason = diag.reason.length() ? diag.reason : "aku top invalid";
         return false;
     }
-    if (s_eqAkuMinTopC > 0.0f && top < s_eqAkuMinTopC) {
+    const float minTop = night ? s_eqAkuMinTopCNight : s_eqAkuMinTopCDay;
+    const float minDeltaTarget = night ? s_eqAkuMinDeltaToTargetCNight : s_eqAkuMinDeltaToTargetCDay;
+    const float minDeltaBoiler = night ? s_eqAkuMinDeltaToBoilerInCNight : s_eqAkuMinDeltaToBoilerInCDay;
+    if (minTop > 0.0f && top < minTop) {
         if (outReason) *outReason = "aku top low";
         return false;
     }
-    if (s_eqAkuMinDeltaToTargetC > 0.0f && isfinite(targetFlowC) && top < (targetFlowC + s_eqAkuMinDeltaToTargetC)) {
+    if (minDeltaTarget > 0.0f && isfinite(targetFlowC) && top < (targetFlowC + minDeltaTarget)) {
         if (outReason) *outReason = "aku delta target low";
         return false;
     }
-    if (s_eqAkuMinDeltaToBoilerInC > 0.0f && isfinite(boilerInC) && top < (boilerInC + s_eqAkuMinDeltaToBoilerInC)) {
+    if (minDeltaBoiler > 0.0f && isfinite(boilerInC) && top < (boilerInC + minDeltaBoiler)) {
         if (outReason) *outReason = "aku delta boiler low";
-        return false;
-    }
-    if (s_eqAkuMinDeltaC > 0.0f && isfinite(targetFlowC) && top < (targetFlowC + s_eqAkuMinDeltaC)) {
-        if (outReason) *outReason = "aku delta low";
         return false;
     }
     return true;
@@ -801,6 +836,14 @@ static void equithermRecompute(){
     s_eqStatus.targetC = target;
     s_eqStatus.lastAdjustMs = s_eqLastAdjustMs;
 
+    if (!s_eqStatus.outdoorValid) {
+        s_eqReason = "outdoor invalid";
+        s_eqStatus.reason = s_eqReason;
+        s_eqStatus.akuSupportActive = false;
+        s_eqStatus.akuSupportReason = s_eqReason;
+        return;
+    }
+
     // AKU temperatures (diagnostic)
     float akuTop = NAN;
     float akuMid = NAN;
@@ -847,14 +890,8 @@ static void equithermRecompute(){
         return;
     }
 
-    if (s_eqRequireHeatCall && s_heatCallInput >= 0 && !s_heatCallActive) {
-        s_eqReason = "no heat call";
-        s_eqStatus.reason = s_eqReason;
-        return;
-    }
-
     if (s_eqNoFlowActive && s_eqNoFlowDetectEnabled) {
-        s_eqReason = "no flow";
+        s_eqReason = "no_flow_or_sensor_stuck";
         s_eqStatus.reason = s_eqReason;
         return;
     }
@@ -866,7 +903,7 @@ static void equithermRecompute(){
     }
 
     String akuReason;
-    if (!isAkuMixingAllowed(target, flow, &akuReason)) {
+    if (!isAkuMixingAllowed(target, flow, s_nightMode, &akuReason)) {
         s_eqReason = akuReason.length() ? akuReason : "aku limit";
         s_eqStatus.reason = s_eqReason;
         s_eqStatus.akuSupportActive = false;
@@ -884,15 +921,16 @@ static void equithermControlTick(uint32_t nowMs){
     if (!s_eqEnabled) return;
     if (currentControlMode != ControlMode::AUTO) return;
     if (s_tuvModeActive) return;
-    if (s_eqRequireHeatCall && s_heatCallInput >= 0 && !s_heatCallActive) {
-        if (s_eqNoHeatCallBehavior == "close" && s_eqValveMaster0 >= 0) {
-            valveMoveToPct((uint8_t)s_eqValveMaster0, 0);
-        }
-        return;
-    }
 
     // musí být spočtený target
     if (!s_eqStatus.active || !isfinite(s_eqStatus.targetFlowC)) return;
+    if (!s_eqStatus.outdoorValid) {
+        if (s_eqValveMaster0 >= 0 && s_eqValveMaster0 < (int8_t)RELAY_COUNT) {
+            valveMoveToPct((uint8_t)s_eqValveMaster0, 0);
+            s_eqLastAdjustMs = nowMs;
+        }
+        return;
+    }
 
     // nutný feedback senzor
     float flow = NAN;
@@ -907,8 +945,14 @@ static void equithermControlTick(uint32_t nowMs){
             s_eqNoFlowActive = true;
         }
     }
+    bool allowTest = false;
     if (s_eqNoFlowActive && s_eqNoFlowDetectEnabled) {
-        return;
+        if (s_eqNoFlowLastTestMs == 0 || (uint32_t)(nowMs - s_eqNoFlowLastTestMs) >= s_eqNoFlowTestPeriodMs) {
+            allowTest = true;
+            s_eqNoFlowLastTestMs = nowMs;
+        } else {
+            return;
+        }
     }
 
     // nutný ventil
@@ -924,7 +968,7 @@ static void equithermControlTick(uint32_t nowMs){
 
     const float target = s_eqStatus.targetFlowC;
     String akuReason;
-    if (!isAkuMixingAllowed(target, flow, &akuReason)) {
+    if (!isAkuMixingAllowed(target, flow, s_nightMode, &akuReason)) {
         if (s_eqAkuNoSupportBehavior == "close") {
             valveMoveToPct(master0, 0);
             s_eqLastAdjustMs = nowMs;
@@ -944,11 +988,14 @@ static void equithermControlTick(uint32_t nowMs){
     const uint8_t curPct = valveComputePosPct(v, nowMs);
     int nextPct = (int)curPct + ((err > 0) ? (int)s_eqStepPct : -(int)s_eqStepPct);
     if (nextPct < (int)s_eqMinPct) nextPct = (int)s_eqMinPct;
-    if (nextPct > (int)s_eqMaxPct) nextPct = (int)s_eqMaxPct;
+    const uint8_t maxPct = s_nightMode ? s_eqMaxPctNight : s_eqMaxPctDay;
+    if (nextPct > (int)maxPct) nextPct = (int)maxPct;
 
     if (nextPct == (int)curPct) return;
 
-    valveMoveToPct(master0, (uint8_t)nextPct);
+    if (!allowTest || nextPct != (int)curPct) {
+        valveMoveToPct(master0, (uint8_t)nextPct);
+    }
     s_eqLastAdjustMs = nowMs;
 
     // aktualizuj status pro UI
@@ -1005,6 +1052,17 @@ static uint32_t recircWindowRemainingMs(const struct tm &t, const RecircWindow &
     return (uint32_t)remainingMin * 60000UL;
 }
 
+static bool timeInHeaterWindow(const struct tm &t, const HeaterWindow &w) {
+    const uint8_t dowMask = dowToMask(t);
+    if ((w.daysMask & dowMask) == 0) return false;
+    const uint16_t cur = (uint16_t)(t.tm_hour * 60 + t.tm_min);
+    const uint16_t start = (uint16_t)(w.startHour * 60 + w.startMin);
+    const uint16_t end = (uint16_t)(w.endHour * 60 + w.endMin);
+    if (start == end) return true;
+    if (start < end) return (cur >= start && cur < end);
+    return (cur >= start || cur < end);
+}
+
 static void recircApplyRelay(bool on) {
     if (s_recircPumpRelay < 0 || s_recircPumpRelay >= (int8_t)RELAY_COUNT) return;
     relaySet(static_cast<RelayId>(s_recircPumpRelay), on);
@@ -1024,41 +1082,56 @@ static void recircStop(uint32_t nowMs) {
     s_recircLastOffMs = nowMs;
     recircApplyRelay(false);
 }
-static bool isTuvDemandConfigured() {
-    return false;
-}
-
 static void updateInputBasedModes() {
     if (s_tuvEnableInput >= 0 && s_tuvEnableInput < (int8_t)INPUT_COUNT) {
         s_tuvScheduleEnabled = inputGetState(static_cast<InputId>(s_tuvEnableInput));
-    }
-    if (s_nightModeSource == "input" && s_nightModeInput >= 0 && s_nightModeInput < (int8_t)INPUT_COUNT) {
-        s_nightMode = inputGetState(static_cast<InputId>(s_nightModeInput));
-        equithermRecompute();
-    }
-    if (s_nightModeSource == "manual") {
-        s_nightMode = s_nightModeManual;
     }
     if (s_heatCallInput >= 0 && s_heatCallInput < (int8_t)INPUT_COUNT) {
         s_heatCallActive = inputGetState(static_cast<InputId>(s_heatCallInput));
     } else {
         s_heatCallActive = true;
     }
+    if (s_tuvDemandInput >= 0 && s_tuvDemandInput < (int8_t)INPUT_COUNT) {
+        s_tuvDemandActive = inputGetState(static_cast<InputId>(s_tuvDemandInput));
+    } else {
+        s_tuvDemandActive = false;
+    }
+    if (s_nightModeSource == "input" && s_nightModeInput >= 0 && s_nightModeInput < (int8_t)INPUT_COUNT) {
+        s_nightMode = inputGetState(static_cast<InputId>(s_nightModeInput));
+        equithermRecompute();
+    } else if (s_nightModeSource == "manual") {
+        s_nightMode = s_nightModeManual;
+    } else if (s_nightModeSource == "heat_call") {
+        s_nightMode = !s_heatCallActive;
+    }
 }
 
 static bool isTuvEnabledEffective() {
-    return s_tuvScheduleEnabled;
+    return s_tuvScheduleEnabled || s_tuvDemandActive;
 }
 
 static void applyTuvRequest() {
-    if (s_tuvRequestRelay < 0 || s_tuvRequestRelay >= (int8_t)RELAY_COUNT) return;
-    relaySet(static_cast<RelayId>(s_tuvRequestRelay), isTuvEnabledEffective());
+    const int8_t relayIdx = (s_boilerDhwRelay >= 0) ? s_boilerDhwRelay : s_tuvRequestRelay;
+    if (relayIdx < 0 || relayIdx >= (int8_t)RELAY_COUNT) return;
+    relaySet(static_cast<RelayId>(relayIdx), isTuvEnabledEffective());
+}
+
+static void applyNightModeRelay() {
+    if (s_boilerNightRelay < 0 || s_boilerNightRelay >= (int8_t)RELAY_COUNT) return;
+    relaySet(static_cast<RelayId>(s_boilerNightRelay), s_nightMode);
 }
 
 static uint8_t clampPctInt(int v) {
     if (v < 0) return 0;
     if (v > 100) return 100;
     return (uint8_t)v;
+}
+
+static uint8_t effectiveTuvValvePct(bool active) {
+    uint8_t pct = active ? s_tuvBypassPct : s_tuvChPct;
+    if (!s_tuvBypassEnabled) pct = s_tuvValveTargetPct;
+    if (s_tuvBypassInvert) pct = (uint8_t)(100 - pct);
+    return clampPctInt(pct);
 }
 
 static void applyTuvModeValves(uint32_t nowMs) {
@@ -1071,7 +1144,10 @@ static void applyTuvModeValves(uint32_t nowMs) {
         issued = true;
     }
     if (s_tuvValveMaster0 >= 0 && s_tuvValveMaster0 < (int8_t)RELAY_COUNT && isValveMaster((uint8_t)s_tuvValveMaster0)) {
-        valveMoveToPct((uint8_t)s_tuvValveMaster0, s_tuvValveTargetPct);
+        const uint8_t pct = effectiveTuvValvePct(true);
+        s_tuvValveCurrentPct = pct;
+        s_tuvValveMode = "dhw";
+        valveMoveToPct((uint8_t)s_tuvValveMaster0, pct);
         issued = true;
     }
     if (issued) s_tuvLastValveCmdMs = nowMs;
@@ -1100,29 +1176,16 @@ static void updateTuvModeState(uint32_t nowMs) {
         }
         s_tuvEqValveSavedValid = false;
         if (s_tuvValveMaster0 >= 0 && s_tuvValveMaster0 < (int8_t)RELAY_COUNT && isValveMaster((uint8_t)s_tuvValveMaster0)) {
-            valveMoveToPct((uint8_t)s_tuvValveMaster0, 0);
+            const uint8_t pct = effectiveTuvValvePct(false);
+            s_tuvValveCurrentPct = pct;
+            s_tuvValveMode = "ch";
+            valveMoveToPct((uint8_t)s_tuvValveMaster0, pct);
         }
     }
 
     s_tuvModeActive = newActive;
     s_tuvPrevModeActive = newActive;
     applyTuvModeValves(nowMs);
-}
-
-static void applyHeatCallGating(uint32_t nowMs) {
-    (void)nowMs;
-    if (s_tuvModeActive) return;
-    if (s_heatCallInput < 0) return;
-    if (s_tuvValveMaster0 < 0 || s_tuvValveMaster0 >= (int8_t)RELAY_COUNT) return;
-    if (!isValveMaster((uint8_t)s_tuvValveMaster0)) return;
-
-    if (!s_heatCallActive && s_heatCallPrevActive) {
-        valveMoveToPct((uint8_t)s_tuvValveMaster0, 100);
-        s_heatCallPrevActive = false;
-    } else if (s_heatCallActive && !s_heatCallPrevActive) {
-        valveMoveToPct((uint8_t)s_tuvValveMaster0, 0);
-        s_heatCallPrevActive = true;
-    }
 }
 
 static void recircUpdate(uint32_t nowMs) {
@@ -1193,6 +1256,97 @@ static void recircUpdate(uint32_t nowMs) {
     }
 }
 
+static void akuHeaterApplyRelay(bool on) {
+    if (s_akuHeaterRelay < 0 || s_akuHeaterRelay >= (int8_t)RELAY_COUNT) return;
+    relaySet(static_cast<RelayId>(s_akuHeaterRelay), on);
+}
+
+static void akuHeaterStart(uint32_t nowMs, const String &reason) {
+    s_akuHeaterActive = true;
+    s_akuHeaterLastOnMs = nowMs;
+    s_akuHeaterReason = reason;
+    akuHeaterApplyRelay(true);
+}
+
+static void akuHeaterStop(uint32_t nowMs, const String &reason) {
+    s_akuHeaterActive = false;
+    s_akuHeaterLastOffMs = nowMs;
+    s_akuHeaterReason = reason;
+    akuHeaterApplyRelay(false);
+}
+
+static void akuHeaterUpdate(uint32_t nowMs) {
+    if (!s_akuHeaterEnabled || s_akuHeaterRelay < 0 || s_akuHeaterRelay >= (int8_t)RELAY_COUNT) {
+        if (s_akuHeaterActive) akuHeaterStop(nowMs, "disabled");
+        return;
+    }
+
+    bool wantOn = false;
+    String reason = "";
+
+    float topC = NAN;
+    EqSourceDiag diag;
+    const bool topValid = tryGetTempFromSource(s_eqAkuTopCfg, topC, &diag) && isfinite(topC);
+
+    if (s_akuHeaterMode == "manual") {
+        wantOn = s_akuHeaterManualOn;
+        reason = wantOn ? "manual" : "manual off";
+    } else if (s_akuHeaterMode == "schedule") {
+        struct tm t;
+        time_t epoch;
+        bool windowActive = false;
+        if (isValidTimeNow(t, epoch)) {
+            for (uint8_t i = 0; i < s_akuHeaterWindowCount; i++) {
+                if (timeInHeaterWindow(t, s_akuHeaterWindows[i])) {
+                    windowActive = true;
+                    break;
+                }
+            }
+        }
+        wantOn = windowActive;
+        reason = "schedule";
+    } else if (s_akuHeaterMode == "thermostatic") {
+        if (!topValid) {
+            wantOn = false;
+            reason = diag.reason.length() ? diag.reason : "sensor invalid";
+        } else {
+            const float onThr = s_akuHeaterTargetTopC - s_akuHeaterHysteresisC;
+            const float offThr = s_akuHeaterTargetTopC + s_akuHeaterHysteresisC;
+            if (s_akuHeaterActive) {
+                wantOn = (topC < offThr);
+            } else {
+                wantOn = (topC <= onThr);
+            }
+            reason = "thermostatic";
+        }
+    } else {
+        wantOn = false;
+        reason = "mode invalid";
+    }
+
+    if (s_akuHeaterActive) {
+        if (s_akuHeaterMaxOnMs > 0 && s_akuHeaterLastOnMs != 0 &&
+            (uint32_t)(nowMs - s_akuHeaterLastOnMs) >= s_akuHeaterMaxOnMs) {
+            wantOn = false;
+            reason = "max_on";
+        }
+    } else if (wantOn) {
+        if (s_akuHeaterMinOffMs > 0 && s_akuHeaterLastOffMs != 0 &&
+            (uint32_t)(nowMs - s_akuHeaterLastOffMs) < s_akuHeaterMinOffMs) {
+            wantOn = false;
+            reason = "min_off";
+        }
+    }
+
+    if (wantOn) {
+        if (!s_akuHeaterActive) akuHeaterStart(nowMs, reason);
+        else s_akuHeaterReason = reason;
+    } else {
+        if (s_akuHeaterActive) akuHeaterStop(nowMs, reason);
+        else s_akuHeaterReason = reason;
+    }
+}
+
 static const RelayProfile* profileForMode(SystemMode mode) {
     switch (mode) {
         case SystemMode::MODE1:   return &profileMODE1;
@@ -1256,6 +1410,10 @@ bool logicGetNightMode() {
     return s_nightMode;
 }
 
+bool logicGetHeatCallActive() {
+    return s_heatCallActive;
+}
+
 TuvStatus logicGetTuvStatus() {
     TuvStatus st;
     st.enabled = isTuvEnabledEffective();
@@ -1267,12 +1425,16 @@ TuvStatus logicGetTuvStatus() {
     st.eqValveSavedPct = s_tuvEqValveSavedPct;
     st.eqValveSavedValid = s_tuvEqValveSavedValid;
     st.valveMaster = (s_tuvValveMaster0 >= 0) ? (uint8_t)(s_tuvValveMaster0 + 1) : 0;
-    st.valveTargetPct = s_tuvValveTargetPct;
+    st.valveTargetPct = s_tuvValveCurrentPct;
     st.valvePosPct = 0;
     if (s_tuvValveMaster0 >= 0 && s_tuvValveMaster0 < (int8_t)RELAY_COUNT && isValveMaster((uint8_t)s_tuvValveMaster0)) {
         const uint32_t nowMs = millis();
         st.valvePosPct = valveComputePosPct(s_valves[(uint8_t)s_tuvValveMaster0], nowMs);
     }
+    st.bypassPct = s_tuvBypassPct;
+    st.chPct = s_tuvChPct;
+    st.bypassInvert = s_tuvBypassInvert;
+    st.valveMode = s_tuvValveMode;
     return st;
 }
 
@@ -1291,6 +1453,19 @@ RecircStatus logicGetRecircStatus() {
     st.stopReached = s_recircStopReached;
     st.returnTempC = s_recircReturnC;
     st.returnTempValid = s_recircReturnValid;
+    return st;
+}
+
+AkuHeaterStatus logicGetAkuHeaterStatus() {
+    AkuHeaterStatus st;
+    st.enabled = s_akuHeaterEnabled;
+    st.active = s_akuHeaterActive;
+    st.mode = s_akuHeaterMode;
+    st.reason = s_akuHeaterReason;
+    float top = NAN;
+    EqSourceDiag diag;
+    st.topValid = tryGetTempFromSource(s_eqAkuTopCfg, top, &diag) && isfinite(top);
+    st.topC = top;
     return st;
 }
 
@@ -1447,8 +1622,9 @@ void logicUpdate() {
     equithermRecompute();
     equithermControlTick(nowMs);
     updateTuvModeState(nowMs);
-    applyHeatCallGating(nowMs);
     recircUpdate(nowMs);
+    akuHeaterUpdate(nowMs);
+    applyNightModeRelay();
     if (nowMs - lastTickMs < 250) {
         // still enforce TUV output frequently (no flicker)
         applyTuvRequest();
@@ -1463,9 +1639,6 @@ void logicUpdate() {
         const uint8_t dowMask = dowToMask(t);
         const bool hasTuvEnableInput = (s_tuvEnableInput >= 0 && s_tuvEnableInput < (int8_t)INPUT_COUNT);
         const bool hasNightModeInput = (s_nightModeSource == "input" && s_nightModeInput >= 0 && s_nightModeInput < (int8_t)INPUT_COUNT);
-
-        s_tuvDemandActive = false;
-        updateTuvModeState(nowMs);
 
         for (uint8_t i=0;i<s_scheduleCount;i++) {
             ScheduleItem &s = s_schedules[i];
@@ -1513,12 +1686,12 @@ void logicUpdate() {
         }
     } else {
         // No valid time -> still update TUV from input
-        s_tuvDemandActive = false;
         updateTuvModeState(nowMs);
     }
 
     // Always enforce TUV request relay after mode/rules have run
     applyTuvRequest();
+    applyNightModeRelay();
 }
 
 void logicOnInputChanged(InputId id, bool newState) {
@@ -1529,14 +1702,23 @@ void logicOnInputChanged(InputId id, bool newState) {
         updateTuvModeState(millis());
         applyTuvRequest();
     }
+    if (s_tuvDemandInput >= 0 && id == static_cast<InputId>(s_tuvDemandInput)) {
+        s_tuvDemandActive = inputGetState(id);
+        updateTuvModeState(millis());
+        applyTuvRequest();
+    }
     if (s_nightModeSource == "input" && s_nightModeInput >= 0 && id == static_cast<InputId>(s_nightModeInput)) {
         s_nightMode = inputGetState(id);
         equithermRecompute();
     }
     if (s_heatCallInput >= 0 && id == static_cast<InputId>(s_heatCallInput)) {
         s_heatCallActive = inputGetState(id);
-        applyHeatCallGating(millis());
+        if (s_nightModeSource == "heat_call") {
+            s_nightMode = !s_heatCallActive;
+            equithermRecompute();
+        }
     }
+    applyNightModeRelay();
 
     if (currentControlMode != ControlMode::AUTO) {
         return;
@@ -1681,13 +1863,16 @@ void logicApplyConfig(const String& json) {
     filter["equitherm"]["minFlow"] = true;
     filter["equitherm"]["maxFlow"] = true;
     filter["equitherm"]["akuMinTopC"] = true;
-    filter["equitherm"]["akuMinDeltaC"] = true;
+    filter["equitherm"]["akuMinTopC_day"] = true;
+    filter["equitherm"]["akuMinTopC_night"] = true;
     filter["equitherm"]["akuMinDeltaToTargetC"] = true;
+    filter["equitherm"]["akuMinDeltaToTargetC_day"] = true;
+    filter["equitherm"]["akuMinDeltaToTargetC_night"] = true;
     filter["equitherm"]["akuMinDeltaToBoilerInC"] = true;
+    filter["equitherm"]["akuMinDeltaToBoilerInC_day"] = true;
+    filter["equitherm"]["akuMinDeltaToBoilerInC_night"] = true;
     filter["equitherm"]["akuSupportEnabled"] = true;
     filter["equitherm"]["akuNoSupportBehavior"] = true;
-    filter["equitherm"]["requireHeatCall"] = true;
-    filter["equitherm"]["noHeatCallBehavior"] = true;
     filter["equitherm"]["curveOffsetC"] = true;
     filter["equitherm"]["deadbandC"] = true;
     filter["equitherm"]["stepPct"] = true;
@@ -1695,6 +1880,7 @@ void logicApplyConfig(const String& json) {
     filter["equitherm"]["maxBoilerInC"] = true;
     filter["equitherm"]["noFlowDetectEnabled"] = true;
     filter["equitherm"]["noFlowTimeoutMs"] = true;
+    filter["equitherm"]["noFlowTestPeriodMs"] = true;
     filter["equitherm"]["slopeDay"] = true;
     filter["equitherm"]["shiftDay"] = true;
     filter["equitherm"]["slopeNight"] = true;
@@ -1717,11 +1903,17 @@ void logicApplyConfig(const String& json) {
     filter["equitherm"]["control"]["period"] = true;
     filter["equitherm"]["control"]["minPct"] = true;
     filter["equitherm"]["control"]["maxPct"] = true;
+    filter["equitherm"]["control"]["maxPct_day"] = true;
+    filter["equitherm"]["control"]["maxPct_night"] = true;
+    filter["equitherm"]["maxPct_day"] = true;
+    filter["equitherm"]["maxPct_night"] = true;
     filter["sensors"]["outdoor"]["maxAgeMs"] = true;
     filter["equitherm"]["fallbackOutdoorC"] = true;
     filter["system"]["profile"] = true;
     filter["system"]["nightModeSource"] = true;
     filter["system"]["nightModeManual"] = true;
+    filter["nightMode"]["source"] = true;
+    filter["nightMode"]["manual"] = true;
     filter["dhwRecirc"]["enabled"] = true;
     filter["dhwRecirc"]["mode"] = true;
     filter["dhwRecirc"]["demandInput"] = true;
@@ -1759,6 +1951,12 @@ void logicApplyConfig(const String& json) {
     filter["tuv"]["targetPct"] = true;
     filter["tuv"]["eqValveTargetPct"] = true;
     filter["tuv"]["mixValveTargetPct"] = true;
+    filter["tuv"]["bypassValve"]["enabled"] = true;
+    filter["tuv"]["bypassValve"]["mode"] = true;
+    filter["tuv"]["bypassValve"]["masterRelay"] = true;
+    filter["tuv"]["bypassValve"]["bypassPct"] = true;
+    filter["tuv"]["bypassValve"]["chPct"] = true;
+    filter["tuv"]["bypassValve"]["invert"] = true;
     filter["tuvDemandInput"] = true;
     filter["tuv_demand_input"] = true;
     filter["tuvRelay"] = true;
@@ -1770,6 +1968,19 @@ void logicApplyConfig(const String& json) {
     filter["tuv_valve_target_pct"] = true;
     filter["tuvEqValveTargetPct"] = true;
     filter["tuv_eq_valve_target_pct"] = true;
+    filter["boiler"]["dhwRequestRelay"] = true;
+    filter["boiler"]["nightModeRelay"] = true;
+    filter["akuHeater"]["enabled"] = true;
+    filter["akuHeater"]["relay"] = true;
+    filter["akuHeater"]["mode"] = true;
+    filter["akuHeater"]["manualOn"] = true;
+    filter["akuHeater"]["targetTopC"] = true;
+    filter["akuHeater"]["hysteresisC"] = true;
+    filter["akuHeater"]["maxOnMs"] = true;
+    filter["akuHeater"]["minOffMs"] = true;
+    filter["akuHeater"]["windows"][0]["start"] = true;
+    filter["akuHeater"]["windows"][0]["end"] = true;
+    filter["akuHeater"]["windows"][0]["days"][0] = true;
     filter["schedules"][0]["enabled"] = true;
     filter["schedules"][0]["days"][0] = true;
     filter["schedules"][0]["at"] = true;
@@ -1864,6 +2075,10 @@ void logicApplyConfig(const String& json) {
     s_nightModeInput = -1;
     s_heatCallInput = -1;
     s_recircDemandInput = -1;
+    s_boilerDhwRelay = -1;
+    s_boilerNightRelay = -1;
+    s_recircPumpRelayRole = -1;
+    s_akuHeaterRelay = -1;
 
     // ---------------- I/O funkce (roles/templates) ----------------
     JsonObject iof = doc["iofunc"].as<JsonObject>();
@@ -1996,6 +2211,14 @@ void logicApplyConfig(const String& json) {
                     v.guardEndMs = 0;
 
                     relaySet(static_cast<RelayId>(v.relayA), false);
+                } else if (role == "boiler_enable_dhw") {
+                    s_boilerDhwRelay = (int8_t)i;
+                } else if (role == "boiler_enable_nm") {
+                    s_boilerNightRelay = (int8_t)i;
+                } else if (role == "heater_aku") {
+                    s_akuHeaterRelay = (int8_t)i;
+                } else if (role == "dhw_recirc_pump" || role == "circ_pump") {
+                    s_recircPumpRelayRole = (int8_t)i;
                 }
             }
         }
@@ -2061,22 +2284,25 @@ void logicApplyConfig(const String& json) {
 
         s_eqMinFlow = (float)(eq["minFlow"] | s_eqMinFlow);
         s_eqMaxFlow = (float)(eq["maxFlow"] | s_eqMaxFlow);
-        s_eqAkuMinTopC = (float)(eq["akuMinTopC"] | s_eqAkuMinTopC);
-        s_eqAkuMinDeltaC = (float)(eq["akuMinDeltaC"] | s_eqAkuMinDeltaC);
-        s_eqAkuMinDeltaToTargetC = (float)(eq["akuMinDeltaToTargetC"] | s_eqAkuMinDeltaToTargetC);
-        s_eqAkuMinDeltaToBoilerInC = (float)(eq["akuMinDeltaToBoilerInC"] | s_eqAkuMinDeltaToBoilerInC);
+        const float legacyTop = (float)(eq["akuMinTopC"] | s_eqAkuMinTopCDay);
+        const float legacyDeltaTarget = (float)(eq["akuMinDeltaToTargetC"] | s_eqAkuMinDeltaToTargetCDay);
+        const float legacyDeltaBoiler = (float)(eq["akuMinDeltaToBoilerInC"] | s_eqAkuMinDeltaToBoilerInCDay);
+        s_eqAkuMinTopCDay = (float)(eq["akuMinTopC_day"] | eq["akuMinTopCDay"] | legacyTop);
+        s_eqAkuMinTopCNight = (float)(eq["akuMinTopC_night"] | eq["akuMinTopCNight"] | legacyTop);
+        s_eqAkuMinDeltaToTargetCDay = (float)(eq["akuMinDeltaToTargetC_day"] | eq["akuMinDeltaToTargetCDay"] | legacyDeltaTarget);
+        s_eqAkuMinDeltaToTargetCNight = (float)(eq["akuMinDeltaToTargetC_night"] | eq["akuMinDeltaToTargetCNight"] | legacyDeltaTarget);
+        s_eqAkuMinDeltaToBoilerInCDay = (float)(eq["akuMinDeltaToBoilerInC_day"] | eq["akuMinDeltaToBoilerInCDay"] | legacyDeltaBoiler);
+        s_eqAkuMinDeltaToBoilerInCNight = (float)(eq["akuMinDeltaToBoilerInC_night"] | eq["akuMinDeltaToBoilerInCNight"] | legacyDeltaBoiler);
         s_eqAkuSupportEnabled = (bool)(eq["akuSupportEnabled"] | s_eqAkuSupportEnabled);
         s_eqAkuNoSupportBehavior = String((const char*)(eq["akuNoSupportBehavior"] | s_eqAkuNoSupportBehavior.c_str()));
-        s_eqRequireHeatCall = (bool)(eq["requireHeatCall"] | s_eqRequireHeatCall);
-        s_eqNoHeatCallBehavior = String((const char*)(eq["noHeatCallBehavior"] | s_eqNoHeatCallBehavior.c_str()));
         s_eqCurveOffsetC = (float)(eq["curveOffsetC"] | s_eqCurveOffsetC);
         s_eqMaxBoilerInC = (float)(eq["maxBoilerInC"] | s_eqMaxBoilerInC);
         s_eqNoFlowDetectEnabled = (bool)(eq["noFlowDetectEnabled"] | s_eqNoFlowDetectEnabled);
         s_eqNoFlowTimeoutMs = (uint32_t)(eq["noFlowTimeoutMs"] | s_eqNoFlowTimeoutMs);
+        s_eqNoFlowTestPeriodMs = (uint32_t)(eq["noFlowTestPeriodMs"] | s_eqNoFlowTestPeriodMs);
         s_eqFallbackOutdoorC = (float)(eq["fallbackOutdoorC"] | s_eqFallbackOutdoorC);
 
         s_eqAkuNoSupportBehavior.toLowerCase();
-        s_eqNoHeatCallBehavior.toLowerCase();
 
         JsonObject sensors = doc["sensors"].as<JsonObject>();
         if (!sensors.isNull()) {
@@ -2148,11 +2374,19 @@ void logicApplyConfig(const String& json) {
             s_eqStepPct   = (uint8_t)(ctrl["stepPct"] | ctrl["step"] | s_eqStepPct);
             s_eqPeriodMs  = (uint32_t)(ctrl["periodMs"] | ctrl["period"] | s_eqPeriodMs);
             s_eqMinPct    = (uint8_t)(ctrl["minPct"] | s_eqMinPct);
-            s_eqMaxPct    = (uint8_t)(ctrl["maxPct"] | s_eqMaxPct);
+            const uint8_t legacyMax = (uint8_t)(ctrl["maxPct"] | 0);
+            if (legacyMax > 0) {
+                s_eqMaxPctDay = legacyMax;
+                s_eqMaxPctNight = legacyMax;
+            }
+            s_eqMaxPctDay = (uint8_t)(ctrl["maxPct_day"] | ctrl["maxPctDay"] | s_eqMaxPctDay);
+            s_eqMaxPctNight = (uint8_t)(ctrl["maxPct_night"] | ctrl["maxPctNight"] | s_eqMaxPctNight);
         }
         s_eqDeadbandC = (float)(eq["deadbandC"] | s_eqDeadbandC);
         s_eqStepPct = (uint8_t)(eq["stepPct"] | s_eqStepPct);
         s_eqPeriodMs = (uint32_t)(eq["controlPeriodMs"] | s_eqPeriodMs);
+        s_eqMaxPctDay = (uint8_t)(eq["maxPct_day"] | eq["maxPctDay"] | s_eqMaxPctDay);
+        s_eqMaxPctNight = (uint8_t)(eq["maxPct_night"] | eq["maxPctNight"] | s_eqMaxPctNight);
 
         // clamp
         if (s_eqStepPct < 1) s_eqStepPct = 1;
@@ -2162,20 +2396,27 @@ void logicApplyConfig(const String& json) {
         if (s_eqPeriodMs < 500) s_eqPeriodMs = 500;
         if (s_eqPeriodMs > 600000) s_eqPeriodMs = 600000;
         if (s_eqMinPct > 100) s_eqMinPct = 100;
-        if (s_eqMaxPct > 100) s_eqMaxPct = 100;
-        if (s_eqMinPct > s_eqMaxPct) { uint8_t t=s_eqMinPct; s_eqMinPct=s_eqMaxPct; s_eqMaxPct=t; }
-        if (!isfinite(s_eqAkuMinTopC) || s_eqAkuMinTopC < 0.0f) s_eqAkuMinTopC = 0.0f;
-        if (!isfinite(s_eqAkuMinDeltaC) || s_eqAkuMinDeltaC < 0.0f) s_eqAkuMinDeltaC = 0.0f;
-        if (!isfinite(s_eqAkuMinDeltaToTargetC) || s_eqAkuMinDeltaToTargetC < 0.0f) s_eqAkuMinDeltaToTargetC = 0.0f;
-        if (!isfinite(s_eqAkuMinDeltaToBoilerInC) || s_eqAkuMinDeltaToBoilerInC < 0.0f) s_eqAkuMinDeltaToBoilerInC = 0.0f;
+        if (s_eqMaxPctDay > 100) s_eqMaxPctDay = 100;
+        if (s_eqMaxPctNight > 100) s_eqMaxPctNight = 100;
+        if (s_eqMinPct > s_eqMaxPctDay) s_eqMinPct = s_eqMaxPctDay;
+        if (s_eqMinPct > s_eqMaxPctNight) s_eqMinPct = s_eqMaxPctNight;
+        if (!isfinite(s_eqAkuMinTopCDay) || s_eqAkuMinTopCDay < 0.0f) s_eqAkuMinTopCDay = 0.0f;
+        if (!isfinite(s_eqAkuMinTopCNight) || s_eqAkuMinTopCNight < 0.0f) s_eqAkuMinTopCNight = 0.0f;
+        if (!isfinite(s_eqAkuMinDeltaToTargetCDay) || s_eqAkuMinDeltaToTargetCDay < 0.0f) s_eqAkuMinDeltaToTargetCDay = 0.0f;
+        if (!isfinite(s_eqAkuMinDeltaToTargetCNight) || s_eqAkuMinDeltaToTargetCNight < 0.0f) s_eqAkuMinDeltaToTargetCNight = 0.0f;
+        if (!isfinite(s_eqAkuMinDeltaToBoilerInCDay) || s_eqAkuMinDeltaToBoilerInCDay < 0.0f) s_eqAkuMinDeltaToBoilerInCDay = 0.0f;
+        if (!isfinite(s_eqAkuMinDeltaToBoilerInCNight) || s_eqAkuMinDeltaToBoilerInCNight < 0.0f) s_eqAkuMinDeltaToBoilerInCNight = 0.0f;
         if (!isfinite(s_eqCurveOffsetC)) s_eqCurveOffsetC = 0.0f;
         if (s_eqNoFlowTimeoutMs < 10000) s_eqNoFlowTimeoutMs = 10000;
         if (s_eqNoFlowTimeoutMs > 3600000UL) s_eqNoFlowTimeoutMs = 3600000UL;
+        if (s_eqNoFlowTestPeriodMs < 10000) s_eqNoFlowTestPeriodMs = 10000;
+        if (s_eqNoFlowTestPeriodMs > 3600000UL) s_eqNoFlowTestPeriodMs = 3600000UL;
         if (s_eqOutdoorMaxAgeMs < 1000) s_eqOutdoorMaxAgeMs = 1000;
         if (s_eqOutdoorMaxAgeMs > 3600000UL) s_eqOutdoorMaxAgeMs = 3600000UL;
         s_eqNoFlowActive = false;
         s_eqLastFlowChangeMs = 0;
         s_eqLastFlowC = NAN;
+        s_eqNoFlowLastTestMs = 0;
 
         // pokud vybraný ventil není nakonfigurovaný jako 3c master, ignoruj
         if (s_eqValveMaster0 >= 0 && !isValveMaster((uint8_t)s_eqValveMaster0)) s_eqValveMaster0 = -1;
@@ -2191,11 +2432,20 @@ void logicApplyConfig(const String& json) {
         s_nightModeSource = String((const char*)(sys["nightModeSource"] | s_nightModeSource.c_str()));
         s_nightModeManual = (bool)(sys["nightModeManual"] | s_nightModeManual);
     }
+    JsonObject nightCfg = doc["nightMode"].as<JsonObject>();
+    if (!nightCfg.isNull()) {
+        s_nightModeSource = String((const char*)(nightCfg["source"] | s_nightModeSource.c_str()));
+        s_nightModeManual = (bool)(nightCfg["manual"] | s_nightModeManual);
+    }
     s_systemProfile.toLowerCase();
     s_nightModeSource.toLowerCase();
 
     if (s_nightModeInput >= 0 && s_nightModeInput < (int8_t)INPUT_COUNT && s_nightModeSource == "input") {
         s_nightMode = inputGetState(static_cast<InputId>(s_nightModeInput));
+    } else if (s_nightModeSource == "manual") {
+        s_nightMode = s_nightModeManual;
+    } else if (s_nightModeSource == "heat_call") {
+        s_nightMode = !s_heatCallActive;
     }
 // relayMap
     JsonArray rm = doc["relayMap"].as<JsonArray>();
@@ -2299,6 +2549,12 @@ void logicApplyConfig(const String& json) {
     s_tuvValveMaster0 = -1;
     s_tuvValveTargetPct = 0;
     s_tuvEqValveTargetPct = 0;
+    s_tuvBypassEnabled = true;
+    s_tuvBypassPct = 100;
+    s_tuvChPct = 100;
+    s_tuvBypassInvert = false;
+    s_tuvValveCurrentPct = 0;
+    s_tuvValveMode = "ch";
     s_tuvScheduleEnabled = false;
     s_tuvDemandActive = false;
     s_tuvModeActive = false;
@@ -2313,8 +2569,19 @@ void logicApplyConfig(const String& json) {
         int rel = tuv["relay"] | tuv["requestRelay"] | tuv["request_relay"] | 0;
         if (rel >= 1 && rel <= RELAY_COUNT) s_tuvRequestRelay = (int8_t)(rel - 1);
         if (tuv.containsKey("enabled")) s_tuvScheduleEnabled = (bool)tuv["enabled"];
+        int demandIn = (int)(tuv["demandInput"] | 0);
+        if (demandIn >= 1 && demandIn <= INPUT_COUNT) s_tuvDemandInput = (int8_t)(demandIn - 1);
 
         int valve1 = tuv["valveMaster"] | tuv["shortValveMaster"] | 0;
+        JsonObject bypass = tuv["bypassValve"].as<JsonObject>();
+        if (!bypass.isNull()) {
+            s_tuvBypassEnabled = (bool)(bypass["enabled"] | s_tuvBypassEnabled);
+            int master = (int)(bypass["masterRelay"] | bypass["master"] | 0);
+            if (master >= 1 && master <= RELAY_COUNT) valve1 = master;
+            s_tuvBypassPct = clampPctInt((int)(bypass["bypassPct"] | s_tuvBypassPct));
+            s_tuvChPct = clampPctInt((int)(bypass["chPct"] | s_tuvChPct));
+            s_tuvBypassInvert = (bool)(bypass["invert"] | s_tuvBypassInvert);
+        }
         if (valve1 >= 1 && valve1 <= RELAY_COUNT) s_tuvValveMaster0 = (int8_t)(valve1 - 1);
         s_tuvValveTargetPct = clampPctInt((int)(tuv["valveTargetPct"] | tuv["targetPct"] | s_tuvValveTargetPct));
         s_tuvEqValveTargetPct = clampPctInt((int)(tuv["eqValveTargetPct"] | tuv["mixValveTargetPct"] | s_tuvEqValveTargetPct));
@@ -2333,14 +2600,15 @@ void logicApplyConfig(const String& json) {
     if (s_tuvValveMaster0 >= 0 && !isValveMaster((uint8_t)s_tuvValveMaster0)) s_tuvValveMaster0 = -1;
     s_tuvDemandActive = false;
     updateInputBasedModes();
+    s_tuvValveCurrentPct = effectiveTuvValvePct(isTuvEnabledEffective());
     updateTuvModeState(millis());
     applyTuvRequest();
-    applyHeatCallGating(millis());
+    applyNightModeRelay();
 
     // --- Smart recirculation ---
     s_recircEnabled = false;
     s_recircMode = "on_demand";
-    s_recircPumpRelay = -1;
+    s_recircPumpRelay = s_recircPumpRelayRole;
     s_recircOnDemandRunMs = 120000;
     s_recircMinOffMs = 300000;
     s_recircMinOnMs = 30000;
@@ -2405,6 +2673,76 @@ void logicApplyConfig(const String& json) {
         }
     }
     s_recircMode.toLowerCase();
+
+    // --- Boiler relays ---
+    JsonObject boiler = doc["boiler"].as<JsonObject>();
+    if (!boiler.isNull()) {
+        int dhwRel = (int)(boiler["dhwRequestRelay"] | boiler["dhw_request_relay"] | 0);
+        if (dhwRel >= 1 && dhwRel <= RELAY_COUNT) s_boilerDhwRelay = (int8_t)(dhwRel - 1);
+        int nmRel = (int)(boiler["nightModeRelay"] | boiler["night_mode_relay"] | 0);
+        if (nmRel >= 1 && nmRel <= RELAY_COUNT) s_boilerNightRelay = (int8_t)(nmRel - 1);
+    }
+
+    // --- AKU heater ---
+    s_akuHeaterEnabled = false;
+    s_akuHeaterMode = "manual";
+    s_akuHeaterManualOn = false;
+    s_akuHeaterTargetTopC = 50.0f;
+    s_akuHeaterHysteresisC = 2.0f;
+    s_akuHeaterMaxOnMs = 2UL * 60UL * 60UL * 1000UL;
+    s_akuHeaterMinOffMs = 10UL * 60UL * 1000UL;
+    s_akuHeaterWindowCount = 0;
+
+    JsonObject heater = doc["akuHeater"].as<JsonObject>();
+    if (!heater.isNull()) {
+        s_akuHeaterEnabled = (bool)(heater["enabled"] | s_akuHeaterEnabled);
+        s_akuHeaterMode = String((const char*)(heater["mode"] | s_akuHeaterMode.c_str()));
+        s_akuHeaterManualOn = (bool)(heater["manualOn"] | heater["manual_on"] | s_akuHeaterManualOn);
+        s_akuHeaterTargetTopC = (float)(heater["targetTopC"] | s_akuHeaterTargetTopC);
+        s_akuHeaterHysteresisC = (float)(heater["hysteresisC"] | s_akuHeaterHysteresisC);
+        s_akuHeaterMaxOnMs = (uint32_t)(heater["maxOnMs"] | s_akuHeaterMaxOnMs);
+        s_akuHeaterMinOffMs = (uint32_t)(heater["minOffMs"] | s_akuHeaterMinOffMs);
+        int relay = (int)(heater["relay"] | heater["relayIndex"] | 0);
+        if (relay >= 1 && relay <= RELAY_COUNT) s_akuHeaterRelay = (int8_t)(relay - 1);
+
+        JsonArray windows = heater["windows"].as<JsonArray>();
+        if (!windows.isNull()) {
+            for (JsonVariant vv : windows) {
+                if (s_akuHeaterWindowCount >= MAX_HEATER_WINDOWS) break;
+                JsonObject w = vv.as<JsonObject>();
+                if (w.isNull()) continue;
+                HeaterWindow hw{};
+                const char* start = w["start"] | "06:00";
+                const char* end = w["end"] | "07:00";
+                int sh=6, sm=0, eh=7, em=0;
+                if (start && sscanf(start, "%d:%d", &sh, &sm) >= 1) {
+                    if (sh < 0) sh = 0; if (sh > 23) sh = 23;
+                    if (sm < 0) sm = 0; if (sm > 59) sm = 59;
+                }
+                if (end && sscanf(end, "%d:%d", &eh, &em) >= 1) {
+                    if (eh < 0) eh = 0; if (eh > 23) eh = 23;
+                    if (em < 0) em = 0; if (em > 59) em = 59;
+                }
+                hw.startHour = (uint8_t)sh;
+                hw.startMin = (uint8_t)sm;
+                hw.endHour = (uint8_t)eh;
+                hw.endMin = (uint8_t)em;
+                uint8_t mask = 0;
+                JsonArray days = w["days"].as<JsonArray>();
+                if (!days.isNull()) {
+                    for (JsonVariant dv : days) {
+                        int d = dv.as<int>();
+                        if (d >= 1 && d <= 7) mask |= (1U << (d - 1));
+                    }
+                } else {
+                    mask = 0x7F;
+                }
+                hw.daysMask = mask ? mask : 0x7F;
+                s_akuHeaterWindows[s_akuHeaterWindowCount++] = hw;
+            }
+        }
+    }
+    s_akuHeaterMode.toLowerCase();
 
     // --- schedules (UI stores cfg.schedules[]) ---
     s_scheduleCount = 0;

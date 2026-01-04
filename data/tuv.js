@@ -6,19 +6,19 @@
     btnSave: $("btnSaveTuv"),
     enabled: $("tuvEnabled"),
     enableHint: $("tuvEnableHint"),
+    demandInput: $("tuvDemandInput"),
     requestRelay: $("tuvRequestRelay"),
     eqValveTargetPct: $("tuvEqValveTargetPct"),
     valveMaster: $("tuvValveMaster"),
-    valveTargetPct: $("tuvValveTargetPct"),
+    bypassEnabled: $("tuvBypassEnabled"),
+    bypassInvert: $("tuvBypassInvert"),
+    bypassPct: $("tuvBypassPct"),
+    chPct: $("tuvChPct"),
+    restoreEqValve: $("tuvRestoreEqValve"),
     statusBox: $("tuvStatusBox"),
   };
 
   if (!window.App || !el.btnSave) return;
-
-  const hideDemandRow = () => {
-    const row = document.getElementById("tuvDemandInput")?.closest(".ioRow");
-    if (row) row.style.display = "none";
-  };
 
   const clampPct = (v) => {
     const n = Number(v);
@@ -59,6 +59,16 @@
       const role = String(outputs[i]?.role || "none");
       const suffix = (role === "boiler_enable_dhw") ? "" : " (nastaví roli boiler_enable_dhw)";
       opts.push({ value: String(i + 1), label: `${i + 1} – ${name}${suffix}` });
+    }
+    return opts;
+  }
+
+  function buildInputOptions(cfg) {
+    const opts = [{ value: "0", label: "— (nepoužívat)" }];
+    const names = Array.isArray(cfg?.inputNames) ? cfg.inputNames : [];
+    for (let i = 0; i < 8; i++) {
+      const name = String(names[i] || "").trim() || `Vstup ${i + 1}`;
+      opts.push({ value: String(i + 1), label: `${i + 1} – ${name}` });
     }
     return opts;
   }
@@ -107,10 +117,16 @@
     App.ensureConfigShape(cfg);
     const t = cfg.tuv || {};
     el.enabled.checked = !!t.enabled;
+    el.demandInput.value = String(t.demandInput || 0);
     el.requestRelay.value = String(t.requestRelay || 0);
     el.eqValveTargetPct.value = clampPct(t.eqValveTargetPct ?? 0);
     el.valveMaster.value = String(t.valveMaster || 0);
-    el.valveTargetPct.value = clampPct(t.valveTargetPct ?? 0);
+    const bv = t.bypassValve || {};
+    el.bypassEnabled.checked = !!bv.enabled;
+    el.bypassInvert.checked = !!bv.invert;
+    el.bypassPct.value = clampPct(bv.bypassPct ?? 100);
+    el.chPct.value = clampPct(bv.chPct ?? 100);
+    el.restoreEqValve.checked = (typeof t.restoreEqValveAfter === "boolean") ? t.restoreEqValveAfter : true;
     updateEnableHint(cfg);
   }
 
@@ -138,10 +154,18 @@
     App.ensureConfigShape(cfg);
     cfg.tuv = cfg.tuv || {};
     if (!el.enabled.disabled) cfg.tuv.enabled = !!el.enabled.checked;
+    cfg.tuv.demandInput = readInt(el.demandInput.value, 0);
     cfg.tuv.requestRelay = readInt(el.requestRelay.value, 0);
     cfg.tuv.eqValveTargetPct = clampPct(el.eqValveTargetPct.value);
     cfg.tuv.valveMaster = readInt(el.valveMaster.value, 0);
-    cfg.tuv.valveTargetPct = clampPct(el.valveTargetPct.value);
+    cfg.tuv.restoreEqValveAfter = !!el.restoreEqValve.checked;
+    cfg.tuv.bypassValve = (cfg.tuv.bypassValve && typeof cfg.tuv.bypassValve === "object") ? cfg.tuv.bypassValve : {};
+    cfg.tuv.bypassValve.enabled = !!el.bypassEnabled.checked;
+    cfg.tuv.bypassValve.mode = "single_relay_spdt";
+    cfg.tuv.bypassValve.masterRelay = cfg.tuv.valveMaster;
+    cfg.tuv.bypassValve.bypassPct = clampPct(el.bypassPct.value);
+    cfg.tuv.bypassValve.chPct = clampPct(el.chPct.value);
+    cfg.tuv.bypassValve.invert = !!el.bypassInvert.checked;
   }
 
   function updateStatusBox(status, cfg) {
@@ -160,7 +184,9 @@
     const tuvMaster = Number(st.valveMaster || cfg?.tuv?.valveMaster || 0);
     if (tuvMaster > 0) {
       const pos = clampPct(st.valvePosPct ?? 0);
-      lines.push(`Přepínací ventil TUV: master ${tuvMaster} • ${pos}% → ${clampPct(st.valveTargetPct ?? cfg?.tuv?.valveTargetPct ?? 0)}%`);
+      const bv = cfg?.tuv?.bypassValve || {};
+      const tgt = clampPct(st.valveTargetPct ?? (active ? (bv.bypassPct ?? 100) : (bv.chPct ?? 100)));
+      lines.push(`Bypass ventil: master ${tuvMaster} • ${pos}% → ${tgt}%`);
     }
 
     el.statusBox.textContent = lines.join("\n");
@@ -203,9 +229,10 @@
     if (typeof prevOnConfigLoaded === "function") prevOnConfigLoaded(cfg);
     const relayOpts = buildRelayOptions(cfg);
     setSelectOptions(el.requestRelay, relayOpts, false);
+    const inputOpts = buildInputOptions(cfg);
+    setSelectOptions(el.demandInput, inputOpts, false);
     loadFromConfig(cfg);
     refreshDash(cfg, true);
-    hideDemandRow();
   };
 
   const prevOnStatusLoaded = App.onStatusLoaded;
@@ -220,10 +247,11 @@
     if (cfg) {
       const relayOpts = buildRelayOptions(cfg);
       setSelectOptions(el.requestRelay, relayOpts, false);
+      const inputOpts = buildInputOptions(cfg);
+      setSelectOptions(el.demandInput, inputOpts, false);
       loadFromConfig(cfg);
       refreshDash(cfg, true);
       updateStatusBox(App.getStatus(), cfg);
     }
-    hideDemandRow();
   });
 })();

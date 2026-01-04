@@ -108,6 +108,7 @@ AutoStatus logicGetAutoStatus();
 // Virtual functions controlled by schedules / external demand
 bool logicGetTuvEnabled();
 bool logicGetNightMode();
+bool logicGetHeatCallActive();
 
 bool logicGetAutoDefaultOffUnmapped();
 
@@ -124,6 +125,10 @@ struct TuvStatus {
     uint8_t valveMaster = 0;     // 1..8 (TUV přepínací ventil)
     uint8_t valveTargetPct = 0;
     uint8_t valvePosPct = 0;
+    uint8_t bypassPct = 0;
+    uint8_t chPct = 0;
+    bool    bypassInvert = false;
+    String  valveMode = "";
 };
 TuvStatus logicGetTuvStatus();
 
@@ -139,6 +144,17 @@ struct RecircStatus {
     bool returnTempValid = false;
 };
 RecircStatus logicGetRecircStatus();
+
+// AKU heater status
+struct AkuHeaterStatus {
+    bool enabled = false;
+    bool active = false;
+    String mode = "";
+    String reason = "";
+    float topC = NAN;
+    bool topValid = false;
+};
+AkuHeaterStatus logicGetAkuHeaterStatus();
 
 // Trojcestný ventil – stav pro dashboard (V2)
 struct ValveUiStatus {

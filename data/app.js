@@ -318,7 +318,7 @@ const renderIO = () => {
     // System profile
     cfg.system = (cfg.system && typeof cfg.system === "object") ? cfg.system : {};
     cfg.system.profile = cfg.system.profile || "standard";
-    cfg.system.nightModeSource = cfg.system.nightModeSource || "input";
+    cfg.system.nightModeSource = cfg.system.nightModeSource || "heat_call";
     cfg.system.nightModeManual = !!cfg.system.nightModeManual;
 
     // Sensors
@@ -402,17 +402,25 @@ e.controlPeriodMs = (typeof e.controlPeriodMs === "number") ? e.controlPeriodMs 
 e.minFlow = (typeof e.minFlow === "number") ? e.minFlow : 25;
 e.maxFlow = (typeof e.maxFlow === "number") ? e.maxFlow : 55;
 e.curveOffsetC = (typeof e.curveOffsetC === "number") ? e.curveOffsetC : 0;
-e.requireHeatCall = (typeof e.requireHeatCall === "boolean") ? e.requireHeatCall : true;
+e.requireHeatCall = (typeof e.requireHeatCall === "boolean") ? e.requireHeatCall : false;
 e.noHeatCallBehavior = e.noHeatCallBehavior || "hold";
 e.akuSupportEnabled = (typeof e.akuSupportEnabled === "boolean") ? e.akuSupportEnabled : true;
-e.akuMinTopC = (typeof e.akuMinTopC === "number") ? e.akuMinTopC : 40;
-e.akuMinDeltaC = (typeof e.akuMinDeltaC === "number") ? e.akuMinDeltaC : 3;
+e.akuMinTopC = (typeof e.akuMinTopC === "number") ? e.akuMinTopC : 42;
 e.akuMinDeltaToTargetC = (typeof e.akuMinDeltaToTargetC === "number") ? e.akuMinDeltaToTargetC : 2;
 e.akuMinDeltaToBoilerInC = (typeof e.akuMinDeltaToBoilerInC === "number") ? e.akuMinDeltaToBoilerInC : 3;
+e.akuMinTopC_day = (typeof e.akuMinTopC_day === "number") ? e.akuMinTopC_day : e.akuMinTopC;
+e.akuMinTopC_night = (typeof e.akuMinTopC_night === "number") ? e.akuMinTopC_night : 45;
+e.akuMinDeltaToTargetC_day = (typeof e.akuMinDeltaToTargetC_day === "number") ? e.akuMinDeltaToTargetC_day : e.akuMinDeltaToTargetC;
+e.akuMinDeltaToTargetC_night = (typeof e.akuMinDeltaToTargetC_night === "number") ? e.akuMinDeltaToTargetC_night : 3;
+e.akuMinDeltaToBoilerInC_day = (typeof e.akuMinDeltaToBoilerInC_day === "number") ? e.akuMinDeltaToBoilerInC_day : e.akuMinDeltaToBoilerInC;
+e.akuMinDeltaToBoilerInC_night = (typeof e.akuMinDeltaToBoilerInC_night === "number") ? e.akuMinDeltaToBoilerInC_night : 4;
+e.maxPct_day = (typeof e.maxPct_day === "number") ? e.maxPct_day : e.control.maxPct;
+e.maxPct_night = (typeof e.maxPct_night === "number") ? e.maxPct_night : 50;
 e.akuNoSupportBehavior = e.akuNoSupportBehavior || "close";
 e.maxBoilerInC = (typeof e.maxBoilerInC === "number") ? e.maxBoilerInC : 55;
 e.noFlowDetectEnabled = (typeof e.noFlowDetectEnabled === "boolean") ? e.noFlowDetectEnabled : true;
 e.noFlowTimeoutMs = (typeof e.noFlowTimeoutMs === "number") ? e.noFlowTimeoutMs : 180000;
+e.noFlowTestPeriodMs = (typeof e.noFlowTestPeriodMs === "number") ? e.noFlowTestPeriodMs : e.noFlowTimeoutMs;
 e.fallbackOutdoorC = (typeof e.fallbackOutdoorC === "number") ? e.fallbackOutdoorC : 0;
 
 // Formula: Tflow = (20 - Tout) * slope + 20 + shift
@@ -480,6 +488,31 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     cfg.tuv.eqValveTargetPct = Number.isFinite(Number(cfg.tuv.eqValveTargetPct)) ? Number(cfg.tuv.eqValveTargetPct) : 0;
     cfg.tuv.valveMaster = Number.isFinite(Number(cfg.tuv.valveMaster)) ? Number(cfg.tuv.valveMaster) : 0;
     cfg.tuv.valveTargetPct = Number.isFinite(Number(cfg.tuv.valveTargetPct)) ? Number(cfg.tuv.valveTargetPct) : 0;
+    cfg.tuv.restoreEqValveAfter = (typeof cfg.tuv.restoreEqValveAfter === "boolean") ? cfg.tuv.restoreEqValveAfter : true;
+    cfg.tuv.bypassValve = (cfg.tuv.bypassValve && typeof cfg.tuv.bypassValve === "object") ? cfg.tuv.bypassValve : {};
+    cfg.tuv.bypassValve.enabled = (typeof cfg.tuv.bypassValve.enabled === "boolean") ? cfg.tuv.bypassValve.enabled : true;
+    cfg.tuv.bypassValve.mode = String(cfg.tuv.bypassValve.mode || "single_relay_spdt");
+    cfg.tuv.bypassValve.masterRelay = Number.isFinite(Number(cfg.tuv.bypassValve.masterRelay)) ? Number(cfg.tuv.bypassValve.masterRelay) : 0;
+    cfg.tuv.bypassValve.bypassPct = Number.isFinite(Number(cfg.tuv.bypassValve.bypassPct)) ? Number(cfg.tuv.bypassValve.bypassPct) : 100;
+    cfg.tuv.bypassValve.chPct = Number.isFinite(Number(cfg.tuv.bypassValve.chPct)) ? Number(cfg.tuv.bypassValve.chPct) : 100;
+    cfg.tuv.bypassValve.invert = !!cfg.tuv.bypassValve.invert;
+
+    // ---------- Boiler relays ----------
+    cfg.boiler = (cfg.boiler && typeof cfg.boiler === "object") ? cfg.boiler : {};
+    cfg.boiler.dhwRequestRelay = Number.isFinite(Number(cfg.boiler.dhwRequestRelay)) ? Number(cfg.boiler.dhwRequestRelay) : 0;
+    cfg.boiler.nightModeRelay = Number.isFinite(Number(cfg.boiler.nightModeRelay)) ? Number(cfg.boiler.nightModeRelay) : 0;
+
+    // ---------- AKU heater ----------
+    cfg.akuHeater = (cfg.akuHeater && typeof cfg.akuHeater === "object") ? cfg.akuHeater : {};
+    cfg.akuHeater.enabled = !!cfg.akuHeater.enabled;
+    cfg.akuHeater.relay = Number.isFinite(Number(cfg.akuHeater.relay)) ? Number(cfg.akuHeater.relay) : 0;
+    cfg.akuHeater.mode = String(cfg.akuHeater.mode || "manual");
+    cfg.akuHeater.manualOn = !!cfg.akuHeater.manualOn;
+    cfg.akuHeater.targetTopC = Number.isFinite(Number(cfg.akuHeater.targetTopC)) ? Number(cfg.akuHeater.targetTopC) : 50;
+    cfg.akuHeater.hysteresisC = Number.isFinite(Number(cfg.akuHeater.hysteresisC)) ? Number(cfg.akuHeater.hysteresisC) : 2;
+    cfg.akuHeater.maxOnMs = Number.isFinite(Number(cfg.akuHeater.maxOnMs)) ? Number(cfg.akuHeater.maxOnMs) : 2 * 60 * 60 * 1000;
+    cfg.akuHeater.minOffMs = Number.isFinite(Number(cfg.akuHeater.minOffMs)) ? Number(cfg.akuHeater.minOffMs) : 10 * 60 * 1000;
+    cfg.akuHeater.windows = Array.isArray(cfg.akuHeater.windows) ? cfg.akuHeater.windows : [];
 
     // ---------- Dallas header thermometers (GPIO0..3) ----------
     // Independent from 8 terminal DI inputs; used for DS18B20 on pin header.
