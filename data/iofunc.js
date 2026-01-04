@@ -23,6 +23,7 @@
     { v: "mode_trigger", t: "Přepínač režimu (MODE)" },
     { v: "dhw_enable", t: "Aktivace ohřevu TUV" },
     { v: "night_mode", t: "Aktivace nočního útlumu" },
+    { v: "recirc_demand", t: "Požadavek cirkulace TUV" },
     { v: "generic", t: "Obecný digitální vstup" },
   ];
 

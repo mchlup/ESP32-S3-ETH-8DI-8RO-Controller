@@ -34,6 +34,36 @@
 
     valveMaster: $("eqValveMaster"),
 
+    akuTopSource: $("eqAkuTopSource"),
+    akuTopDallasRow: $("eqAkuTopDallasRow"),
+    akuTopDallas: $("eqAkuTopDallas"),
+    akuTopMqttRow: $("eqAkuTopMqttRow"),
+    akuTopMqttPreset: $("eqAkuTopMqttPreset"),
+    akuTopTopic: $("eqAkuTopTopic"),
+    akuTopJsonKey: $("eqAkuTopJsonKey"),
+    akuTopBleRow: $("eqAkuTopBleRow"),
+    akuTopBle: $("eqAkuTopBle"),
+
+    akuMidSource: $("eqAkuMidSource"),
+    akuMidDallasRow: $("eqAkuMidDallasRow"),
+    akuMidDallas: $("eqAkuMidDallas"),
+    akuMidMqttRow: $("eqAkuMidMqttRow"),
+    akuMidMqttPreset: $("eqAkuMidMqttPreset"),
+    akuMidTopic: $("eqAkuMidTopic"),
+    akuMidJsonKey: $("eqAkuMidJsonKey"),
+    akuMidBleRow: $("eqAkuMidBleRow"),
+    akuMidBle: $("eqAkuMidBle"),
+
+    akuBottomSource: $("eqAkuBottomSource"),
+    akuBottomDallasRow: $("eqAkuBottomDallasRow"),
+    akuBottomDallas: $("eqAkuBottomDallas"),
+    akuBottomMqttRow: $("eqAkuBottomMqttRow"),
+    akuBottomMqttPreset: $("eqAkuBottomMqttPreset"),
+    akuBottomTopic: $("eqAkuBottomTopic"),
+    akuBottomJsonKey: $("eqAkuBottomJsonKey"),
+    akuBottomBleRow: $("eqAkuBottomBleRow"),
+    akuBottomBle: $("eqAkuBottomBle"),
+
     minFlow: $("eqMinFlow"),
     maxFlow: $("eqMaxFlow"),
     slopeDay: $("eqSlopeDay"),
@@ -46,6 +76,22 @@
     periodS: $("eqPeriodS"),
     minPct: $("eqMinPct"),
     maxPct: $("eqMaxPct"),
+    curveOffsetC: $("eqCurveOffsetC"),
+    maxBoilerInC: $("eqMaxBoilerInC"),
+    noFlowDetectEnabled: $("eqNoFlowDetectEnabled"),
+    noFlowTimeoutS: $("eqNoFlowTimeoutS"),
+    requireHeatCall: $("eqRequireHeatCall"),
+    noHeatCallBehavior: $("eqNoHeatCallBehavior"),
+    akuSupportEnabled: $("eqAkuSupportEnabled"),
+    akuNoSupportBehavior: $("eqAkuNoSupportBehavior"),
+    akuMinTopC: $("eqAkuMinTopC"),
+    akuMinDeltaToTargetC: $("eqAkuMinDeltaToTargetC"),
+    akuMinDeltaToBoilerInC: $("eqAkuMinDeltaToBoilerInC"),
+    fallbackOutdoorC: $("eqFallbackOutdoorC"),
+    outdoorMaxAgeMin: $("eqOutdoorMaxAgeMin"),
+    systemProfile: $("eqSystemProfile"),
+    nightModeSource: $("eqNightModeSource"),
+    nightModeManual: $("eqNightModeManual"),
 
     heatTout1: $("eqHeatTout1"),
     heatTflow1: $("eqHeatTflow1"),
@@ -123,9 +169,9 @@
     return `${(ms / 60000).toFixed(1)} min`;
   }
 
-  function computeTargetFlow(tout, slope, shift, minFlow, maxFlow) {
+  function computeTargetFlow(tout, slope, shift, minFlow, maxFlow, offset = 0) {
     // stejný vzorec jako firmware/UI: Tflow = (20 - Tout) * slope + 20 + shift
-    const t = (20 - tout) * slope + 20 + shift;
+    const t = (20 - tout) * slope + 20 + shift + offset;
     return clamp(t, minFlow, maxFlow);
   }
 
@@ -155,6 +201,7 @@
     const shiftNight = parseFloat(el.shiftNight.value || "0");
     const minFlow = parseFloat(el.minFlow.value || "0");
     const maxFlow = parseFloat(el.maxFlow.value || "100");
+    const offsetC = parseFloat(el.curveOffsetC.value || "0");
 
     const W = cssW, H = cssH;
     const fg = (window.getComputedStyle ? getComputedStyle(c).color : "#000") || "#000";
@@ -215,7 +262,7 @@
       ctx.beginPath();
       let first = true;
       for (let x = xMin; x <= xMax; x += 1) {
-        const y = computeTargetFlow(x, slope, shift, minFlow, maxFlow);
+        const y = computeTargetFlow(x, slope, shift, minFlow, maxFlow, offsetC);
         const px = x2px(x);
         const py = y2px(y);
         if (first) { ctx.moveTo(px, py); first = false; }
@@ -236,7 +283,7 @@
       const isNight = !!st.night;
       const slope = isNight ? slopeNight : slopeDay;
       const shift = isNight ? shiftNight : shiftDay;
-      const yCalc = computeTargetFlow(x, slope, shift, minFlow, maxFlow);
+      const yCalc = computeTargetFlow(x, slope, shift, minFlow, maxFlow, offsetC);
       const y = clamp(yCalc, yMin, yMax);
       const px = x2px(x), py = y2px(y);
 
@@ -450,6 +497,21 @@
     el.flowDallasRow.style.display = (fs === "dallas") ? "" : "none";
     el.flowMqttRow.style.display   = (fs === "mqtt") ? "" : "none";
     el.flowBleRow.style.display    = (fs === "ble") ? "" : "none";
+
+    const ats = el.akuTopSource.value;
+    el.akuTopDallasRow.style.display = (ats === "dallas") ? "" : "none";
+    el.akuTopMqttRow.style.display   = (ats === "mqtt") ? "" : "none";
+    el.akuTopBleRow.style.display    = (ats === "ble") ? "" : "none";
+
+    const ams = el.akuMidSource.value;
+    el.akuMidDallasRow.style.display = (ams === "dallas") ? "" : "none";
+    el.akuMidMqttRow.style.display   = (ams === "mqtt") ? "" : "none";
+    el.akuMidBleRow.style.display    = (ams === "ble") ? "" : "none";
+
+    const abs = el.akuBottomSource.value;
+    el.akuBottomDallasRow.style.display = (abs === "dallas") ? "" : "none";
+    el.akuBottomMqttRow.style.display   = (abs === "mqtt") ? "" : "none";
+    el.akuBottomBleRow.style.display    = (abs === "ble") ? "" : "none";
   }
 
   // Quick helper: copy the system role assignment (Teploměry -> "Význam teploměrů") into the ekviterm source UI.
@@ -534,8 +596,8 @@
     el.outdoorJsonKey.value = o.jsonKey || o.key || o.field || "";
     el.outdoorBle.value = o.bleId || o.id || "meteo.tempC";
 
-    // flow
-    const f = e.flow || {};
+    // boiler_in (legacy: flow)
+    const f = e.boilerIn || e.flow || {};
     el.flowSource.value = f.source || "dallas";
     if ((f.source || "dallas") === "dallas") {
       const gpio = (typeof f.gpio === "number") ? f.gpio : 0;
@@ -545,6 +607,39 @@
     el.flowTopic.value = f.topic || "";
     el.flowJsonKey.value = f.jsonKey || f.key || f.field || "";
     el.flowBle.value = f.bleId || f.id || "meteo.tempC";
+
+    const akuTop = e.akuTop || {};
+    el.akuTopSource.value = akuTop.source || "none";
+    if ((akuTop.source || "none") === "dallas") {
+      const gpio = (typeof akuTop.gpio === "number") ? akuTop.gpio : 0;
+      const rom = akuTop.rom || akuTop.addr || "";
+      el.akuTopDallas.value = makeDallasValue(gpio, String(rom).toUpperCase());
+    }
+    el.akuTopTopic.value = akuTop.topic || "";
+    el.akuTopJsonKey.value = akuTop.jsonKey || akuTop.key || akuTop.field || "";
+    el.akuTopBle.value = akuTop.bleId || akuTop.id || "meteo.tempC";
+
+    const akuMid = e.akuMid || {};
+    el.akuMidSource.value = akuMid.source || "none";
+    if ((akuMid.source || "none") === "dallas") {
+      const gpio = (typeof akuMid.gpio === "number") ? akuMid.gpio : 0;
+      const rom = akuMid.rom || akuMid.addr || "";
+      el.akuMidDallas.value = makeDallasValue(gpio, String(rom).toUpperCase());
+    }
+    el.akuMidTopic.value = akuMid.topic || "";
+    el.akuMidJsonKey.value = akuMid.jsonKey || akuMid.key || akuMid.field || "";
+    el.akuMidBle.value = akuMid.bleId || akuMid.id || "meteo.tempC";
+
+    const akuBottom = e.akuBottom || {};
+    el.akuBottomSource.value = akuBottom.source || "none";
+    if ((akuBottom.source || "none") === "dallas") {
+      const gpio = (typeof akuBottom.gpio === "number") ? akuBottom.gpio : 0;
+      const rom = akuBottom.rom || akuBottom.addr || "";
+      el.akuBottomDallas.value = makeDallasValue(gpio, String(rom).toUpperCase());
+    }
+    el.akuBottomTopic.value = akuBottom.topic || "";
+    el.akuBottomJsonKey.value = akuBottom.jsonKey || akuBottom.key || akuBottom.field || "";
+    el.akuBottomBle.value = akuBottom.bleId || akuBottom.id || "meteo.tempC";
 
     // valve
     const vm = (e.valve && typeof e.valve.master === "number") ? e.valve.master : 0;
@@ -570,6 +665,25 @@
     el.periodS.value   = Math.round(((typeof c.periodMs === "number") ? c.periodMs : 30000) / 1000);
     el.minPct.value    = (typeof c.minPct === "number") ? c.minPct : 0;
     el.maxPct.value    = (typeof c.maxPct === "number") ? c.maxPct : 100;
+
+    el.curveOffsetC.value = (typeof e.curveOffsetC === "number") ? e.curveOffsetC : 0;
+    el.maxBoilerInC.value = (typeof e.maxBoilerInC === "number") ? e.maxBoilerInC : 55;
+    el.noFlowDetectEnabled.checked = (typeof e.noFlowDetectEnabled === "boolean") ? e.noFlowDetectEnabled : true;
+    el.noFlowTimeoutS.value = Math.round(((typeof e.noFlowTimeoutMs === "number") ? e.noFlowTimeoutMs : 180000) / 1000);
+    el.requireHeatCall.checked = (typeof e.requireHeatCall === "boolean") ? e.requireHeatCall : true;
+    el.noHeatCallBehavior.value = e.noHeatCallBehavior || "hold";
+    el.akuSupportEnabled.checked = (typeof e.akuSupportEnabled === "boolean") ? e.akuSupportEnabled : true;
+    el.akuNoSupportBehavior.value = e.akuNoSupportBehavior || "close";
+    el.akuMinTopC.value = (typeof e.akuMinTopC === "number") ? e.akuMinTopC : 40;
+    el.akuMinDeltaToTargetC.value = (typeof e.akuMinDeltaToTargetC === "number") ? e.akuMinDeltaToTargetC : 2;
+    el.akuMinDeltaToBoilerInC.value = (typeof e.akuMinDeltaToBoilerInC === "number") ? e.akuMinDeltaToBoilerInC : 3;
+    el.fallbackOutdoorC.value = (typeof e.fallbackOutdoorC === "number") ? e.fallbackOutdoorC : 0;
+    const maxAgeMs = (typeof cfg?.sensors?.outdoor?.maxAgeMs === "number") ? cfg.sensors.outdoor.maxAgeMs : 900000;
+    el.outdoorMaxAgeMin.value = Math.round(maxAgeMs / 60000);
+
+    el.systemProfile.value = cfg?.system?.profile || "standard";
+    el.nightModeSource.value = cfg?.system?.nightModeSource || "input";
+    el.nightModeManual.checked = !!cfg?.system?.nightModeManual;
 
     // legacy refs
     const r = e.refs || {};
@@ -620,30 +734,71 @@
       e.outdoor.bleId = String(el.outdoorBle.value || "meteo.tempC");
     }
 
-    // flow
+    // boiler_in (legacy: flow)
+    e.boilerIn = e.boilerIn || {};
     e.flow = e.flow || {};
     const fs = el.flowSource.value || "dallas";
-    e.flow.source = fs;
-    e.flow.gpio = 0;
-    e.flow.rom = "";
-    e.flow.topic = "";
-    e.flow.jsonKey = "";
-    e.flow.bleId = "";
-    e.flow.mqttIdx = 0;
+    for (const target of [e.boilerIn, e.flow]) {
+      target.source = fs;
+      target.gpio = 0;
+      target.rom = "";
+      target.topic = "";
+      target.jsonKey = "";
+      target.bleId = "";
+      target.mqttIdx = 0;
+    }
 
     if (fs === "dallas") {
       const sel = parseDallasValue(el.flowDallas.value) || { gpio: 0, rom: "" };
+      e.boilerIn.gpio = sel.gpio;
+      e.boilerIn.rom  = sel.rom || "";
       e.flow.gpio = sel.gpio;
-      e.flow.rom  = sel.rom || "";
+      e.flow.rom = sel.rom || "";
     } else if (fs === "mqtt") {
       const preset = el.flowMqttPreset ? String(el.flowMqttPreset.value || "custom") : "custom";
       const idx = Number(preset);
-      if (Number.isFinite(idx) && idx >= 1 && idx <= 2) e.flow.mqttIdx = idx;
-      e.flow.topic = (el.flowTopic.value || "").trim();
-      e.flow.jsonKey = (el.flowJsonKey.value || "").trim();
+      if (Number.isFinite(idx) && idx >= 1 && idx <= 2) {
+        e.boilerIn.mqttIdx = idx;
+        e.flow.mqttIdx = idx;
+      }
+      e.boilerIn.topic = (el.flowTopic.value || "").trim();
+      e.boilerIn.jsonKey = (el.flowJsonKey.value || "").trim();
+      e.flow.topic = e.boilerIn.topic;
+      e.flow.jsonKey = e.boilerIn.jsonKey;
     } else if (fs === "ble") {
-      e.flow.bleId = String(el.flowBle.value || "meteo.tempC");
+      e.boilerIn.bleId = String(el.flowBle.value || "meteo.tempC");
+      e.flow.bleId = e.boilerIn.bleId;
     }
+
+    const saveAku = (srcSel, dallasSel, mqttPreset, topicInp, keyInp, bleSel, target) => {
+      target.source = srcSel.value || "none";
+      target.gpio = 0;
+      target.rom = "";
+      target.topic = "";
+      target.jsonKey = "";
+      target.bleId = "";
+      target.mqttIdx = 0;
+      if (target.source === "dallas") {
+        const sel = parseDallasValue(dallasSel.value) || { gpio: 0, rom: "" };
+        target.gpio = sel.gpio;
+        target.rom = sel.rom || "";
+      } else if (target.source === "mqtt") {
+        const preset = mqttPreset ? String(mqttPreset.value || "custom") : "custom";
+        const idx = Number(preset);
+        if (Number.isFinite(idx) && idx >= 1 && idx <= 2) target.mqttIdx = idx;
+        target.topic = (topicInp.value || "").trim();
+        target.jsonKey = (keyInp.value || "").trim();
+      } else if (target.source === "ble") {
+        target.bleId = String(bleSel.value || "meteo.tempC");
+      }
+    };
+
+    e.akuTop = e.akuTop || {};
+    e.akuMid = e.akuMid || {};
+    e.akuBottom = e.akuBottom || {};
+    saveAku(el.akuTopSource, el.akuTopDallas, el.akuTopMqttPreset, el.akuTopTopic, el.akuTopJsonKey, el.akuTopBle, e.akuTop);
+    saveAku(el.akuMidSource, el.akuMidDallas, el.akuMidMqttPreset, el.akuMidTopic, el.akuMidJsonKey, el.akuMidBle, e.akuMid);
+    saveAku(el.akuBottomSource, el.akuBottomDallas, el.akuBottomMqttPreset, el.akuBottomTopic, el.akuBottomJsonKey, el.akuBottomBle, e.akuBottom);
 
     // valve
     e.valve = e.valve || {};
@@ -667,6 +822,31 @@
     e.control.periodMs  = Math.max(500, Math.round(periodS * 1000));
     e.control.minPct    = clampPct(readInt(el.minPct.value, e.control.minPct ?? 0));
     e.control.maxPct    = clampPct(readInt(el.maxPct.value, e.control.maxPct ?? 100));
+    e.deadbandC = e.control.deadbandC;
+    e.stepPct = e.control.stepPct;
+    e.controlPeriodMs = e.control.periodMs;
+
+    e.curveOffsetC = readNumber(el.curveOffsetC.value, e.curveOffsetC ?? 0);
+    e.maxBoilerInC = readNumber(el.maxBoilerInC.value, e.maxBoilerInC ?? 55);
+    e.noFlowDetectEnabled = !!el.noFlowDetectEnabled.checked;
+    e.noFlowTimeoutMs = Math.max(10000, readNumber(el.noFlowTimeoutS.value, (e.noFlowTimeoutMs ?? 180000) / 1000) * 1000);
+    e.requireHeatCall = !!el.requireHeatCall.checked;
+    e.noHeatCallBehavior = String(el.noHeatCallBehavior.value || "hold");
+    e.akuSupportEnabled = !!el.akuSupportEnabled.checked;
+    e.akuNoSupportBehavior = String(el.akuNoSupportBehavior.value || "close");
+    e.akuMinTopC = readNumber(el.akuMinTopC.value, e.akuMinTopC ?? 40);
+    e.akuMinDeltaToTargetC = readNumber(el.akuMinDeltaToTargetC.value, e.akuMinDeltaToTargetC ?? 2);
+    e.akuMinDeltaToBoilerInC = readNumber(el.akuMinDeltaToBoilerInC.value, e.akuMinDeltaToBoilerInC ?? 3);
+    e.fallbackOutdoorC = readNumber(el.fallbackOutdoorC.value, e.fallbackOutdoorC ?? 0);
+
+    cfg.sensors = cfg.sensors || {};
+    cfg.sensors.outdoor = cfg.sensors.outdoor || {};
+    cfg.sensors.outdoor.maxAgeMs = Math.max(1000, readNumber(el.outdoorMaxAgeMin.value, (cfg.sensors.outdoor.maxAgeMs ?? 900000) / 60000) * 60000);
+
+    cfg.system = cfg.system || {};
+    cfg.system.profile = String(el.systemProfile.value || "standard");
+    cfg.system.nightModeSource = String(el.nightModeSource.value || "input");
+    cfg.system.nightModeManual = !!el.nightModeManual.checked;
 
     // legacy refs
     e.refs = e.refs || {};
@@ -731,25 +911,46 @@
       const allowLegacyTemps = !hasAnyConfiguredMqttThermo(cfg);
       rebuildSourceSelect(el.outdoorSource, allowLegacyTemps);
       rebuildSourceSelect(el.flowSource, allowLegacyTemps);
+      rebuildSourceSelect(el.akuTopSource, false);
+      rebuildSourceSelect(el.akuMidSource, false);
+      rebuildSourceSelect(el.akuBottomSource, false);
 
       const dallasOpts = buildDallasOptions(cfg, dash);
       setSelectOptions(el.outdoorDallas, dallasOpts, keepSelections);
       setSelectOptions(el.flowDallas, dallasOpts, keepSelections);
+      setSelectOptions(el.akuTopDallas, dallasOpts, keepSelections);
+      setSelectOptions(el.akuMidDallas, dallasOpts, keepSelections);
+      setSelectOptions(el.akuBottomDallas, dallasOpts, keepSelections);
 
       const bleOpts = buildBleOptions(dash);
       setSelectOptions(el.outdoorBle, bleOpts, keepSelections);
       setSelectOptions(el.flowBle, bleOpts, keepSelections);
+      setSelectOptions(el.akuTopBle, bleOpts, keepSelections);
+      setSelectOptions(el.akuMidBle, bleOpts, keepSelections);
+      setSelectOptions(el.akuBottomBle, bleOpts, keepSelections);
 
       // MQTT presets from "Teploměry" (2×)
       {
         const outSrc = cfg?.equitherm?.outdoor || {};
-        const flowSrc = cfg?.equitherm?.flow || {};
+        const flowSrc = cfg?.equitherm?.boilerIn || cfg?.equitherm?.flow || {};
+        const akuTopSrc = cfg?.equitherm?.akuTop || {};
+        const akuMidSrc = cfg?.equitherm?.akuMid || {};
+        const akuBottomSrc = cfg?.equitherm?.akuBottom || {};
         const outCurTopic = (outSrc.source === "mqtt") ? String(outSrc.topic || "") : "";
         const outCurKey   = (outSrc.source === "mqtt") ? String(outSrc.jsonKey || "") : "";
         const outCurIdx   = (outSrc.source === "mqtt") ? Number(outSrc.mqttIdx || outSrc.preset || 0) : 0;
         const flowCurTopic = (flowSrc.source === "mqtt") ? String(flowSrc.topic || "") : "";
         const flowCurKey   = (flowSrc.source === "mqtt") ? String(flowSrc.jsonKey || "") : "";
         const flowCurIdx   = (flowSrc.source === "mqtt") ? Number(flowSrc.mqttIdx || flowSrc.preset || 0) : 0;
+        const akuTopCurTopic = (akuTopSrc.source === "mqtt") ? String(akuTopSrc.topic || "") : "";
+        const akuTopCurKey   = (akuTopSrc.source === "mqtt") ? String(akuTopSrc.jsonKey || "") : "";
+        const akuTopCurIdx   = (akuTopSrc.source === "mqtt") ? Number(akuTopSrc.mqttIdx || akuTopSrc.preset || 0) : 0;
+        const akuMidCurTopic = (akuMidSrc.source === "mqtt") ? String(akuMidSrc.topic || "") : "";
+        const akuMidCurKey   = (akuMidSrc.source === "mqtt") ? String(akuMidSrc.jsonKey || "") : "";
+        const akuMidCurIdx   = (akuMidSrc.source === "mqtt") ? Number(akuMidSrc.mqttIdx || akuMidSrc.preset || 0) : 0;
+        const akuBottomCurTopic = (akuBottomSrc.source === "mqtt") ? String(akuBottomSrc.topic || "") : "";
+        const akuBottomCurKey   = (akuBottomSrc.source === "mqtt") ? String(akuBottomSrc.jsonKey || "") : "";
+        const akuBottomCurIdx   = (akuBottomSrc.source === "mqtt") ? Number(akuBottomSrc.mqttIdx || akuBottomSrc.preset || 0) : 0;
 
         if (el.outdoorMqttPreset) {
           const res = buildMqttPresetOptions(cfg, outCurIdx, outCurTopic, outCurKey);
@@ -762,6 +963,24 @@
           setSelectOptions(el.flowMqttPreset, res.options, false);
           el.flowMqttPreset.value = res.selectedValue;
           applyMqttPresetToInputs(res.selectedValue, cfg, el.flowTopic, el.flowJsonKey);
+        }
+        if (el.akuTopMqttPreset) {
+          const res = buildMqttPresetOptions(cfg, akuTopCurIdx, akuTopCurTopic, akuTopCurKey);
+          setSelectOptions(el.akuTopMqttPreset, res.options, false);
+          el.akuTopMqttPreset.value = res.selectedValue;
+          applyMqttPresetToInputs(res.selectedValue, cfg, el.akuTopTopic, el.akuTopJsonKey);
+        }
+        if (el.akuMidMqttPreset) {
+          const res = buildMqttPresetOptions(cfg, akuMidCurIdx, akuMidCurTopic, akuMidCurKey);
+          setSelectOptions(el.akuMidMqttPreset, res.options, false);
+          el.akuMidMqttPreset.value = res.selectedValue;
+          applyMqttPresetToInputs(res.selectedValue, cfg, el.akuMidTopic, el.akuMidJsonKey);
+        }
+        if (el.akuBottomMqttPreset) {
+          const res = buildMqttPresetOptions(cfg, akuBottomCurIdx, akuBottomCurTopic, akuBottomCurKey);
+          setSelectOptions(el.akuBottomMqttPreset, res.options, false);
+          el.akuBottomMqttPreset.value = res.selectedValue;
+          applyMqttPresetToInputs(res.selectedValue, cfg, el.akuBottomTopic, el.akuBottomJsonKey);
         }
       }
 
@@ -783,7 +1002,7 @@
     lines.push(`Enabled: ${st.enabled ? "YES" : "NO"} • Active: ${st.active ? "YES" : "NO"} • Night: ${st.night ? "YES" : "NO"}`);
     if (st.reason) lines.push(`Reason: ${st.reason}`);
 
-    lines.push(`Tout: ${fmtTemp(st.outdoorC)} • Tflow: ${fmtTemp(st.flowC)} • Target: ${fmtTemp(st.targetFlowC)}`);
+    lines.push(`Tout: ${fmtTemp(st.outdoorC)} • boiler_in: ${fmtTemp(st.actualC ?? st.flowC)} • Target: ${fmtTemp(st.targetC ?? st.targetFlowC)}`);
     if (typeof st.outdoorValid !== "undefined") {
       const oValid = st.outdoorValid ? "OK" : "NE";
       const age = (typeof st.outdoorAgeMs === "number") ? fmtAge(st.outdoorAgeMs) : "--";
@@ -801,6 +1020,15 @@
       lines.push(`Valve: --`);
     }
 
+    if (typeof st.akuSupportActive !== "undefined") {
+      const support = st.akuSupportActive ? "ON" : "OFF";
+      const reason = st.akuSupportReason ? ` • ${st.akuSupportReason}` : "";
+      lines.push(`AKU support: ${support}${reason}`);
+    }
+    if (typeof st.akuTopC === "number" || typeof st.akuMidC === "number" || typeof st.akuBottomC === "number") {
+      lines.push(`AKU: top ${fmtTemp(st.akuTopC)} • mid ${fmtTemp(st.akuMidC)} • bottom ${fmtTemp(st.akuBottomC)}`);
+    }
+
     el.statusBox.textContent = lines.join("\n");
     drawCurve(status);
   }
@@ -808,6 +1036,9 @@
   function bindEvents() {
     el.outdoorSource.addEventListener("change", updateSourceRows);
     el.flowSource.addEventListener("change", updateSourceRows);
+    el.akuTopSource.addEventListener("change", updateSourceRows);
+    el.akuMidSource.addEventListener("change", updateSourceRows);
+    el.akuBottomSource.addEventListener("change", updateSourceRows);
 
     // Quick apply: copy "Význam teploměrů" (Teploměry) into ekviterm sources
     if (el.btnUseRoleOutdoor) {
@@ -844,6 +1075,24 @@
       el.flowMqttPreset.addEventListener("change", () => {
         const cfg = App.getConfig();
         applyMqttPresetToInputs(el.flowMqttPreset.value, cfg, el.flowTopic, el.flowJsonKey);
+      });
+    }
+    if (el.akuTopMqttPreset) {
+      el.akuTopMqttPreset.addEventListener("change", () => {
+        const cfg = App.getConfig();
+        applyMqttPresetToInputs(el.akuTopMqttPreset.value, cfg, el.akuTopTopic, el.akuTopJsonKey);
+      });
+    }
+    if (el.akuMidMqttPreset) {
+      el.akuMidMqttPreset.addEventListener("change", () => {
+        const cfg = App.getConfig();
+        applyMqttPresetToInputs(el.akuMidMqttPreset.value, cfg, el.akuMidTopic, el.akuMidJsonKey);
+      });
+    }
+    if (el.akuBottomMqttPreset) {
+      el.akuBottomMqttPreset.addEventListener("change", () => {
+        const cfg = App.getConfig();
+        applyMqttPresetToInputs(el.akuBottomMqttPreset.value, cfg, el.akuBottomTopic, el.akuBottomJsonKey);
       });
     }
 
