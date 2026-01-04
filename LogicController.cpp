@@ -7,6 +7,7 @@
 #include "NtcController.h"
 #include "DallasController.h"
 #include "MqttController.h"
+#include "OpenThermController.h"
 
 #include "ThermometerController.h"
 #include "TempParse.h"
@@ -80,6 +81,7 @@ static float s_tempC[INPUT_COUNT] = { NAN,NAN,NAN,NAN,NAN,NAN,NAN,NAN };
 // 3c ventil (2 relé A/B) – stavový automat (neblokující)
 struct Valve3WayState {
     bool configured = false;
+    bool singleRelay = false;
     uint8_t relayA = 0;  // 0..7 (směr A)
     uint8_t relayB = 0;  // 0..7 (směr B)
     uint32_t travelMs = 6000;   // doba přeběhu ventilu (ms)
@@ -275,12 +277,17 @@ static void valveTick(uint32_t nowMs){
                 relaySet(static_cast<RelayId>(v.relayA), false);
                 relaySet(static_cast<RelayId>(v.relayB), false);
             } else {
-                // během pohybu je sepnutá jen správná cívka
-                const bool wantB = v.currentB;
-                const uint8_t dir = wantB ? v.relayB : v.relayA;
-                const uint8_t other = wantB ? v.relayA : v.relayB;
-                relaySet(static_cast<RelayId>(other), false);
-                relaySet(static_cast<RelayId>(dir), true);
+                if (v.singleRelay) {
+                    relaySet(static_cast<RelayId>(v.relayA), v.currentB);
+                    relaySet(static_cast<RelayId>(v.relayB), false);
+                } else {
+                    // během pohybu je sepnutá jen správná cívka
+                    const bool wantB = v.currentB;
+                    const uint8_t dir = wantB ? v.relayB : v.relayA;
+                    const uint8_t other = wantB ? v.relayA : v.relayB;
+                    relaySet(static_cast<RelayId>(other), false);
+                    relaySet(static_cast<RelayId>(dir), true);
+                }
             }
 
             // konec pohybu
@@ -322,6 +329,11 @@ static uint32_t s_tuvLastValveCmdMs = 0;
 static bool    s_tuvPrevModeActive    = false;
 static bool    s_tuvEqValveSavedValid = false;
 static uint8_t s_tuvEqValveSavedPct   = 0;
+
+// Heat call (termostat / Nest)
+static int8_t s_heatCallInput = -1;  // 0..7 or -1
+static bool   s_heatCallActive = false;
+static bool   s_heatCallPrevActive = true;
 
 // Nastavení relé s respektem k šablonám (např. 3c ventil)
 // Pokud je ekviterm aktivní a používá 3c ventil, v AUTO režimu nenecháme relayMap přepisovat jeho relé.
@@ -395,11 +407,14 @@ struct EqSourceCfg {
     String topic  = "";       // pro mqtt
     String jsonKey = "";      // pro mqtt (JSON klíč), prázdné => payload je číslo / autodetekce
     uint8_t mqttIdx = 0;      // 1..2 => použij přednastavený MQTT teploměr (z "Teploměry")
+    uint32_t maxAgeMs = 0;    // 0 = bez timeoutu (pro MQTT zdroje)
     String bleId  = "";       // do budoucna
 };
 
 static EqSourceCfg s_eqOutdoorCfg; // venkovní
 static EqSourceCfg s_eqFlowCfg;    // otopná voda (feedback)
+static EqSourceCfg s_eqAkuTopCfg;  // AKU top (ekonomika)
+static EqSourceCfg s_eqAkuBottomCfg; // AKU bottom (budoucí)
 
 // Křivka (stejný vzorec jako UI): Tflow = (20 - Tout) * slope + 20 + shift
 // Defaulty jsou zvolené tak, aby dávaly smysl bez okamžité saturace na max.
@@ -422,6 +437,8 @@ static uint8_t  s_eqStepPct   = 4;         // krok změny pozice (%)
 static uint32_t s_eqPeriodMs  = 30000;     // minimální perioda korekcí (ms)
 static uint8_t  s_eqMinPct    = 0;         // clamp pozice
 static uint8_t  s_eqMaxPct    = 100;
+static float    s_eqAkuMinTopC = 40.0f;
+static float    s_eqAkuMinDeltaC = 3.0f;
 
 static uint32_t s_eqLastAdjustMs = 0;
 static String   s_eqReason = "";
@@ -475,18 +492,37 @@ static bool tryGetDallasTempC(uint8_t gpio, const String& romHex, float &outC){
     return false;
 }
 
-static bool tryGetTempFromSource(const EqSourceCfg& src, float &outC){
+struct EqSourceDiag {
+    bool valid = false;
+    uint32_t ageMs = 0;
+    String reason = "";
+};
+
+static bool tryGetTempFromSource(const EqSourceCfg& src, float &outC, EqSourceDiag* diag = nullptr){
     outC = NAN;
+    if (diag) {
+        diag->valid = false;
+        diag->ageMs = 0;
+        diag->reason = "";
+    }
 
     const String s = src.source;
-    if (!s.length() || s == "none") return false;
+    if (!s.length() || s == "none") {
+        if (diag) diag->reason = "source none";
+        return false;
+    }
 
     if (s == "dallas"){
         const uint8_t gpio = (uint8_t)src.gpio;
         if (gpio > 3) return false;
         // pro jistotu průběžně udržuj Dallas loop
         DallasController::loop();
-        return tryGetDallasTempC(gpio, src.romHex, outC);
+        const bool ok = tryGetDallasTempC(gpio, src.romHex, outC);
+        if (diag) {
+            diag->valid = ok && isfinite(outC);
+            if (!diag->valid) diag->reason = "dallas invalid";
+        }
+        return ok;
     }
 
     if (s.startsWith("temp")){
@@ -495,6 +531,7 @@ static bool tryGetTempFromSource(const EqSourceCfg& src, float &outC){
         const uint8_t i0 = (uint8_t)(idx - 1);
         if (!s_tempValid[i0]) return false;
         outC = s_tempC[i0];
+        if (diag) diag->valid = isfinite(outC);
         return isfinite(outC);
     }
 
@@ -510,13 +547,31 @@ static bool tryGetTempFromSource(const EqSourceCfg& src, float &outC){
             if (mc.jsonKey.length()) jsonKey = mc.jsonKey;
         }
 
-        if (!topic.length()) return false;
+        if (!topic.length()) {
+            if (diag) diag->reason = "mqtt no topic";
+            return false;
+        }
         String payload;
-        if (!mqttGetLastValue(topic, &payload)) return false;
+        uint32_t lastMs = 0;
+        if (!mqttGetLastValueInfo(topic, &payload, &lastMs)) {
+            if (diag) diag->reason = "mqtt no data";
+            return false;
+        }
+        const uint32_t nowMs = millis();
+        const uint32_t ageMs = (uint32_t)(nowMs - lastMs);
+        if (diag) diag->ageMs = ageMs;
+        if (src.maxAgeMs > 0 && ageMs > src.maxAgeMs) {
+            if (diag) diag->reason = "mqtt stale";
+            return false;
+        }
 
         float tC = NAN;
-        if (!tempParseFromPayload(payload, jsonKey, tC)) return false;
+        if (!tempParseFromPayload(payload, jsonKey, tC)) {
+            if (diag) diag->reason = "mqtt parse";
+            return false;
+        }
         outC = tC;
+        if (diag) diag->valid = isfinite(outC);
         return isfinite(outC);
     }
 
@@ -524,7 +579,31 @@ static bool tryGetTempFromSource(const EqSourceCfg& src, float &outC){
         // BLE: aktuálně je k dispozici minimálně "meteo.tempC".
         // bleId může být prázdné (default) nebo např. "meteo", "meteo.tempC".
         const String id = src.bleId;
-        return bleGetTempCById(id, outC);
+        const bool ok = bleGetTempCById(id, outC);
+        if (diag) {
+            diag->valid = ok && isfinite(outC);
+            if (!diag->valid) diag->reason = "ble invalid";
+        }
+        return ok;
+    }
+
+    if (s.startsWith("opentherm")){
+        OpenThermStatus ot = openthermGetStatus();
+        if (!ot.ready) {
+            if (diag) diag->reason = "OT not ready";
+            return false;
+        }
+        if (s == "opentherm_boiler") outC = ot.boilerTempC;
+        else if (s == "opentherm_return") outC = ot.returnTempC;
+        else if (s == "opentherm_outdoor") outC = NAN;
+        else outC = NAN;
+
+        if (!isfinite(outC)) {
+            if (diag) diag->reason = "OT no data";
+            return false;
+        }
+        if (diag) diag->valid = true;
+        return true;
     }
 
     // BLE do budoucna
@@ -566,6 +645,25 @@ static float eqComputeTargetFromRefs(float tout, bool night){
     return tflow;
 }
 
+static bool isAkuMixingAllowed(float targetFlowC, String* outReason = nullptr){
+    if (!s_eqAkuTopCfg.source.length() || s_eqAkuTopCfg.source == "none") return true;
+    float top = NAN;
+    EqSourceDiag diag;
+    if (!tryGetTempFromSource(s_eqAkuTopCfg, top, &diag) || !isfinite(top)) {
+        if (outReason) *outReason = diag.reason.length() ? diag.reason : "aku top invalid";
+        return false;
+    }
+    if (s_eqAkuMinTopC > 0.0f && top < s_eqAkuMinTopC) {
+        if (outReason) *outReason = "aku top low";
+        return false;
+    }
+    if (s_eqAkuMinDeltaC > 0.0f && top < (targetFlowC + s_eqAkuMinDeltaC)) {
+        if (outReason) *outReason = "aku delta low";
+        return false;
+    }
+    return true;
+}
+
 static void equithermRecompute(){
     s_eqStatus = EquithermStatus{};
     s_eqStatus.enabled = s_eqEnabled;
@@ -578,11 +676,18 @@ static void equithermRecompute(){
 
     // Outdoor temperature (venek)
     float tout = NAN;
-    if (!tryGetTempFromSource(s_eqOutdoorCfg, tout)) {
-        s_eqReason = "no outdoor temp";
+    EqSourceDiag outDiag;
+    if (!tryGetTempFromSource(s_eqOutdoorCfg, tout, &outDiag)) {
+        s_eqReason = outDiag.reason.length() ? outDiag.reason : "no outdoor temp";
         s_eqStatus.reason = s_eqReason;
+        s_eqStatus.outdoorValid = false;
+        s_eqStatus.outdoorAgeMs = outDiag.ageMs;
+        s_eqStatus.outdoorReason = outDiag.reason;
         return;
     }
+    s_eqStatus.outdoorValid = true;
+    s_eqStatus.outdoorAgeMs = outDiag.ageMs;
+    s_eqStatus.outdoorReason = outDiag.reason;
 
     // Target flow temp from curve
     float target = eqComputeTargetFromSlopeShift(tout, s_nightMode);
@@ -641,6 +746,19 @@ static void equithermRecompute(){
         return;
     }
 
+    if (!s_heatCallActive && s_heatCallInput >= 0) {
+        s_eqReason = "no heat call";
+        s_eqStatus.reason = s_eqReason;
+        return;
+    }
+
+    String akuReason;
+    if (!isAkuMixingAllowed(target, &akuReason)) {
+        s_eqReason = akuReason.length() ? akuReason : "aku limit";
+        s_eqStatus.reason = s_eqReason;
+        return;
+    }
+
     s_eqReason = "";
     s_eqStatus.reason = ""; // OK
 }
@@ -649,6 +767,7 @@ static void equithermControlTick(uint32_t nowMs){
     if (!s_eqEnabled) return;
     if (currentControlMode != ControlMode::AUTO) return;
     if (s_tuvModeActive) return;
+    if (s_heatCallInput >= 0 && !s_heatCallActive) return;
 
     // musí být spočtený target
     if (!s_eqStatus.active || !isfinite(s_eqStatus.targetFlowC)) return;
@@ -669,6 +788,12 @@ static void equithermControlTick(uint32_t nowMs){
     if (v.moving) return;
 
     const float target = s_eqStatus.targetFlowC;
+    String akuReason;
+    if (!isAkuMixingAllowed(target, &akuReason)) {
+        valveMoveToPct(master0, 0);
+        s_eqLastAdjustMs = nowMs;
+        return;
+    }
     const float err = target - flow;
     if (!isfinite(err)) return;
 
@@ -710,7 +835,7 @@ static uint32_t minuteKey(const struct tm &t) {
 }
 
 static bool isTuvDemandConfigured() {
-    return (s_tuvDemandInput >= 0 && s_tuvDemandInput < (int8_t)INPUT_COUNT);
+    return false;
 }
 
 static void updateInputBasedModes() {
@@ -721,11 +846,15 @@ static void updateInputBasedModes() {
         s_nightMode = inputGetState(static_cast<InputId>(s_nightModeInput));
         equithermRecompute();
     }
+    if (s_heatCallInput >= 0 && s_heatCallInput < (int8_t)INPUT_COUNT) {
+        s_heatCallActive = inputGetState(static_cast<InputId>(s_heatCallInput));
+    } else {
+        s_heatCallActive = true;
+    }
 }
 
 static bool isTuvEnabledEffective() {
-    const bool demandOk = isTuvDemandConfigured() ? s_tuvDemandActive : true;
-    return (s_tuvScheduleEnabled && demandOk);
+    return s_tuvScheduleEnabled;
 }
 
 static void applyTuvRequest() {
@@ -777,11 +906,30 @@ static void updateTuvModeState(uint32_t nowMs) {
             s_eqLastAdjustMs = nowMs;
         }
         s_tuvEqValveSavedValid = false;
+        if (s_tuvValveMaster0 >= 0 && s_tuvValveMaster0 < (int8_t)RELAY_COUNT && isValveMaster((uint8_t)s_tuvValveMaster0)) {
+            valveMoveToPct((uint8_t)s_tuvValveMaster0, 0);
+        }
     }
 
     s_tuvModeActive = newActive;
     s_tuvPrevModeActive = newActive;
     applyTuvModeValves(nowMs);
+}
+
+static void applyHeatCallGating(uint32_t nowMs) {
+    (void)nowMs;
+    if (s_tuvModeActive) return;
+    if (s_heatCallInput < 0) return;
+    if (s_tuvValveMaster0 < 0 || s_tuvValveMaster0 >= (int8_t)RELAY_COUNT) return;
+    if (!isValveMaster((uint8_t)s_tuvValveMaster0)) return;
+
+    if (!s_heatCallActive && s_heatCallPrevActive) {
+        valveMoveToPct((uint8_t)s_tuvValveMaster0, 100);
+        s_heatCallPrevActive = false;
+    } else if (s_heatCallActive && !s_heatCallPrevActive) {
+        valveMoveToPct((uint8_t)s_tuvValveMaster0, 0);
+        s_heatCallPrevActive = true;
+    }
 }
 
 
@@ -1014,6 +1162,7 @@ void logicUpdate() {
     equithermRecompute();
     equithermControlTick(nowMs);
     updateTuvModeState(nowMs);
+    applyHeatCallGating(nowMs);
     if (nowMs - lastTickMs < 250) {
         // still enforce TUV output frequently (no flicker)
         applyTuvRequest();
@@ -1029,12 +1178,7 @@ void logicUpdate() {
         const bool hasTuvEnableInput = (s_tuvEnableInput >= 0 && s_tuvEnableInput < (int8_t)INPUT_COUNT);
         const bool hasNightModeInput = (s_nightModeInput >= 0 && s_nightModeInput < (int8_t)INPUT_COUNT);
 
-        // recompute demand input
-        if (s_tuvDemandInput >= 0 && s_tuvDemandInput < (int8_t)INPUT_COUNT) {
-            s_tuvDemandActive = inputGetState(static_cast<InputId>(s_tuvDemandInput));
-        } else {
-            s_tuvDemandActive = false;
-        }
+        s_tuvDemandActive = false;
         updateTuvModeState(nowMs);
 
         for (uint8_t i=0;i<s_scheduleCount;i++) {
@@ -1083,11 +1227,7 @@ void logicUpdate() {
         }
     } else {
         // No valid time -> still update TUV from input
-        if (s_tuvDemandInput >= 0 && s_tuvDemandInput < (int8_t)INPUT_COUNT) {
-            s_tuvDemandActive = inputGetState(static_cast<InputId>(s_tuvDemandInput));
-        } else {
-            s_tuvDemandActive = false;
-        }
+        s_tuvDemandActive = false;
         updateTuvModeState(nowMs);
     }
 
@@ -1098,12 +1238,6 @@ void logicUpdate() {
 void logicOnInputChanged(InputId id, bool newState) {
     (void)newState;
 
-    // TUV demand input (works in MANUAL/AUTO)
-    if (s_tuvDemandInput >= 0 && id == static_cast<InputId>(s_tuvDemandInput)) {
-        s_tuvDemandActive = inputGetState(id);
-        updateTuvModeState(millis());
-        applyTuvRequest();
-    }
     if (s_tuvEnableInput >= 0 && id == static_cast<InputId>(s_tuvEnableInput)) {
         s_tuvScheduleEnabled = inputGetState(id);
         updateTuvModeState(millis());
@@ -1112,6 +1246,10 @@ void logicOnInputChanged(InputId id, bool newState) {
     if (s_nightModeInput >= 0 && id == static_cast<InputId>(s_nightModeInput)) {
         s_nightMode = inputGetState(id);
         equithermRecompute();
+    }
+    if (s_heatCallInput >= 0 && id == static_cast<InputId>(s_heatCallInput)) {
+        s_heatCallActive = inputGetState(id);
+        applyHeatCallGating(millis());
     }
 
     if (currentControlMode != ControlMode::AUTO) {
@@ -1180,6 +1318,8 @@ void logicApplyConfig(const String& json) {
     filter["equitherm"]["outdoor"]["field"] = true;
     filter["equitherm"]["outdoor"]["mqttIdx"] = true;
     filter["equitherm"]["outdoor"]["preset"] = true;
+    filter["equitherm"]["outdoor"]["maxAgeMs"] = true;
+    filter["equitherm"]["outdoor"]["max_age_ms"] = true;
     filter["equitherm"]["outdoor"]["bleId"] = true;
     filter["equitherm"]["outdoor"]["id"] = true;
     filter["equitherm"]["flow"]["source"] = true;
@@ -1192,10 +1332,42 @@ void logicApplyConfig(const String& json) {
     filter["equitherm"]["flow"]["field"] = true;
     filter["equitherm"]["flow"]["mqttIdx"] = true;
     filter["equitherm"]["flow"]["preset"] = true;
+    filter["equitherm"]["flow"]["maxAgeMs"] = true;
+    filter["equitherm"]["flow"]["max_age_ms"] = true;
     filter["equitherm"]["flow"]["bleId"] = true;
     filter["equitherm"]["flow"]["id"] = true;
+    filter["equitherm"]["akuTop"]["source"] = true;
+    filter["equitherm"]["akuTop"]["gpio"] = true;
+    filter["equitherm"]["akuTop"]["rom"] = true;
+    filter["equitherm"]["akuTop"]["addr"] = true;
+    filter["equitherm"]["akuTop"]["topic"] = true;
+    filter["equitherm"]["akuTop"]["jsonKey"] = true;
+    filter["equitherm"]["akuTop"]["key"] = true;
+    filter["equitherm"]["akuTop"]["field"] = true;
+    filter["equitherm"]["akuTop"]["mqttIdx"] = true;
+    filter["equitherm"]["akuTop"]["preset"] = true;
+    filter["equitherm"]["akuTop"]["maxAgeMs"] = true;
+    filter["equitherm"]["akuTop"]["max_age_ms"] = true;
+    filter["equitherm"]["akuTop"]["bleId"] = true;
+    filter["equitherm"]["akuTop"]["id"] = true;
+    filter["equitherm"]["akuBottom"]["source"] = true;
+    filter["equitherm"]["akuBottom"]["gpio"] = true;
+    filter["equitherm"]["akuBottom"]["rom"] = true;
+    filter["equitherm"]["akuBottom"]["addr"] = true;
+    filter["equitherm"]["akuBottom"]["topic"] = true;
+    filter["equitherm"]["akuBottom"]["jsonKey"] = true;
+    filter["equitherm"]["akuBottom"]["key"] = true;
+    filter["equitherm"]["akuBottom"]["field"] = true;
+    filter["equitherm"]["akuBottom"]["mqttIdx"] = true;
+    filter["equitherm"]["akuBottom"]["preset"] = true;
+    filter["equitherm"]["akuBottom"]["maxAgeMs"] = true;
+    filter["equitherm"]["akuBottom"]["max_age_ms"] = true;
+    filter["equitherm"]["akuBottom"]["bleId"] = true;
+    filter["equitherm"]["akuBottom"]["id"] = true;
     filter["equitherm"]["minFlow"] = true;
     filter["equitherm"]["maxFlow"] = true;
+    filter["equitherm"]["akuMinTopC"] = true;
+    filter["equitherm"]["akuMinDeltaC"] = true;
     filter["equitherm"]["slopeDay"] = true;
     filter["equitherm"]["shiftDay"] = true;
     filter["equitherm"]["slopeNight"] = true;
@@ -1333,6 +1505,7 @@ void logicApplyConfig(const String& json) {
     
     s_tuvEnableInput = -1;
     s_nightModeInput = -1;
+    s_heatCallInput = -1;
 
     // ---------------- I/O funkce (roles/templates) ----------------
     JsonObject iof = doc["iofunc"].as<JsonObject>();
@@ -1350,6 +1523,8 @@ void logicApplyConfig(const String& json) {
                     s_tuvEnableInput = (int8_t)i;
                 } else if (role == "night_mode") {
                     s_nightModeInput = (int8_t)i;
+                } else if (role == "thermostat" || role == "heat_call") {
+                    s_heatCallInput = (int8_t)i;
                 }
             }
         }
@@ -1364,7 +1539,7 @@ void logicApplyConfig(const String& json) {
                 JsonObject params = oo["params"].as<JsonObject>();
 
                 // 3c ventil master – podporujeme nové rozdělení i legacy
-                if (role == "valve_3way_mix" || role == "valve_3way_tuv" || role == "valve_3way_2rel" || role == "valve_3way_spring") {
+                if (role == "valve_3way_mix" || role == "valve_3way_2rel" || role == "valve_3way_spring") {
                     // peer relé (1-based v UI), default je i+2 = "další relé"
                     uint8_t peerRel = (uint8_t)(params["peerRel"] | 0);
                     if (peerRel == 0) {
@@ -1423,6 +1598,44 @@ void logicApplyConfig(const String& json) {
                     // jistota: peer relé vypnout
                     relaySet(static_cast<RelayId>(v.relayA), false);
                     relaySet(static_cast<RelayId>(v.relayB), false);
+                } else if (role == "valve_3way_tuv" || role == "valve_3way_dhw") {
+                    Valve3WayState &v = s_valves[i];
+                    v.configured = true;
+                    v.singleRelay = true;
+                    v.relayA = i;
+                    v.relayB = i;
+                    v.travelMs = (uint32_t)((float)(params["travelTime"] | 6.0f) * 1000.0f);
+                    v.pulseMs  = (uint32_t)((float)(params["pulseTime"]  | 0.8f) * 1000.0f);
+                    v.guardMs  = (uint32_t)((float)(params["guardTime"]  | 0.3f) * 1000.0f);
+                    v.minSwitchMs = (uint32_t)((float)(params["minSwitchS"] | 30.0f) * 1000.0f);
+                    if (v.minSwitchMs > 3600000UL) v.minSwitchMs = 3600000UL;
+                    v.lastCmdMs = 0;
+                    v.hasPending = false;
+                    v.invertDir = (bool)(params["invertDir"] | false);
+                    const String defPos = String((const char*)(params["defaultPos"] | "A"));
+                    v.defaultB = (defPos.equalsIgnoreCase("B"));
+
+                    bool initB = v.invertDir ? !v.defaultB : v.defaultB;
+                    uint8_t initPct = initB ? 100 : 0;
+                    if (snap[i].valid) {
+                        uint8_t savedPct = snap[i].posPct;
+                        if (snap[i].invertDir != v.invertDir) savedPct = (uint8_t)(100 - savedPct);
+                        initPct = savedPct;
+                    }
+
+                    v.posPct = initPct;
+                    v.startPct = initPct;
+                    v.targetPct = initPct;
+                    v.currentB = (initPct >= 50);
+                    v.pendingTargetPct = initPct;
+                    v.hasPending = false;
+
+                    v.moving = false;
+                    v.moveStartMs = 0;
+                    v.moveEndMs = 0;
+                    v.guardEndMs = 0;
+
+                    relaySet(static_cast<RelayId>(v.relayA), false);
                 }
             }
         }
@@ -1437,6 +1650,8 @@ void logicApplyConfig(const String& json) {
         // defaults
         s_eqOutdoorCfg = EqSourceCfg{};
         s_eqFlowCfg    = EqSourceCfg{};
+        s_eqAkuTopCfg  = EqSourceCfg{};
+        s_eqAkuBottomCfg = EqSourceCfg{};
 
         auto parseSrc = [](JsonObject o, EqSourceCfg& dst){
             if (o.isNull()) return;
@@ -1446,6 +1661,7 @@ void logicApplyConfig(const String& json) {
             dst.topic  = String((const char*)(o["topic"] | dst.topic.c_str()));
             dst.jsonKey = String((const char*)(o["jsonKey"] | o["key"] | o["field"] | dst.jsonKey.c_str()));
             dst.mqttIdx = (uint8_t)(o["mqttIdx"] | o["preset"] | dst.mqttIdx);
+            dst.maxAgeMs = (uint32_t)(o["maxAgeMs"] | o["max_age_ms"] | dst.maxAgeMs);
             dst.bleId  = String((const char*)(o["bleId"] | o["id"] | dst.bleId.c_str()));
         };
 
@@ -1455,14 +1671,26 @@ void logicApplyConfig(const String& json) {
         JsonObject flow = eq["flow"].as<JsonObject>();
         parseSrc(flow, s_eqFlowCfg);
 
+        JsonObject akuTop = eq["akuTop"].as<JsonObject>();
+        parseSrc(akuTop, s_eqAkuTopCfg);
+
+        JsonObject akuBottom = eq["akuBottom"].as<JsonObject>();
+        parseSrc(akuBottom, s_eqAkuBottomCfg);
+
         // kompatibilita se staršími konfiguracemi (jen MQTT venek)
         if (!s_eqOutdoorCfg.source.length()) s_eqOutdoorCfg.source = "none";
         if (s_eqOutdoorCfg.source == "mqtt" && !s_eqOutdoorCfg.topic.length()) {
             s_eqOutdoorCfg.topic = String((const char*)(outdoor["topic"] | ""));
         }
+        if (s_eqOutdoorCfg.maxAgeMs > 3600000UL) s_eqOutdoorCfg.maxAgeMs = 3600000UL;
+        if (s_eqFlowCfg.maxAgeMs > 3600000UL) s_eqFlowCfg.maxAgeMs = 3600000UL;
+        if (s_eqAkuTopCfg.maxAgeMs > 3600000UL) s_eqAkuTopCfg.maxAgeMs = 3600000UL;
+        if (s_eqAkuBottomCfg.maxAgeMs > 3600000UL) s_eqAkuBottomCfg.maxAgeMs = 3600000UL;
 
         s_eqMinFlow = (float)(eq["minFlow"] | s_eqMinFlow);
         s_eqMaxFlow = (float)(eq["maxFlow"] | s_eqMaxFlow);
+        s_eqAkuMinTopC = (float)(eq["akuMinTopC"] | s_eqAkuMinTopC);
+        s_eqAkuMinDeltaC = (float)(eq["akuMinDeltaC"] | s_eqAkuMinDeltaC);
 
         // curve: slope/shift preferované (UI)
         const bool hasSlope = eq.containsKey("slopeDay") || eq.containsKey("shiftDay") ||
@@ -1536,6 +1764,8 @@ void logicApplyConfig(const String& json) {
         if (s_eqMinPct > 100) s_eqMinPct = 100;
         if (s_eqMaxPct > 100) s_eqMaxPct = 100;
         if (s_eqMinPct > s_eqMaxPct) { uint8_t t=s_eqMinPct; s_eqMinPct=s_eqMaxPct; s_eqMaxPct=t; }
+        if (!isfinite(s_eqAkuMinTopC) || s_eqAkuMinTopC < 0.0f) s_eqAkuMinTopC = 0.0f;
+        if (!isfinite(s_eqAkuMinDeltaC) || s_eqAkuMinDeltaC < 0.0f) s_eqAkuMinDeltaC = 0.0f;
 
         // pokud vybraný ventil není nakonfigurovaný jako 3c master, ignoruj
         if (s_eqValveMaster0 >= 0 && !isValveMaster((uint8_t)s_eqValveMaster0)) s_eqValveMaster0 = -1;
@@ -1644,7 +1874,7 @@ void logicApplyConfig(const String& json) {
     }
 
     
-    // --- TUV config (Nest plan -> DI demand -> DO request) ---
+    // --- TUV config (schedule / dhw_enable -> DO request) ---
     s_tuvDemandInput = -1;
     s_tuvRequestRelay = -1;
     s_tuvValveMaster0 = -1;
@@ -1660,9 +1890,7 @@ void logicApplyConfig(const String& json) {
 
     JsonObject tuv = doc["tuv"].as<JsonObject>();
     if (!tuv.isNull()) {
-        int din = tuv["demandInput"] | tuv["demand_input"] | 0;
         int rel = tuv["relay"] | tuv["requestRelay"] | tuv["request_relay"] | 0;
-        if (din >= 1 && din <= INPUT_COUNT) s_tuvDemandInput = (int8_t)(din - 1);
         if (rel >= 1 && rel <= RELAY_COUNT) s_tuvRequestRelay = (int8_t)(rel - 1);
         if (tuv.containsKey("enabled")) s_tuvScheduleEnabled = (bool)tuv["enabled"];
 
@@ -1672,9 +1900,7 @@ void logicApplyConfig(const String& json) {
         s_tuvEqValveTargetPct = clampPctInt((int)(tuv["eqValveTargetPct"] | tuv["mixValveTargetPct"] | s_tuvEqValveTargetPct));
     } else {
         // legacy keys
-        int din = doc["tuvDemandInput"] | doc["tuv_demand_input"] | 0;
         int rel = doc["tuvRelay"] | doc["tuv_relay"] | 0;
-        if (din >= 1 && din <= INPUT_COUNT) s_tuvDemandInput = (int8_t)(din - 1);
         if (rel >= 1 && rel <= RELAY_COUNT) s_tuvRequestRelay = (int8_t)(rel - 1);
         if (doc.containsKey("tuvEnabled")) s_tuvScheduleEnabled = (bool)doc["tuvEnabled"];
 
@@ -1684,14 +1910,11 @@ void logicApplyConfig(const String& json) {
         s_tuvEqValveTargetPct = clampPctInt((int)(doc["tuvEqValveTargetPct"] | doc["tuv_eq_valve_target_pct"] | s_tuvEqValveTargetPct));
     }
     if (s_tuvValveMaster0 >= 0 && !isValveMaster((uint8_t)s_tuvValveMaster0)) s_tuvValveMaster0 = -1;
-    if (isTuvDemandConfigured()) {
-        s_tuvDemandActive = inputGetState(static_cast<InputId>(s_tuvDemandInput));
-    } else {
-        s_tuvDemandActive = false;
-    }
+    s_tuvDemandActive = false;
     updateInputBasedModes();
     updateTuvModeState(millis());
     applyTuvRequest();
+    applyHeatCallGating(millis());
 
     // --- schedules (UI stores cfg.schedules[]) ---
     s_scheduleCount = 0;
@@ -1824,7 +2047,7 @@ bool logicGetValveUiStatus(uint8_t relay1based, ValveUiStatus& out){
     const Valve3WayState &v = s_valves[r0];
 
     out.master = relay1based;
-    out.peer   = (v.relayB < RELAY_COUNT) ? (uint8_t)(v.relayB + 1) : 0;
+    out.peer   = v.singleRelay ? 0 : ((v.relayB < RELAY_COUNT) ? (uint8_t)(v.relayB + 1) : 0);
     out.posPct = v.posPct;
     out.moving = v.moving;
 
@@ -1861,6 +2084,20 @@ uint8_t logicGetMqttSubscribeTopics(String* outTopics, uint8_t maxTopics) {
                 add(thermometersGetMqtt((uint8_t)(s_eqFlowCfg.mqttIdx - 1)).topic);
             } else {
                 add(s_eqFlowCfg.topic);
+            }
+        }
+        if (s_eqAkuTopCfg.source == "mqtt") {
+            if (s_eqAkuTopCfg.mqttIdx >= 1 && s_eqAkuTopCfg.mqttIdx <= 2) {
+                add(thermometersGetMqtt((uint8_t)(s_eqAkuTopCfg.mqttIdx - 1)).topic);
+            } else {
+                add(s_eqAkuTopCfg.topic);
+            }
+        }
+        if (s_eqAkuBottomCfg.source == "mqtt") {
+            if (s_eqAkuBottomCfg.mqttIdx >= 1 && s_eqAkuBottomCfg.mqttIdx <= 2) {
+                add(thermometersGetMqtt((uint8_t)(s_eqAkuBottomCfg.mqttIdx - 1)).topic);
+            } else {
+                add(s_eqAkuBottomCfg.topic);
             }
         }
     }

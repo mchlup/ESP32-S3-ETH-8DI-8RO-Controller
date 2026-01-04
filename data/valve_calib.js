@@ -62,12 +62,13 @@
       const o = cfg.iofunc.outputs[i];
       let role = String(o.role || "none");
       if (role === "valve_3way_spring") role = "valve_3way_2rel"; // legacy
-      if (role !== "valve_3way_mix" && role !== "valve_3way_2rel") continue;
+      const singleRelay = (role === "valve_3way_tuv" || role === "valve_3way_dhw");
+      if (role !== "valve_3way_mix" && role !== "valve_3way_2rel" && !singleRelay) continue;
 
       // 1-based DO number
       let peerRel = Number(o.params?.peerRel ?? o.params?.partnerRelay ?? (i + 2));
       if (!Number.isFinite(peerRel) || peerRel < 1 || peerRel > RELAY_COUNT) peerRel = (i + 2);
-      items.push({ idx: i, peerRel });
+      items.push({ idx: i, peerRel: singleRelay ? 0 : peerRel, singleRelay });
     }
 
     if (!items.length) {
@@ -81,13 +82,13 @@
     head.innerHTML = `<div>Ventil</div><div>Nastavení</div><div>Akce</div><div>Stav</div>`;
     host.appendChild(head);
 
-    items.forEach(({ idx, peerRel }) => {
+    items.forEach(({ idx, peerRel, singleRelay }) => {
       const cfg = App.getConfig?.();
       const o = cfg.iofunc.outputs[idx];
       o.params = o.params || {};
 
       const travel = Number(o.params.travelTime ?? 6);
-      const pulse = Number(o.params.pulseTime ?? Math.min(1.0, travel));
+      const pulse = Number(o.params.pulseTime ?? 0.8);
       const guard = Number(o.params.guardTime ?? 0.3);
       const minSw = Number(o.params.minSwitchS ?? 30);
       const defPos = String(o.params.defaultPos || "A");
@@ -97,14 +98,15 @@
       row.className = "row2";
       row.dataset.idx = String(idx);
       row.dataset.partner = String(peerRel || 0);
+      row.dataset.single = singleRelay ? "1" : "0";
 
-      const aRelay = inv ? peerRel : (idx + 1);
-      const bRelay = inv ? (idx + 1) : peerRel;
+      const aRelay = singleRelay ? (idx + 1) : (inv ? peerRel : (idx + 1));
+      const bRelay = singleRelay ? 0 : (inv ? (idx + 1) : peerRel);
 
       row.innerHTML = `
         <div>
           <b>${relayName(cfg, idx)}</b>
-          <div class="muted">A=${aRelay ? `DO${aRelay}` : "—"} · B=${bRelay ? `DO${bRelay}` : "—"}</div>
+          <div class="muted">${singleRelay ? `Relé DO${aRelay} (B=ON / A=OFF)` : `A=${aRelay ? `DO${aRelay}` : "—"} · B=${bRelay ? `DO${bRelay}` : "—"}`}</div>
         </div>
 
         <div>
@@ -197,7 +199,7 @@
       o.params = o.params || {};
 
       o.params.travelTime = Number(row.querySelector(".pTravel")?.value ?? 6);
-      o.params.pulseTime  = Number(row.querySelector(".pPulse")?.value ?? Math.min(1.0, o.params.travelTime || 6));
+      o.params.pulseTime  = Number(row.querySelector(".pPulse")?.value ?? 0.8);
       o.params.guardTime  = Number(row.querySelector(".pGuard")?.value ?? 0.3);
       o.params.minSwitchS = Number(row.querySelector(".pMinSw")?.value ?? 0);
       o.params.defaultPos = row.querySelector(".pDef")?.value || "A";
@@ -217,59 +219,99 @@
       o.params = o.params || {};
 
       const partner = Number(row.dataset.partner || 0);
-      if (!partner) {
+      const isSingle = row.dataset.single === "1";
+      if (!partner && !isSingle) {
         toast("Chybí relé B (peer). Trojcestný ventil potřebuje master + peer relé.", "bad");
         return;
       }
 
       const travel = Number(row.querySelector(".pTravel")?.value ?? 6);
-      const pulse = Number(row.querySelector(".pPulse")?.value ?? Math.min(1.0, travel));
+      const pulse = Number(row.querySelector(".pPulse")?.value ?? 0.8);
       const guard = Number(row.querySelector(".pGuard")?.value ?? 0.3);
       const inv = !!row.querySelector(".pInv")?.checked;
 
-      const aRelay = inv ? partner : (idx + 1);
-      const bRelay = inv ? (idx + 1) : partner;
+      const aRelay = isSingle ? (idx + 1) : (inv ? partner : (idx + 1));
+      const bRelay = isSingle ? 0 : (inv ? (idx + 1) : partner);
 
       try {
         if (ev.target.closest(".actHoldA")) {
           await stopBoth(aRelay, bRelay);
-          await setRelayAbs(aRelay, true);
-          toast(`A ON (DO${aRelay})`);
+          if (isSingle) {
+            await setRelayAbs(aRelay, false);
+            toast(`A OFF (DO${aRelay})`);
+          } else {
+            await setRelayAbs(aRelay, true);
+            toast(`A ON (DO${aRelay})`);
+          }
         } else if (ev.target.closest(".actHoldB")) {
           await stopBoth(aRelay, bRelay);
-          await setRelayAbs(bRelay, true);
-          toast(`B ON (DO${bRelay})`);
+          if (isSingle) {
+            await setRelayAbs(aRelay, true);
+            toast(`B ON (DO${aRelay})`);
+          } else {
+            await setRelayAbs(bRelay, true);
+            toast(`B ON (DO${bRelay})`);
+          }
         } else if (ev.target.closest(".actStop")) {
           await stopBoth(aRelay, bRelay);
           state.timers.delete(idx);
           toast("STOP");
         } else if (ev.target.closest(".actPulseA")) {
           await stopBoth(aRelay, bRelay);
-          await pulseAbs(aRelay, pulse);
-          toast(`Pulse A ${pulse.toFixed(1)} s`);
+          if (isSingle) {
+            await setRelayAbs(aRelay, false);
+            toast(`A OFF`);
+          } else {
+            await pulseAbs(aRelay, pulse);
+            toast(`Pulse A ${pulse.toFixed(1)} s`);
+          }
         } else if (ev.target.closest(".actPulseB")) {
           await stopBoth(aRelay, bRelay);
-          await pulseAbs(bRelay, pulse);
-          toast(`Pulse B ${pulse.toFixed(1)} s`);
+          if (isSingle) {
+            await pulseAbs(aRelay, pulse);
+            toast(`Pulse B ${pulse.toFixed(1)} s`);
+          } else {
+            await pulseAbs(bRelay, pulse);
+            toast(`Pulse B ${pulse.toFixed(1)} s`);
+          }
         } else if (ev.target.closest(".actMoveA")) {
           await stopBoth(aRelay, bRelay);
           state.timers.set(idx, Date.now());
-          await moveAbs(aRelay, travel);
-          setTimeout(() => state.timers.delete(idx), Math.max(100, travel * 1000));
-          toast(`Přestav na A (${travel.toFixed(1)} s)`);
+          if (isSingle) {
+            await setRelayAbs(aRelay, false);
+            setTimeout(() => state.timers.delete(idx), Math.max(100, travel * 1000));
+            toast(`Přestav na A (${travel.toFixed(1)} s)`);
+          } else {
+            await moveAbs(aRelay, travel);
+            setTimeout(() => state.timers.delete(idx), Math.max(100, travel * 1000));
+            toast(`Přestav na A (${travel.toFixed(1)} s)`);
+          }
         } else if (ev.target.closest(".actMoveB")) {
           await stopBoth(aRelay, bRelay);
           state.timers.set(idx, Date.now());
-          await moveAbs(bRelay, travel);
-          setTimeout(() => state.timers.delete(idx), Math.max(100, travel * 1000));
-          toast(`Přestav na B (${travel.toFixed(1)} s)`);
+          if (isSingle) {
+            await moveAbs(aRelay, travel);
+            setTimeout(() => state.timers.delete(idx), Math.max(100, travel * 1000));
+            toast(`Přestav na B (${travel.toFixed(1)} s)`);
+          } else {
+            await moveAbs(bRelay, travel);
+            setTimeout(() => state.timers.delete(idx), Math.max(100, travel * 1000));
+            toast(`Přestav na B (${travel.toFixed(1)} s)`);
+          }
         } else if (ev.target.closest(".actCycle")) {
           await stopBoth(aRelay, bRelay);
           state.timers.set(idx, Date.now());
-          await moveAbs(aRelay, travel);
-          setTimeout(() => moveAbs(bRelay, travel).catch(()=>{}), Math.max(50, (travel + guard) * 1000));
-          setTimeout(() => state.timers.delete(idx), Math.max(100, (2*travel + guard) * 1000));
-          toast(`Cyklus A→B (${travel.toFixed(1)} s + ${guard.toFixed(1)} s + ${travel.toFixed(1)} s)`);
+          if (isSingle) {
+            await setRelayAbs(aRelay, false);
+            setTimeout(() => moveAbs(aRelay, travel).catch(()=>{}), Math.max(50, (travel + guard) * 1000));
+            setTimeout(() => state.timers.delete(idx), Math.max(100, (2*travel + guard) * 1000));
+            toast(`Cyklus A→B (${travel.toFixed(1)} s + ${guard.toFixed(1)} s + ${travel.toFixed(1)} s)`);
+          } else {
+            await moveAbs(aRelay, travel);
+            setTimeout(() => moveAbs(bRelay, travel).catch(()=>{}), Math.max(50, (travel + guard) * 1000));
+            setTimeout(() => state.timers.delete(idx), Math.max(100, (2*travel + guard) * 1000));
+            toast(`Cyklus A→B (${travel.toFixed(1)} s + ${guard.toFixed(1)} s + ${travel.toFixed(1)} s)`);
+          }
         }
       } catch (err) {
         toast("Chyba: " + (err?.message || err), "bad");

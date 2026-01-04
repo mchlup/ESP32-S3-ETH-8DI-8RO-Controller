@@ -19,6 +19,7 @@
   const INPUT_ROLES = [
     { v: "none", t: "—" },
     { v: "thermostat", t: "Termostat (kontakt)" },
+    { v: "heat_call", t: "Požadavek topení (heat call)" },
     { v: "mode_trigger", t: "Přepínač režimu (MODE)" },
     { v: "dhw_enable", t: "Aktivace ohřevu TUV" },
     { v: "night_mode", t: "Aktivace nočního útlumu" },
@@ -30,7 +31,8 @@
     { v: "valve_onoff", t: "Ventil ON/OFF (230V)" },
     // 3c ventily: rozlišujeme směšovací (Ekviterm, ovládá 2 relé) a přepínací (TUV, ovládá 1 relé)
     { v: "valve_3way_mix", t: "Směšovací trojcestný ventil (Ekviterm) – 2-bod (230V, 2 relé A/B)" },
-    { v: "valve_3way_dhw", t: "Přepínací trojcestný ventil (TUV) – 2-bod (230V, 1 relé A/B)" },
+    { v: "valve_3way_tuv", t: "Přepínací trojcestný ventil (TUV) – 2-bod (230V, 1 relé A/B)" },
+    { v: "valve_3way_dhw", t: "Přepínací trojcestný ventil (TUV) – legacy alias (nepoužívat)" },
     { v: "valve_3way_peer", t: "Trojcestný ventil – peer relé (nepřiřazovat ručně)" },
     { v: "boiler_enable_dhw", t: "Kotel - signál TUV" },
     { v: "boiler_enable_nm", t: "Kotel - signál NÚ" },
@@ -162,7 +164,7 @@
     for (const p of NTC_GPIO_PINS) {
       opts.push(`<option value="${p}" ${p === v ? "selected" : ""}>GPIO${p}</option>`);
     }
-    opts.push(`<option value="-1" ${v && !NTC_GPIO_PINS.includes(v) ? "selected" : ""}>Vlastní…</option>`);
+    opts.push(`<option value="-1" ${v && !NTC_GPIO_PINS.includes(v) ? "selected" : ""}>Vlastní...</option>`);
     return opts.join("");
   };
 
@@ -226,7 +228,7 @@
       `;
     }
 
-    if (role === "thermostat") {
+    if (role === "thermostat" || role === "heat_call") {
       return `<div class="muted">Kontakt termostatu (logika HIGH/LOW se nastavuje v „Vstupy & relé“).</div>`;
     }
 
@@ -250,7 +252,7 @@
 
     if (role === "valve_3way_mix" || role === "valve_3way_2rel") {
       const travel = Number(params.travelTime ?? 6);
-      const pulse = Number(params.pulseTime ?? Math.min(1.0, travel));
+      const pulse = Number(params.pulseTime ?? 0.8);
       const guard = Number(params.guardTime ?? 0.3);
       const minSwitchS = Number(params.minSwitchS ?? 30);
       const defPos = String(params.defaultPos || "A");
@@ -260,7 +262,8 @@
       const usedPeers = new Set();
       for (let j = 0; j < outs.length; j++) {
         if (j === idx) continue;
-        if (String(outs[j]?.role || "none") !== "valve_3way_2rel") continue;
+        const r = String(outs[j]?.role || "none");
+        if (r !== "valve_3way_mix" && r !== "valve_3way_2rel") continue;
         usedMasters.add(j + 1);
         const p = Math.round(Number(outs[j]?.params?.peerRel ?? outs[j]?.params?.partnerRelay ?? (j + 2)));
         if (p >= 1 && p <= RELAY_COUNT) usedPeers.add(p);
@@ -283,6 +286,37 @@
           <div class="field" style="min-width:170px">
             <label>Peer relé (směr B)</label>
             <select class="pfield" data-k="peerRel" data-typ="n">${peerOpts.join("")}</select>
+          </div>
+          <div class="field" style="min-width:150px"><label>Přeběh (s)</label><input class="pfield" data-k="travelTime" data-typ="n" type="number" step="0.1" value="${travel}"></div>
+          <div class="field" style="min-width:150px"><label>Pulse (s)</label><input class="pfield" data-k="pulseTime" data-typ="n" type="number" step="0.1" value="${pulse}"></div>
+          <div class="field" style="min-width:160px"><label>Pauza (s)</label><input class="pfield" data-k="guardTime" data-typ="n" type="number" step="0.1" value="${guard}"></div>
+          <div class="field" style="min-width:190px"><label>Min. perioda přestavení (s)</label><input class="pfield" data-k="minSwitchS" data-typ="n" type="number" step="1" min="0" value="${minSwitchS}"></div>
+          <div class="field" style="min-width:170px">
+            <label>Výchozí poloha</label>
+            <select class="pfield" data-k="defaultPos" data-typ="s">
+              <option value="A" ${defPos==="A"?"selected":""}>A</option>
+              <option value="B" ${defPos==="B"?"selected":""}>B</option>
+            </select>
+          </div>
+          <label class="chk" style="align-self:flex-end">
+            <input class="pfield" data-k="invertDir" data-typ="b" type="checkbox" ${inv?"checked":""}>
+            <span>Prohodit směr A/B</span>
+          </label>
+        </div>
+      `;
+    }
+
+    if (role === "valve_3way_tuv" || role === "valve_3way_dhw") {
+      const travel = Number(params.travelTime ?? 6);
+      const pulse = Number(params.pulseTime ?? 0.8);
+      const guard = Number(params.guardTime ?? 0.3);
+      const minSwitchS = Number(params.minSwitchS ?? 30);
+      const defPos = String(params.defaultPos || "A");
+      const inv = !!params.invertDir;
+      return `
+        <div class="inline" style="flex-wrap:wrap;gap:10px">
+          <div class="muted" style="min-width:240px;align-self:flex-end">
+            Použije DO${idx+1} jako přepínací relé (0/100%).
           </div>
           <div class="field" style="min-width:150px"><label>Přeběh (s)</label><input class="pfield" data-k="travelTime" data-typ="n" type="number" step="0.1" value="${travel}"></div>
           <div class="field" style="min-width:150px"><label>Pulse (s)</label><input class="pfield" data-k="pulseTime" data-typ="n" type="number" step="0.1" value="${pulse}"></div>
@@ -457,7 +491,7 @@
       const container = (typ === "in") ? cfg.iofunc.inputs[idx] : cfg.iofunc.outputs[idx];
       container.params = (container.params && typeof container.params === "object") ? container.params : {};
 
-      // Special: NTC pin dropdown "Vlastní…"
+      // Special: NTC pin dropdown "Vlastní..."
       if (typ === "in" && container.role === "temp_ntc10k" && k === "gpio" && field.tagName === "SELECT") {
         const v = Number(field.value);
         const custom = row.querySelector(".pCustomGpio");
@@ -485,7 +519,7 @@
       container.params[k] = parseValue(field);
 
       // Změna peer relé -> přepárování (nastaví/aktualizuje roli PEER na zvoleném relé)
-      if (typ === "out" && container.role === "valve_3way_mix" || container.role === "valve_3way_2rel" && (k === "peerRel" || k === "partnerRelay")) {
+      if (typ === "out" && (container.role === "valve_3way_mix" || container.role === "valve_3way_2rel") && (k === "peerRel" || k === "partnerRelay")) {
         const cfg = App.getConfig?.();
         if (cfg) {
           ensureShape(cfg);
