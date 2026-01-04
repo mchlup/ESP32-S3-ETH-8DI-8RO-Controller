@@ -279,7 +279,9 @@ static void valveTick(uint32_t nowMs){
             } else {
                 if (v.singleRelay) {
                     relaySet(static_cast<RelayId>(v.relayA), v.currentB);
-                    relaySet(static_cast<RelayId>(v.relayB), false);
+                    if (v.relayB != v.relayA) {
+                        relaySet(static_cast<RelayId>(v.relayB), false);
+                    }
                 } else {
                     // během pohybu je sepnutá jen správná cívka
                     const bool wantB = v.currentB;
