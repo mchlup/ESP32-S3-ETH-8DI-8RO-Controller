@@ -34,6 +34,9 @@
         <button class="navItem" data-page="config" data-ctab="recirc">
           <span class="ico">⟳</span><span>Cirkulace TUV</span>
         </button>
+        <button class="navItem" data-page="config" data-ctab="aku_heater">
+          <span class="ico">♨</span><span>AKU heater</span>
+        </button>
         <button class="navItem" data-page="mqtt">
           <span class="ico">⇄</span><span>MQTT / HA</span>
         </button>
@@ -114,6 +117,16 @@
                         </div>
                       </div>
                       <div class="ioGrid" id="recircDashGrid"></div>
+                    </div>
+
+          <div class="card" id="cardAkuHeater" style="display:none">
+                      <div class="cardHead">
+                        <div>
+                          <div class="cardTitle">AKU heater</div>
+                          <div class="muted">Stav elektrického dohřevu AKU</div>
+                        </div>
+                      </div>
+                      <div class="ioGrid" id="akuHeaterDashGrid"></div>
                     </div>
 
           <div class="card" id="cardReasons" style="display:none">
@@ -236,6 +249,7 @@
           <button class="tab" data-ctab="ekviterm">Ekviterm</button>
           <button class="tab" data-ctab="tuv">Ohřev TUV</button>
           <button class="tab" data-ctab="recirc">Cirkulace TUV</button>
+          <button class="tab" data-ctab="aku_heater">AKU heater</button>
           <button class="tab" data-ctab="opentherm">OpenTherm</button>
           <button class="tab" data-ctab="iofun">Funkce I/O</button>
           <button class="tab" data-ctab="tempscfg">Teploměry</button>
@@ -729,7 +743,7 @@
             </div>
             <div class="row2 mt8">
               <div><label class="mini">Min %</label><input id="eqMinPct" type="number" step="1"></div>
-              <div><label class="mini">Max %</label><input id="eqMaxPct" type="number" step="1"></div>
+              <div class="muted small">Max % nastavte níže (den/noc)</div>
             </div>
             <div class="row2 mt8">
               <div><label class="mini">Offset křivky °C</label><input id="eqCurveOffsetC" type="number" step="0.1"></div>
@@ -742,24 +756,12 @@
               </div>
               <div><label class="mini">No-flow timeout (s)</label><input id="eqNoFlowTimeoutS" type="number" step="1"></div>
             </div>
-          </div>
-        </div>
-
-        <div class="ioRow">
-          <div class="ioLabel">Heat call</div>
-          <div class="ioValue">
-            <div class="row2">
-              <div>
-                <label class="mini">Vyžadovat</label>
-                <label class="switch"><input id="eqRequireHeatCall" type="checkbox"><span class="slider"></span></label>
-              </div>
-              <div>
-                <label class="mini">Chování při OFF</label>
-                <select id="eqNoHeatCallBehavior">
-                  <option value="hold">Držet polohu</option>
-                  <option value="close">Zavřít V2</option>
-                </select>
-              </div>
+            <div class="row2 mt8">
+              <div><label class="mini">Max % (den)</label><input id="eqMaxPctDay" type="number" step="1"></div>
+              <div><label class="mini">Max % (noc)</label><input id="eqMaxPctNight" type="number" step="1"></div>
+            </div>
+            <div class="row2 mt8">
+              <div><label class="mini">No-flow test (s)</label><input id="eqNoFlowTestPeriodS" type="number" step="1"></div>
             </div>
           </div>
         </div>
@@ -781,9 +783,14 @@
               </div>
             </div>
             <div class="row3 mt8">
-              <div><label class="mini">Min AKU top °C</label><input id="eqAkuMinTopC" type="number" step="0.1"></div>
-              <div><label class="mini">Min Δ k target °C</label><input id="eqAkuMinDeltaToTargetC" type="number" step="0.1"></div>
-              <div><label class="mini">Min Δ k boiler_in °C</label><input id="eqAkuMinDeltaToBoilerInC" type="number" step="0.1"></div>
+              <div><label class="mini">Min AKU top °C (den)</label><input id="eqAkuMinTopCDay" type="number" step="0.1"></div>
+              <div><label class="mini">Min Δ k target °C (den)</label><input id="eqAkuMinDeltaToTargetCDay" type="number" step="0.1"></div>
+              <div><label class="mini">Min Δ k boiler_in °C (den)</label><input id="eqAkuMinDeltaToBoilerInCDay" type="number" step="0.1"></div>
+            </div>
+            <div class="row3 mt8">
+              <div><label class="mini">Min AKU top °C (noc)</label><input id="eqAkuMinTopCNight" type="number" step="0.1"></div>
+              <div><label class="mini">Min Δ k target °C (noc)</label><input id="eqAkuMinDeltaToTargetCNight" type="number" step="0.1"></div>
+              <div><label class="mini">Min Δ k boiler_in °C (noc)</label><input id="eqAkuMinDeltaToBoilerInCNight" type="number" step="0.1"></div>
             </div>
           </div>
         </div>
@@ -813,6 +820,7 @@
               <div>
                 <label class="mini">Zdroj nočního režimu</label>
                 <select id="eqNightModeSource">
+                  <option value="heat_call">Heat call</option>
                   <option value="input">Vstup</option>
                   <option value="schedule">Plán</option>
                   <option value="manual">Manuálně</option>
@@ -913,13 +921,30 @@
         </div>
 
         <div class="ioRow">
-          <div class="ioLabel">Přepínací ventil TUV</div>
+          <div class="ioLabel">V3 bypass (odpojení AKU)</div>
           <div class="ioValue">
             <select id="tuvValveMaster"></select>
             <div class="row2 mt8">
-              <div><label class="mini">Cílová poloha %</label><input id="tuvValveTargetPct" type="number" min="0" max="100" step="1"></div>
+              <div><label class="mini">Bypass % (DHW)</label><input id="tuvBypassPct" type="number" min="0" max="100" step="1"></div>
+              <div><label class="mini">CH % (topení)</label><input id="tuvChPct" type="number" min="0" max="100" step="1"></div>
             </div>
-            <div class="hint mt4">Ventil zkrátí okruh pouze přes bojler (akumulační nádrž se uzavře).</div>
+            <div class="row2 mt8">
+              <label class="switch"><input id="tuvBypassEnabled" type="checkbox"><span class="slider"></span></label>
+              <label class="switch"><input id="tuvBypassInvert" type="checkbox"><span class="slider"></span></label>
+            </div>
+            <div class="row2 mt4">
+              <div class="mini">Použít bypass ventil</div>
+              <div class="mini">Invert (prohoď 0/100)</div>
+            </div>
+            <div class="hint mt4">Ventil uzavírá okruh přes AKU během DHW. Odpovídá SPDT (1 relé).</div>
+          </div>
+        </div>
+
+        <div class="ioRow">
+          <div class="ioLabel">Obnovit V2 po DHW</div>
+          <div class="ioValue">
+            <label class="switch"><input id="tuvRestoreEqValve" type="checkbox"><span class="slider"></span></label>
+            <div class="hint mt4">Po skončení DHW vrátí směšovací ventil na uloženou pozici.</div>
           </div>
         </div>
       </div>
@@ -1049,6 +1074,68 @@
         </div>
         <div>
           <button class="btn" id="btnSaveOpenTherm">Uložit</button>
+        </div>
+      </div>
+
+      <div class="tabPage" id="cfg-aku_heater">
+        <div class="card">
+          <div class="cardHead">
+            <div>
+              <div class="cardTitle">AKU heater</div>
+              <div class="muted">Řízení elektrického dohřevu akumulace</div>
+            </div>
+            <div class="right">
+              <button class="btn" id="btnSaveAkuHeater">Uložit</button>
+            </div>
+          </div>
+
+          <div class="row stack">
+            <div class="field">
+              <label>Aktivní</label>
+              <label class="switch"><input id="akuHeaterEnabled" type="checkbox"><span class="slider"></span></label>
+            </div>
+            <div class="field">
+              <label>Relé (výstup)</label>
+              <select id="akuHeaterRelay"></select>
+            </div>
+            <div class="field">
+              <label>Režim</label>
+              <select id="akuHeaterMode">
+                <option value="manual">Manuální</option>
+                <option value="schedule">Časová okna</option>
+                <option value="thermostatic">Termostatický</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Manuální ON/OFF</label>
+              <label class="switch"><input id="akuHeaterManualOn" type="checkbox"><span class="slider"></span></label>
+            </div>
+          </div>
+
+          <div class="row stack mt8">
+            <div class="field">
+              <label>Cíl AKU top (°C)</label>
+              <input id="akuHeaterTargetTopC" type="number" step="0.5" min="20" max="80">
+            </div>
+            <div class="field">
+              <label>Hysteréze (°C)</label>
+              <input id="akuHeaterHysteresisC" type="number" step="0.1" min="0" max="10">
+            </div>
+            <div class="field">
+              <label>Max ON (min)</label>
+              <input id="akuHeaterMaxOnMin" type="number" step="1" min="1" max="600">
+            </div>
+            <div class="field">
+              <label>Min OFF (min)</label>
+              <input id="akuHeaterMinOffMin" type="number" step="1" min="1" max="600">
+            </div>
+          </div>
+
+          <div class="mt12">
+            <div class="small muted">Časová okna (pokud režim = schedule)</div>
+            <div id="akuHeaterWindows"></div>
+            <button class="btn ghost mini" id="akuHeaterAddWindow" type="button">Přidat okno</button>
+          </div>
         </div>
       </div>
 
@@ -1615,6 +1702,7 @@
   <script src="/equitherm.js?v=3"></script>
   <script src="/tuv.js?v=1"></script>
   <script src="/dhw_recirc.js?v=1"></script>
+  <script src="/aku_heater.js?v=1"></script>
   <script src="/iofunc.js?v=3"></script>
   <script src="/temps_tab.js?v=1"></script>
   <script src="/opentherm.js?v=1"></script>

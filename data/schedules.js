@@ -51,7 +51,11 @@
     const nightIdx = findInputRoleIndex(cfg, "night_mode");
     const parts = [];
     if (tuvIdx >= 0) parts.push(`Ohřev TUV řídí vstup ${tuvIdx + 1} (Funkce I/O) – plánování TUV se ignoruje.`);
-    if (nightIdx >= 0) parts.push(`Noční útlum řídí vstup ${nightIdx + 1} (Funkce I/O) – plánování nočního útlumu se ignoruje.`);
+    if (nightIdx >= 0) {
+      parts.push(`Noční útlum řídí vstup ${nightIdx + 1} (Funkce I/O) – plánování nočního útlumu se ignoruje.`);
+    } else if (String(cfg?.system?.nightModeSource || "") === "heat_call") {
+      parts.push("Noční útlum je řízen Heat call – plánování nočního útlumu se ignoruje.");
+    }
     schedHint.textContent = parts.join(" ");
   };
 

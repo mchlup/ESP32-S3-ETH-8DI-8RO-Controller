@@ -497,12 +497,12 @@ void handleApiStatus() {
         else temps.add(nullptr);
     }
 
-    // --- valves (UI stav pro trojcestné ventily) ---
-    JsonArray valves = doc.createNestedArray("valves");
+    // --- valves (legacy list for UI) ---
+    JsonArray valvesList = doc.createNestedArray("valvesList");
     for (uint8_t r = 1; r <= RELAY_COUNT; r++) {
         ValveUiStatus vs;
         if (!logicGetValveUiStatus(r, vs)) continue;
-        JsonObject o = valves.createNestedObject();
+        JsonObject o = valvesList.createNestedObject();
         o["master"] = vs.master;
         o["peer"] = vs.peer;
         o["posPct"] = vs.posPct;
@@ -537,6 +537,7 @@ void handleApiStatus() {
     JsonObject tuv = doc.createNestedObject("tuv");
     TuvStatus ts = logicGetTuvStatus();
     tuv["enabled"] = ts.enabled;
+    tuv["active"] = ts.modeActive;
     tuv["scheduleEnabled"] = ts.scheduleEnabled;
     tuv["demandActive"] = ts.demandActive;
     tuv["modeActive"] = ts.modeActive;
@@ -547,7 +548,20 @@ void handleApiStatus() {
     tuv["valveMaster"] = ts.valveMaster;
     tuv["valveTargetPct"] = ts.valveTargetPct;
     tuv["valvePosPct"] = ts.valvePosPct;
+    tuv["valveMode"] = ts.valveMode;
+    tuv["bypassPct"] = ts.bypassPct;
+    tuv["chPct"] = ts.chPct;
+    tuv["bypassInvert"] = ts.bypassInvert;
     tuv["nightMode"] = logicGetNightMode();
+
+    // --- Heat call ---
+    {
+        JsonObject hc = doc.createNestedObject("heatCall");
+        const bool raw = logicGetHeatCallActive();
+        hc["raw"] = raw;
+        hc["day"] = raw;
+        hc["night"] = !raw;
+    }
 
     // --- equitherm ---
     {
@@ -582,6 +596,29 @@ void handleApiStatus() {
         eq["lastAdjustMs"]  = es.lastAdjustMs;
     }
 
+    // --- valves (V2/V3 detail) ---
+    {
+        JsonObject valves = doc.createNestedObject("valves");
+        EquithermStatus es = logicGetEquithermStatus();
+        JsonObject v2 = valves.createNestedObject("v2");
+        v2["currentPct"] = es.valvePosPct;
+        v2["targetPct"] = es.valveTargetPct;
+        v2["moving"] = es.valveMoving;
+
+        JsonObject v3 = valves.createNestedObject("v3");
+        v3["chPct"] = ts.chPct;
+        v3["bypassPct"] = ts.bypassPct;
+        v3["invert"] = ts.bypassInvert;
+        v3["targetPct"] = ts.valveTargetPct;
+        v3["currentPct"] = ts.valvePosPct;
+        bool v3moving = false;
+        if (ts.valveMaster >= 1) {
+            ValveUiStatus vs;
+            if (logicGetValveUiStatus(ts.valveMaster, vs)) v3moving = vs.moving;
+        }
+        v3["moving"] = v3moving;
+    }
+
     // --- sensors ---
     {
         EquithermStatus es = logicGetEquithermStatus();
@@ -604,6 +641,18 @@ void handleApiStatus() {
         rec["stopReached"] = rs.stopReached;
         if (isfinite(rs.returnTempC)) rec["returnTempC"] = rs.returnTempC; else rec["returnTempC"] = nullptr;
         rec["returnTempValid"] = rs.returnTempValid;
+    }
+
+    // --- AKU heater ---
+    {
+        AkuHeaterStatus hs = logicGetAkuHeaterStatus();
+        JsonObject h = doc.createNestedObject("akuHeater");
+        h["enabled"] = hs.enabled;
+        h["active"] = hs.active;
+        h["mode"] = hs.mode;
+        h["reason"] = hs.reason;
+        if (isfinite(hs.topC)) h["topC"] = hs.topC; else h["topC"] = nullptr;
+        h["topValid"] = hs.topValid;
     }
 
     // --- opentherm ---

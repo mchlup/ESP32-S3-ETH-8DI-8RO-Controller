@@ -447,14 +447,14 @@
         const topTxt = Number.isFinite(eq.akuTopC) ? fmtTemp(eq.akuTopC) : "—";
         const midTxt = Number.isFinite(eq.akuMidC) ? fmtTemp(eq.akuMidC) : "—";
         const bottomTxt = Number.isFinite(eq.akuBottomC) ? fmtTemp(eq.akuBottomC) : "—";
-        const support = eq?.akuSupportActive ? "ON" : "OFF";
+        const support = eq?.akuSupportActive ? "k dispozici" : "blokováno";
         const supportReason = eq?.akuSupportReason ? ` (${eq.akuSupportReason})` : "";
         akuGrid.innerHTML = `
           <div class="akuTank">
             <div class="akuRow"><div>Top</div><div class="tempValue">${escapeHtml(topTxt)}</div></div>
             <div class="akuRow"><div>Mid</div><div class="tempValue">${escapeHtml(midTxt)}</div></div>
             <div class="akuRow"><div>Bottom</div><div class="tempValue">${escapeHtml(bottomTxt)}</div></div>
-            <div class="akuStatus"><span class="akuDot ${eq?.akuSupportActive ? "on" : ""}"></span>Support: ${escapeHtml(support)}${escapeHtml(supportReason)}</div>
+            <div class="akuStatus"><span class="akuDot ${eq?.akuSupportActive ? "on" : ""}"></span>AKU support: ${escapeHtml(support)}${escapeHtml(supportReason)}</div>
           </div>
         `;
       }
@@ -495,12 +495,16 @@
           const pos = clamp(Number(st?.tuv?.valvePosPct ?? st?.tuv?.valveTargetPct ?? 0), 0, 100);
           const tgt = clamp(Number(st?.tuv?.valveTargetPct ?? pos), 0, 100);
           const moving = !!vByMaster.get(v3Master - 1)?.moving;
+          const mode = String(st?.tuv?.valveMode || (st?.tuv?.modeActive ? "dhw" : "ch")).toUpperCase();
+          const chPct = Number.isFinite(st?.tuv?.chPct) ? Math.round(st.tuv.chPct) : 100;
+          const bpPct = Number.isFinite(st?.tuv?.bypassPct) ? Math.round(st.tuv.bypassPct) : 100;
+          const invTxt = st?.tuv?.bypassInvert ? "invert" : "normal";
           const tile = document.createElement("div");
           tile.className = "ioTile" + (moving ? " moving" : "");
           tile.innerHTML = `
             <div>
               <div class="ioName">V3 – DHW bypass</div>
-              <div class="ioSub">${escapeHtml(getNameRelays(cfg, v3Master - 1))} • ${pos}% → ${tgt}%${moving ? " • pohyb" : ""}</div>
+              <div class="ioSub">${escapeHtml(getNameRelays(cfg, v3Master - 1))} • ${mode} • ${pos}% → ${tgt}%${moving ? " • pohyb" : ""} • CH ${chPct}% / DHW ${bpPct}% • ${invTxt}</div>
             </div>
             <div class="ioRight">
               <div class="dial" style="--p:${pos}%"><div class="dialTxt">${pos}%</div></div>
@@ -526,6 +530,11 @@
         cardTuv.style.display = "";
         tuvGrid.innerHTML = "";
 
+        const relayRoles = getRoleRelays(cfg);
+        const relays = Array.isArray(st?.relays) ? st.relays : [];
+        const dhwRelayIdx = relayRoles.findIndex((r) => r === "boiler_enable_dhw");
+        const dhwRelayTxt = (dhwRelayIdx >= 0 && relays.length > dhwRelayIdx) ? (relays[dhwRelayIdx] ? "relé: ON" : "relé: OFF") : "relé: —";
+
         const modeTile = document.createElement("div");
         modeTile.className = "ioTile";
         const modeLabel = active ? "Aktivní" : "Neaktivní";
@@ -534,7 +543,7 @@
         modeTile.innerHTML = `
           <div>
             <div class="ioName">Ohřev TUV</div>
-            <div class="ioSub">${escapeHtml(demandTxt)} • ${escapeHtml(schedTxt)}</div>
+            <div class="ioSub">${escapeHtml(demandTxt)} • ${escapeHtml(schedTxt)} • ${escapeHtml(dhwRelayTxt)}</div>
           </div>
           <div class="ioRight">
             <div class="tempValue ${active ? "" : "muted"}">${modeLabel}</div>
@@ -568,7 +577,7 @@
           const tgt = Number.isFinite(tuv.valveTargetPct) ? Math.round(tuv.valveTargetPct) : 0;
           vTile.innerHTML = `
             <div>
-              <div class="ioName">Přepínací ventil TUV</div>
+              <div class="ioName">V3 bypass</div>
               <div class="ioSub">${escapeHtml(getNameRelays(cfg, tuvMaster - 1))} • cíl ${tgt}%</div>
             </div>
             <div class="ioRight">
@@ -628,24 +637,69 @@
       }
     }
 
+    // --- AKU heater widget ---
+    const cardAkuHeater = $id("cardAkuHeater");
+    const akuHeaterGrid = $id("akuHeaterDashGrid");
+    const heater = st?.akuHeater || {};
+    const heaterCfg = cfg?.akuHeater || {};
+    if (cardAkuHeater && akuHeaterGrid) {
+      if (!heater?.enabled) {
+        cardAkuHeater.style.display = "none";
+        akuHeaterGrid.innerHTML = "";
+      } else {
+        cardAkuHeater.style.display = "";
+        const active = !!heater.active;
+        const mode = String(heater.mode || heaterCfg.mode || "—");
+        const reason = String(heater.reason || "—");
+        const target = Number.isFinite(heaterCfg.targetTopC) ? `${Number(heaterCfg.targetTopC).toFixed(1)} °C` : "—";
+        const topTxt = heater.topValid ? fmtTemp(heater.topC) : "—";
+        akuHeaterGrid.innerHTML = `
+          <div class="ioTile">
+            <div>
+              <div class="ioName">Heater</div>
+              <div class="ioSub">Režim: ${escapeHtml(mode)} • ${escapeHtml(reason)}</div>
+            </div>
+            <div class="ioRight">
+              <div class="tempValue ${active ? "" : "muted"}">${active ? "ON" : "OFF"}</div>
+            </div>
+          </div>
+          <div class="ioTile">
+            <div>
+              <div class="ioName">Cíl / AKU top</div>
+              <div class="ioSub">Cíl: ${escapeHtml(target)}</div>
+            </div>
+            <div class="ioRight">
+              <div class="tempValue">${escapeHtml(topTxt)}</div>
+            </div>
+          </div>
+        `;
+      }
+    }
+
     // --- Reasons widget ---
     const cardReasons = $id("cardReasons");
     const reasonsGrid = $id("reasonsDashGrid");
     if (cardReasons && reasonsGrid) {
       cardReasons.style.display = "";
-      const heatCall = (cfg?.iofunc?.inputs || []).some((i) => ["thermostat", "heat_call"].includes(String(i?.role || ""))) ? (st?.equitherm?.reason === "no heat call" ? "OFF" : "ON") : "—";
+      const heatCallRaw = st?.heatCall?.raw;
+      const heatCall = (typeof heatCallRaw === "boolean") ? (heatCallRaw ? "ON (den)" : "OFF (noc)") : "—";
       const dhwMode = st?.tuv?.modeActive ? "ON" : "OFF";
       const outdoorOk = st?.equitherm?.outdoorValid ? "OK" : "stale";
       const outdoorAge = Number.isFinite(st?.equitherm?.outdoorAgeMs) ? `${Math.round(st.equitherm.outdoorAgeMs / 1000)}s` : "—";
       const eqActive = st?.equitherm?.active ? "active" : "paused";
       const eqReason = st?.equitherm?.reason || "OK";
       const profile = cfg?.system?.profile || "standard";
+      const relayRoles = getRoleRelays(cfg);
+      const relays = Array.isArray(st?.relays) ? st.relays : [];
+      const nmRelayIdx = relayRoles.findIndex((r) => r === "boiler_enable_nm");
+      const nmRelayTxt = (nmRelayIdx >= 0 && relays.length > nmRelayIdx) ? (relays[nmRelayIdx] ? "ON" : "OFF") : "—";
       reasonsGrid.innerHTML = `
         <div class="ioTile"><div><div class="ioName">Heat call</div><div class="ioSub">${escapeHtml(heatCall)}</div></div></div>
         <div class="ioTile"><div><div class="ioName">DHW mode</div><div class="ioSub">${escapeHtml(dhwMode)}</div></div></div>
         <div class="ioTile"><div><div class="ioName">Outdoor</div><div class="ioSub">${escapeHtml(outdoorOk)} • ${escapeHtml(outdoorAge)}</div></div></div>
         <div class="ioTile"><div><div class="ioName">Equitherm</div><div class="ioSub">${escapeHtml(eqActive)} • ${escapeHtml(eqReason)}</div></div></div>
         <div class="ioTile"><div><div class="ioName">Profil</div><div class="ioSub">${escapeHtml(profile)}</div></div></div>
+        <div class="ioTile"><div><div class="ioName">Noční relé</div><div class="ioSub">${escapeHtml(nmRelayTxt)}</div></div></div>
       `;
     }
 

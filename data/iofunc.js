@@ -38,6 +38,7 @@
     { v: "boiler_enable_dhw", t: "Kotel - signál TUV" },
     { v: "boiler_enable_nm", t: "Kotel - signál NÚ" },
     { v: "heater_aku", t: "Topná spirála AKU (stykač)" },
+    { v: "dhw_recirc_pump", t: "Cirkulační čerpadlo TUV" },
     { v: "circ_pump", t: "Cirkulační čerpadlo" },
     { v: "generic", t: "Obecný výstup" }
   ];

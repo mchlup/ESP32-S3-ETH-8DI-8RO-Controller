@@ -75,18 +75,21 @@
     stepPct: $("eqStepPct"),
     periodS: $("eqPeriodS"),
     minPct: $("eqMinPct"),
-    maxPct: $("eqMaxPct"),
+    maxPctDay: $("eqMaxPctDay"),
+    maxPctNight: $("eqMaxPctNight"),
     curveOffsetC: $("eqCurveOffsetC"),
     maxBoilerInC: $("eqMaxBoilerInC"),
     noFlowDetectEnabled: $("eqNoFlowDetectEnabled"),
     noFlowTimeoutS: $("eqNoFlowTimeoutS"),
-    requireHeatCall: $("eqRequireHeatCall"),
-    noHeatCallBehavior: $("eqNoHeatCallBehavior"),
+    noFlowTestPeriodS: $("eqNoFlowTestPeriodS"),
     akuSupportEnabled: $("eqAkuSupportEnabled"),
     akuNoSupportBehavior: $("eqAkuNoSupportBehavior"),
-    akuMinTopC: $("eqAkuMinTopC"),
-    akuMinDeltaToTargetC: $("eqAkuMinDeltaToTargetC"),
-    akuMinDeltaToBoilerInC: $("eqAkuMinDeltaToBoilerInC"),
+    akuMinTopCDay: $("eqAkuMinTopCDay"),
+    akuMinTopCNight: $("eqAkuMinTopCNight"),
+    akuMinDeltaToTargetCDay: $("eqAkuMinDeltaToTargetCDay"),
+    akuMinDeltaToTargetCNight: $("eqAkuMinDeltaToTargetCNight"),
+    akuMinDeltaToBoilerInCDay: $("eqAkuMinDeltaToBoilerInCDay"),
+    akuMinDeltaToBoilerInCNight: $("eqAkuMinDeltaToBoilerInCNight"),
     fallbackOutdoorC: $("eqFallbackOutdoorC"),
     outdoorMaxAgeMin: $("eqOutdoorMaxAgeMin"),
     systemProfile: $("eqSystemProfile"),
@@ -664,25 +667,28 @@
     // Default minimum adjustment period for 3c valve: 30 s
     el.periodS.value   = Math.round(((typeof c.periodMs === "number") ? c.periodMs : 30000) / 1000);
     el.minPct.value    = (typeof c.minPct === "number") ? c.minPct : 0;
-    el.maxPct.value    = (typeof c.maxPct === "number") ? c.maxPct : 100;
+    el.maxPctDay.value   = (typeof e.maxPct_day === "number") ? e.maxPct_day : ((typeof c.maxPct === "number") ? c.maxPct : 100);
+    el.maxPctNight.value = (typeof e.maxPct_night === "number") ? e.maxPct_night : 50;
 
     el.curveOffsetC.value = (typeof e.curveOffsetC === "number") ? e.curveOffsetC : 0;
     el.maxBoilerInC.value = (typeof e.maxBoilerInC === "number") ? e.maxBoilerInC : 55;
     el.noFlowDetectEnabled.checked = (typeof e.noFlowDetectEnabled === "boolean") ? e.noFlowDetectEnabled : true;
     el.noFlowTimeoutS.value = Math.round(((typeof e.noFlowTimeoutMs === "number") ? e.noFlowTimeoutMs : 180000) / 1000);
-    el.requireHeatCall.checked = (typeof e.requireHeatCall === "boolean") ? e.requireHeatCall : true;
-    el.noHeatCallBehavior.value = e.noHeatCallBehavior || "hold";
+    el.noFlowTestPeriodS.value = Math.round(((typeof e.noFlowTestPeriodMs === "number") ? e.noFlowTestPeriodMs : 180000) / 1000);
     el.akuSupportEnabled.checked = (typeof e.akuSupportEnabled === "boolean") ? e.akuSupportEnabled : true;
     el.akuNoSupportBehavior.value = e.akuNoSupportBehavior || "close";
-    el.akuMinTopC.value = (typeof e.akuMinTopC === "number") ? e.akuMinTopC : 40;
-    el.akuMinDeltaToTargetC.value = (typeof e.akuMinDeltaToTargetC === "number") ? e.akuMinDeltaToTargetC : 2;
-    el.akuMinDeltaToBoilerInC.value = (typeof e.akuMinDeltaToBoilerInC === "number") ? e.akuMinDeltaToBoilerInC : 3;
+    el.akuMinTopCDay.value = (typeof e.akuMinTopC_day === "number") ? e.akuMinTopC_day : 42;
+    el.akuMinTopCNight.value = (typeof e.akuMinTopC_night === "number") ? e.akuMinTopC_night : 45;
+    el.akuMinDeltaToTargetCDay.value = (typeof e.akuMinDeltaToTargetC_day === "number") ? e.akuMinDeltaToTargetC_day : 2;
+    el.akuMinDeltaToTargetCNight.value = (typeof e.akuMinDeltaToTargetC_night === "number") ? e.akuMinDeltaToTargetC_night : 3;
+    el.akuMinDeltaToBoilerInCDay.value = (typeof e.akuMinDeltaToBoilerInC_day === "number") ? e.akuMinDeltaToBoilerInC_day : 3;
+    el.akuMinDeltaToBoilerInCNight.value = (typeof e.akuMinDeltaToBoilerInC_night === "number") ? e.akuMinDeltaToBoilerInC_night : 4;
     el.fallbackOutdoorC.value = (typeof e.fallbackOutdoorC === "number") ? e.fallbackOutdoorC : 0;
     const maxAgeMs = (typeof cfg?.sensors?.outdoor?.maxAgeMs === "number") ? cfg.sensors.outdoor.maxAgeMs : 900000;
     el.outdoorMaxAgeMin.value = Math.round(maxAgeMs / 60000);
 
     el.systemProfile.value = cfg?.system?.profile || "standard";
-    el.nightModeSource.value = cfg?.system?.nightModeSource || "input";
+    el.nightModeSource.value = cfg?.system?.nightModeSource || "heat_call";
     el.nightModeManual.checked = !!cfg?.system?.nightModeManual;
 
     // legacy refs
@@ -821,22 +827,26 @@
     const periodS = readNumber(el.periodS.value, Math.round((e.control.periodMs ?? 30000) / 1000));
     e.control.periodMs  = Math.max(500, Math.round(periodS * 1000));
     e.control.minPct    = clampPct(readInt(el.minPct.value, e.control.minPct ?? 0));
-    e.control.maxPct    = clampPct(readInt(el.maxPct.value, e.control.maxPct ?? 100));
+    e.control.maxPct    = clampPct(readInt(el.maxPctDay.value, e.control.maxPct ?? 100));
     e.deadbandC = e.control.deadbandC;
     e.stepPct = e.control.stepPct;
     e.controlPeriodMs = e.control.periodMs;
+    e.maxPct_day = clampPct(readInt(el.maxPctDay.value, e.maxPct_day ?? e.control.maxPct ?? 100));
+    e.maxPct_night = clampPct(readInt(el.maxPctNight.value, e.maxPct_night ?? 50));
 
     e.curveOffsetC = readNumber(el.curveOffsetC.value, e.curveOffsetC ?? 0);
     e.maxBoilerInC = readNumber(el.maxBoilerInC.value, e.maxBoilerInC ?? 55);
     e.noFlowDetectEnabled = !!el.noFlowDetectEnabled.checked;
     e.noFlowTimeoutMs = Math.max(10000, readNumber(el.noFlowTimeoutS.value, (e.noFlowTimeoutMs ?? 180000) / 1000) * 1000);
-    e.requireHeatCall = !!el.requireHeatCall.checked;
-    e.noHeatCallBehavior = String(el.noHeatCallBehavior.value || "hold");
+    e.noFlowTestPeriodMs = Math.max(10000, readNumber(el.noFlowTestPeriodS.value, (e.noFlowTestPeriodMs ?? 180000) / 1000) * 1000);
     e.akuSupportEnabled = !!el.akuSupportEnabled.checked;
     e.akuNoSupportBehavior = String(el.akuNoSupportBehavior.value || "close");
-    e.akuMinTopC = readNumber(el.akuMinTopC.value, e.akuMinTopC ?? 40);
-    e.akuMinDeltaToTargetC = readNumber(el.akuMinDeltaToTargetC.value, e.akuMinDeltaToTargetC ?? 2);
-    e.akuMinDeltaToBoilerInC = readNumber(el.akuMinDeltaToBoilerInC.value, e.akuMinDeltaToBoilerInC ?? 3);
+    e.akuMinTopC_day = readNumber(el.akuMinTopCDay.value, e.akuMinTopC_day ?? 42);
+    e.akuMinTopC_night = readNumber(el.akuMinTopCNight.value, e.akuMinTopC_night ?? 45);
+    e.akuMinDeltaToTargetC_day = readNumber(el.akuMinDeltaToTargetCDay.value, e.akuMinDeltaToTargetC_day ?? 2);
+    e.akuMinDeltaToTargetC_night = readNumber(el.akuMinDeltaToTargetCNight.value, e.akuMinDeltaToTargetC_night ?? 3);
+    e.akuMinDeltaToBoilerInC_day = readNumber(el.akuMinDeltaToBoilerInCDay.value, e.akuMinDeltaToBoilerInC_day ?? 3);
+    e.akuMinDeltaToBoilerInC_night = readNumber(el.akuMinDeltaToBoilerInCNight.value, e.akuMinDeltaToBoilerInC_night ?? 4);
     e.fallbackOutdoorC = readNumber(el.fallbackOutdoorC.value, e.fallbackOutdoorC ?? 0);
 
     cfg.sensors = cfg.sensors || {};
@@ -845,7 +855,7 @@
 
     cfg.system = cfg.system || {};
     cfg.system.profile = String(el.systemProfile.value || "standard");
-    cfg.system.nightModeSource = String(el.nightModeSource.value || "input");
+    cfg.system.nightModeSource = String(el.nightModeSource.value || "heat_call");
     cfg.system.nightModeManual = !!el.nightModeManual.checked;
 
     // legacy refs
