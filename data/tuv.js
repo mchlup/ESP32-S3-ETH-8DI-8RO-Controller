@@ -152,10 +152,16 @@
     if (typeof st.scheduleEnabled !== "undefined") lines.push(`Plán: ${st.scheduleEnabled ? "ON" : "OFF"}`);
 
     const eqMaster = Number(st.eqValveMaster || cfg?.equitherm?.valve?.master || 0);
-    if (eqMaster > 0) lines.push(`Směšovací ventil (ekviterm): master ${eqMaster} → ${clampPct(st.eqValveTargetPct ?? cfg?.tuv?.eqValveTargetPct ?? 0)}%`);
+    if (eqMaster > 0) {
+      const saved = st.eqValveSavedValid ? ` • saved ${clampPct(st.eqValveSavedPct)}%` : "";
+      lines.push(`Směšovací ventil (ekviterm): master ${eqMaster} → ${clampPct(st.eqValveTargetPct ?? cfg?.tuv?.eqValveTargetPct ?? 0)}%${saved}`);
+    }
 
     const tuvMaster = Number(st.valveMaster || cfg?.tuv?.valveMaster || 0);
-    if (tuvMaster > 0) lines.push(`Přepínací ventil TUV: master ${tuvMaster} → ${clampPct(st.valveTargetPct ?? cfg?.tuv?.valveTargetPct ?? 0)}%`);
+    if (tuvMaster > 0) {
+      const pos = clampPct(st.valvePosPct ?? 0);
+      lines.push(`Přepínací ventil TUV: master ${tuvMaster} • ${pos}% → ${clampPct(st.valveTargetPct ?? cfg?.tuv?.valveTargetPct ?? 0)}%`);
+    }
 
     el.statusBox.textContent = lines.join("\n");
   }
