@@ -556,6 +556,9 @@ void handleApiStatus() {
         eq["reason"]  = logicGetEquithermReason();
 
         if (isfinite(es.outdoorC)) eq["outdoorC"] = es.outdoorC; else eq["outdoorC"] = nullptr;
+        eq["outdoorValid"] = es.outdoorValid;
+        eq["outdoorAgeMs"] = es.outdoorAgeMs;
+        if (es.outdoorReason.length()) eq["outdoorReason"] = es.outdoorReason; else eq["outdoorReason"] = nullptr;
         if (isfinite(es.flowC))    eq["flowC"]    = es.flowC;    else eq["flowC"]    = nullptr;
         if (isfinite(es.targetFlowC)) eq["targetFlowC"] = es.targetFlowC; else eq["targetFlowC"] = nullptr;
 

@@ -6,7 +6,6 @@
     btnSave: $("btnSaveTuv"),
     enabled: $("tuvEnabled"),
     enableHint: $("tuvEnableHint"),
-    demandInput: $("tuvDemandInput"),
     requestRelay: $("tuvRequestRelay"),
     eqValveTargetPct: $("tuvEqValveTargetPct"),
     valveMaster: $("tuvValveMaster"),
@@ -15,6 +14,11 @@
   };
 
   if (!window.App || !el.btnSave) return;
+
+  const hideDemandRow = () => {
+    const row = document.getElementById("tuvDemandInput")?.closest(".ioRow");
+    if (row) row.style.display = "none";
+  };
 
   const clampPct = (v) => {
     const n = Number(v);
@@ -46,22 +50,15 @@
     }
   }
 
-  function buildInputOptions(cfg) {
-    const opts = [{ value: "0", label: "— (nepoužívat)" }];
-    const names = Array.isArray(cfg?.inputNames) ? cfg.inputNames : [];
-    for (let i = 0; i < 8; i++) {
-      const name = String(names[i] || "").trim() || `Vstup ${i + 1}`;
-      opts.push({ value: String(i + 1), label: `${i + 1} – ${name}` });
-    }
-    return opts;
-  }
-
   function buildRelayOptions(cfg) {
     const opts = [{ value: "0", label: "— (nepoužívat)" }];
     const names = Array.isArray(cfg?.relayNames) ? cfg.relayNames : [];
+    const outputs = Array.isArray(cfg?.iofunc?.outputs) ? cfg.iofunc.outputs : [];
     for (let i = 0; i < 8; i++) {
       const name = String(names[i] || "").trim() || `Relé ${i + 1}`;
-      opts.push({ value: String(i + 1), label: `${i + 1} – ${name}` });
+      const role = String(outputs[i]?.role || "none");
+      const suffix = (role === "boiler_enable_dhw") ? "" : " (nastaví roli boiler_enable_dhw)";
+      opts.push({ value: String(i + 1), label: `${i + 1} – ${name}${suffix}` });
     }
     return opts;
   }
@@ -88,9 +85,9 @@
     outs.forEach((o, idx) => {
       const r = String(o?.role || "");
       // preferujeme explicitní "Přepínací" ventil; fallback na legacy "valve_3way_2rel"
-      if (r !== "valve_3way_dhw" && r !== "valve_3way_2rel") return;
+      if (r !== "valve_3way_tuv" && r !== "valve_3way_dhw" && r !== "valve_3way_2rel") return;
       const params = (o && typeof o.params === "object") ? o.params : {};
-      if (r === "valve_3way_dhw") {
+      if (r === "valve_3way_tuv" || r === "valve_3way_dhw") {
         addOption(idx + 1, null);
       } else {
         const peer = params.peerRel ?? params.partnerRelay;
@@ -110,7 +107,6 @@
     App.ensureConfigShape(cfg);
     const t = cfg.tuv || {};
     el.enabled.checked = !!t.enabled;
-    el.demandInput.value = String(t.demandInput || 0);
     el.requestRelay.value = String(t.requestRelay || 0);
     el.eqValveTargetPct.value = clampPct(t.eqValveTargetPct ?? 0);
     el.valveMaster.value = String(t.valveMaster || 0);
@@ -142,7 +138,6 @@
     App.ensureConfigShape(cfg);
     cfg.tuv = cfg.tuv || {};
     if (!el.enabled.disabled) cfg.tuv.enabled = !!el.enabled.checked;
-    cfg.tuv.demandInput = readInt(el.demandInput.value, 0);
     cfg.tuv.requestRelay = readInt(el.requestRelay.value, 0);
     cfg.tuv.eqValveTargetPct = clampPct(el.eqValveTargetPct.value);
     cfg.tuv.valveMaster = readInt(el.valveMaster.value, 0);
@@ -154,7 +149,6 @@
     const lines = [];
     const active = !!st.modeActive;
     lines.push(`Režim: ${active ? "AKTIVNÍ" : "neaktivní"}`);
-    if (typeof st.demandActive !== "undefined") lines.push(`Požadavek: ${st.demandActive ? "ANO" : "ne"}`);
     if (typeof st.scheduleEnabled !== "undefined") lines.push(`Plán: ${st.scheduleEnabled ? "ON" : "OFF"}`);
 
     const eqMaster = Number(st.eqValveMaster || cfg?.equitherm?.valve?.master || 0);
@@ -176,6 +170,20 @@
   }
 
   function bindEvents() {
+    if (el.requestRelay) {
+      el.requestRelay.addEventListener("change", () => {
+        const cfg = App.getConfig?.();
+        if (!cfg) return;
+        const idx = readInt(el.requestRelay.value, 0);
+        if (idx < 1 || idx > 8) return;
+        App.ensureConfigShape(cfg);
+        cfg.iofunc = cfg.iofunc || {};
+        cfg.iofunc.outputs = Array.isArray(cfg.iofunc.outputs) ? cfg.iofunc.outputs : [];
+        while (cfg.iofunc.outputs.length < 8) cfg.iofunc.outputs.push({ role: "none", params: {} });
+        cfg.iofunc.outputs[idx - 1].role = "boiler_enable_dhw";
+      });
+    }
+
     el.btnSave.addEventListener("click", async () => {
       const cfg = App.getConfig();
       saveToConfig(cfg);
@@ -187,12 +195,11 @@
   const prevOnConfigLoaded = App.onConfigLoaded;
   App.onConfigLoaded = (cfg) => {
     if (typeof prevOnConfigLoaded === "function") prevOnConfigLoaded(cfg);
-    const inputOpts = buildInputOptions(cfg);
     const relayOpts = buildRelayOptions(cfg);
-    setSelectOptions(el.demandInput, inputOpts, false);
     setSelectOptions(el.requestRelay, relayOpts, false);
     loadFromConfig(cfg);
     refreshDash(cfg, true);
+    hideDemandRow();
   };
 
   const prevOnStatusLoaded = App.onStatusLoaded;
@@ -205,13 +212,12 @@
     bindEvents();
     const cfg = App.getConfig();
     if (cfg) {
-      const inputOpts = buildInputOptions(cfg);
       const relayOpts = buildRelayOptions(cfg);
-      setSelectOptions(el.demandInput, inputOpts, false);
       setSelectOptions(el.requestRelay, relayOpts, false);
       loadFromConfig(cfg);
       refreshDash(cfg, true);
       updateStatusBox(App.getStatus(), cfg);
     }
+    hideDemandRow();
   });
 })();

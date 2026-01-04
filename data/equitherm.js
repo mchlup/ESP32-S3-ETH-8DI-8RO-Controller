@@ -116,6 +116,12 @@
     return n;
   }
 
+  function fmtAge(ms) {
+    if (!Number.isFinite(ms)) return "--";
+    if (ms < 1000) return `${Math.round(ms)} ms`;
+    if (ms < 60000) return `${(ms / 1000).toFixed(1)} s`;
+    return `${(ms / 60000).toFixed(1)} min`;
+  }
 
   function computeTargetFlow(tout, slope, shift, minFlow, maxFlow) {
     // stejný vzorec jako firmware/UI: Tflow = (20 - Tout) * slope + 20 + shift
@@ -419,6 +425,9 @@
     }
     base.push(
       { v: "mqtt", t: "MQTT" },
+      { v: "opentherm_boiler", t: "OpenTherm – kotel (flow)" },
+      { v: "opentherm_return", t: "OpenTherm – vratná voda" },
+      { v: "opentherm_outdoor", t: "OpenTherm – venek (OT)" },
       { v: "ble", t: "BLE teploměr" },
       { v: "none", t: "Nepoužít" },
     );
@@ -775,6 +784,12 @@
     if (st.reason) lines.push(`Reason: ${st.reason}`);
 
     lines.push(`Tout: ${fmtTemp(st.outdoorC)} • Tflow: ${fmtTemp(st.flowC)} • Target: ${fmtTemp(st.targetFlowC)}`);
+    if (typeof st.outdoorValid !== "undefined") {
+      const oValid = st.outdoorValid ? "OK" : "NE";
+      const age = (typeof st.outdoorAgeMs === "number") ? fmtAge(st.outdoorAgeMs) : "--";
+      const reason = st.outdoorReason ? ` • ${st.outdoorReason}` : "";
+      lines.push(`Outdoor source: ${oValid} • age ${age}${reason}`);
+    }
 
     if (typeof st.valveMaster === "number" && st.valveMaster > 0) {
       const m = st.valveMaster;

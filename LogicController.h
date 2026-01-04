@@ -35,6 +35,9 @@ struct EquithermStatus {
 
     // Sources + measured temps
     float outdoorC = NAN;
+    bool  outdoorValid = false;
+    uint32_t outdoorAgeMs = 0;
+    String outdoorReason = "";
     float flowC    = NAN;     // teplota otopné vody / okruhu (feedback)
     float targetFlowC = NAN;  // požadovaná teplota podle křivky
 
