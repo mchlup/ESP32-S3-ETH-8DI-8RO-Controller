@@ -694,7 +694,9 @@
 
     const outs = Array.isArray(cfg?.iofunc?.outputs) ? cfg.iofunc.outputs : [];
     outs.forEach((o, idx) => {
-      if (String(o?.role || "") !== "valve_3way_2rel") return;
+      const r = String(o?.role || "");
+      // kompatibilita: starší role "valve_3way_2rel" se bere jako směšovací
+      if (r !== "valve_3way_mix" && r !== "valve_3way_2rel") return;
       const params = (o && typeof o.params === "object") ? o.params : {};
       const peer = params.peerRel ?? params.partnerRelay;
       addOption(idx + 1, peer);

@@ -62,7 +62,7 @@
       const o = cfg.iofunc.outputs[i];
       let role = String(o.role || "none");
       if (role === "valve_3way_spring") role = "valve_3way_2rel"; // legacy
-      if (role !== "valve_3way_2rel") continue;
+      if (role !== "valve_3way_mix" && role !== "valve_3way_2rel") continue;
 
       // 1-based DO number
       let peerRel = Number(o.params?.peerRel ?? o.params?.partnerRelay ?? (i + 2));

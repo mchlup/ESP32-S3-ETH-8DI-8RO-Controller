@@ -348,12 +348,15 @@ void applyCfgObj(const JsonObjectConst& root){
     s_cfg[i].addr = "";
   }
 
-  // --- Header thermometers mode (GPIO0..3) ---
-  // If UI provides dallasNames/dallasAddrs, treat DS18B20 as independent pin-header sensors
-  // mapped 1:1 to input indices 0..3 (GPIO0..3). This MUST NOT touch IO Functions mapping.
+  // --- Header thermometers (GPIO0..3) ---
+  // Pokud UI obsahuje dallasNames/dallasAddrs, bereme DS18B20 na pin-headeru jako
+  // nezávislé teploměry mapované 1:1 na TEMP1..TEMP4 (GPIO0..3).
+  // DŮLEŽITÉ: tato logika nesmí zablokovat další mapování (iofunc.inputs[].role==temp_dallas).
   const bool headerMode = cfg.containsKey("dallasNames") || cfg.containsKey("dallasAddrs");
-  if (headerMode){
-    JsonArrayConst addrs = (cfg.containsKey("dallasAddrs") && cfg["dallasAddrs"].is<JsonArrayConst>()) ? cfg["dallasAddrs"].as<JsonArrayConst>() : JsonArrayConst();
+  if (headerMode) {
+    JsonArrayConst addrs = (cfg.containsKey("dallasAddrs") && cfg["dallasAddrs"].is<JsonArrayConst>())
+                             ? cfg["dallasAddrs"].as<JsonArrayConst>()
+                             : JsonArrayConst();
     for (uint8_t i=0;i<=3;i++){
       String addr = "";
       if (!addrs.isNull() && i < addrs.size()) addr = String((const char*)(addrs[i] | ""));
@@ -361,60 +364,52 @@ void applyCfgObj(const JsonObjectConst& root){
       s_cfg[i].gpio = i;
       s_cfg[i].addr = normHex(addr);
     }
-    for (uint8_t gpio=0; gpio<=3; gpio++){
-      DallasController::configureGpio(gpio, TEMP_INPUT_AUTO);
-    }
-    return;
   }
 
-  // --- Legacy mode: use iofunc.inputs[].role==temp_dallas ---
-  if (!cfg.containsKey("iofunc") || !cfg["iofunc"].is<JsonObjectConst>()){
-    for (uint8_t gpio=0; gpio<=3; gpio++) DallasController::configureGpio(gpio, TEMP_INPUT_AUTO);
-    return;
-  }
-  JsonObjectConst iof = cfg["iofunc"].as<JsonObjectConst>();
-  if (!iof.containsKey("inputs") || !iof["inputs"].is<JsonArrayConst>()){
-    for (uint8_t gpio=0; gpio<=3; gpio++) DallasController::configureGpio(gpio, TEMP_INPUT_AUTO);
-    return;
-  }
-  JsonArrayConst inputs = iof["inputs"].as<JsonArrayConst>();
+  // --- temp_dallas mapování přes iofunc.inputs[] (legacy + doplňkové teploměry) ---
 
   bool usedGpio[4] = {false,false,false,false};
+  if (cfg.containsKey("iofunc") && cfg["iofunc"].is<JsonObjectConst>()){
+    JsonObjectConst iof = cfg["iofunc"].as<JsonObjectConst>();
+    if (iof.containsKey("inputs") && iof["inputs"].is<JsonArrayConst>()){
+      JsonArrayConst inputs = iof["inputs"].as<JsonArrayConst>();
+      uint8_t idx=0;
+      for (JsonVariantConst v : inputs){
+        if (idx >= INPUT_COUNT) break;
+        if (!v.is<JsonObjectConst>()) { idx++; continue; }
 
-  uint8_t idx=0;
-  for (JsonVariantConst v : inputs){
-    if (idx >= INPUT_COUNT) break;
-    if (!v.is<JsonObjectConst>()) { idx++; continue; }
-    JsonObjectConst o = v.as<JsonObjectConst>();
-    const char* role = o["role"] | "none";
+        // TEMP1..TEMP4 jsou v headerMode rezervované pro pevné mapování GPIO0..3.
+        if (headerMode && idx <= 3) { idx++; continue; }
 
-    if (strcmp(role, "temp_dallas") == 0){
-      JsonObjectConst p = o["params"].is<JsonObjectConst>() ? o["params"].as<JsonObjectConst>() : JsonObjectConst();
-      uint8_t gpio = (uint8_t)(p["gpio"] | 0);
-      String addr = String((const char*)(p["addr"] | ""));
-      addr = normHex(addr);
+        JsonObjectConst o = v.as<JsonObjectConst>();
+        const char* role = o["role"] | "none";
 
-      if (gpio <= 3){
-        s_cfg[idx].enabled = true;
-        s_cfg[idx].gpio = gpio;
-        s_cfg[idx].addr = addr;
-        usedGpio[gpio] = true;
+        if (strcmp(role, "temp_dallas") == 0){
+          JsonObjectConst p = o["params"].is<JsonObjectConst>() ? o["params"].as<JsonObjectConst>() : JsonObjectConst();
+          uint8_t gpio = (uint8_t)(p["gpio"] | 0);
+          String addr = String((const char*)(p["addr"] | ""));
+          addr = normHex(addr);
+
+          if (gpio <= 3){
+            s_cfg[idx].enabled = true;
+            s_cfg[idx].gpio = gpio;
+            s_cfg[idx].addr = addr;
+            usedGpio[gpio] = true;
+          }
+        }
+  idx++;
       }
     }
-
-    idx++;
   }
 
-  // Configure buses for used GPIOs
+  // --- Konfigurace sběrnic GPIO0..3 ---
+  // Vždy držíme AUTO (autodetekce + diagnostika). Pokud je GPIO explicitně používán,
+  // přepneme ho do DALLAS režimu (rychlejší/stabilnější čtení).
+  for (uint8_t gpio=0; gpio<=3; gpio++){
+    DallasController::configureGpio(gpio, TEMP_INPUT_AUTO);
+  }
   for (uint8_t gpio=0; gpio<=3; gpio++){
     if (usedGpio[gpio]) DallasController::configureGpio(gpio, TEMP_INPUT_DALLAS);
-  }
-
-  // If nothing configured explicitly, keep global autodetect on GPIO0..3
-  bool any = false;
-  for (uint8_t i=0;i<INPUT_COUNT;i++) if (s_cfg[i].enabled) { any=true; break; }
-  if (!any){
-    for (uint8_t gpio=0; gpio<=3; gpio++) DallasController::configureGpio(gpio, TEMP_INPUT_AUTO);
   }
 }
 

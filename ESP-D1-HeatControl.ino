@@ -129,7 +129,9 @@ void setup() {
     });
 
     logicInit();
-    ruleEngineInit();
+    #if FEATURE_RULE_ENGINE
+        ruleEngineInit();
+    #endif
     rgbLedInit();       // RGB LED (pokud používáš)
     thermometersInit(); // MQTT/BLE teploměry (konfigurace)
     openthermInit();    // OpenTherm (boiler) - zatím stub/placeholder
@@ -176,7 +178,9 @@ void loop() {
     networkLoop();
 
     // pravidla (běží pouze v AUTO)
-    ruleEngineUpdate();
+    #if FEATURE_RULE_ENGINE
+        ruleEngineUpdate();
+    #endif
 
     // logika (AUTO/MANUAL + ventily + equitherm)
     logicUpdate();

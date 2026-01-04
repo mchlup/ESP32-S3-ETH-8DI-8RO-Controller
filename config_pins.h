@@ -1,6 +1,11 @@
 #pragma once
 #include <Arduino.h>
 
+// Feature flags
+#ifndef FEATURE_RULE_ENGINE
+  #define FEATURE_RULE_ENGINE 0
+#endif
+
 // Waveshare ESP32-S3-ETH-8DI-8RO pin map (Waveshare Wiki)
 //
 // Relays are driven by TCA9554 (EXIO1..EXIO8) 

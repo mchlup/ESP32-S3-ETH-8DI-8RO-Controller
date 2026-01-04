@@ -86,10 +86,16 @@
 
     const outs = Array.isArray(cfg?.iofunc?.outputs) ? cfg.iofunc.outputs : [];
     outs.forEach((o, idx) => {
-      if (String(o?.role || "") !== "valve_3way_2rel") return;
+      const r = String(o?.role || "");
+      // preferujeme explicitní "Přepínací" ventil; fallback na legacy "valve_3way_2rel"
+      if (r !== "valve_3way_dhw" && r !== "valve_3way_2rel") return;
       const params = (o && typeof o.params === "object") ? o.params : {};
-      const peer = params.peerRel ?? params.partnerRelay;
-      addOption(idx + 1, peer);
+      if (r === "valve_3way_dhw") {
+        addOption(idx + 1, null);
+      } else {
+        const peer = params.peerRel ?? params.partnerRelay;
+        addOption(idx + 1, peer);
+      }
     });
 
     const cur = cfg?.tuv?.valveMaster || 0;
@@ -121,7 +127,7 @@
   }
 
   function updateEnableHint(cfg) {
-    const idx = findInputRoleIndex(cfg, "tuv_enable");
+    const idx = findInputRoleIndex(cfg, "dhw_enable");
     if (el.enableHint) {
       el.enableHint.textContent = (idx >= 0)
         ? `Řízeno vstupem ${idx + 1} (Funkce I/O) – přepínač je uzamčen.`

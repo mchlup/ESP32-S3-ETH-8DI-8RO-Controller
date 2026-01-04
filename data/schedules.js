@@ -11,7 +11,7 @@
   const schedHint = $("#schedInputHint");
 
   const MODE_IDS = ["MODE1","MODE2","MODE3","MODE4","MODE5"];
-  const BOOL_KINDS = new Set(["tuv_enable","night_mode"]);
+  const BOOL_KINDS = new Set(["dhw_enable","night_mode"]);
 
   const pad2 = (n) => String(n).padStart(2, "0");
   const addMinutes = (hhmm, mins) => {
@@ -47,7 +47,7 @@
 
   const updateInputHints = (cfg) => {
     if (!schedHint) return;
-    const tuvIdx = findInputRoleIndex(cfg, "tuv_enable");
+    const tuvIdx = findInputRoleIndex(cfg, "dhw_enable");
     const nightIdx = findInputRoleIndex(cfg, "night_mode");
     const parts = [];
     if (tuvIdx >= 0) parts.push(`Ohřev TUV řídí vstup ${tuvIdx + 1} (Funkce I/O) – plánování TUV se ignoruje.`);
@@ -272,7 +272,7 @@
   const kindOptions = [
     ["set_mode","Přepnout režim (MODE)"],
     ["set_control_mode","Řízení MANUAL/AUTO"],
-    ["tuv_enable","Ohřev TUV ON/OFF"],
+    ["dhw_enable","Ohřev TUV ON/OFF"],
     ["night_mode","Noční útlum ON/OFF"],
   ];
 
@@ -370,7 +370,7 @@
           params.innerHTML = `<select class="pMode">${modeSel}</select>`;
         } else if (kind === "set_control_mode") {
           params.innerHTML = `<select class="pControl">${ctrlSel}</select>`;
-        } else if (kind === "tuv_enable" || kind === "night_mode") {
+        } else if (kind === "dhw_enable" || kind === "night_mode") {
           if (isInterval) {
             params.innerHTML = `<span class="pill">Interval</span>
                                 <span class="muted">ON od→do</span>
@@ -457,7 +457,7 @@
           s.value = { mode: r.querySelector(".pMode")?.value || "MODE1" };
         } else if (kind === "set_control_mode") {
           s.value = { control: r.querySelector(".pControl")?.value || "auto" };
-        } else if (kind === "tuv_enable" || kind === "night_mode") {
+        } else if (kind === "dhw_enable" || kind === "night_mode") {
           s.value = { enable: (r.querySelector(".pBool")?.value || "false") === "true" };
         } else {
           s.value = s.value || {};

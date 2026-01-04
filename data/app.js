@@ -229,7 +229,7 @@ const renderIO = () => {
     const outsCfg = Array.isArray(cfg?.iofunc?.outputs) ? cfg.iofunc.outputs : [];
     for (let mi = 0; mi < outsCfg.length; mi++) {
       const r = String(outsCfg[mi]?.role || "");
-      if (r !== "valve_3way_2rel") continue;
+      if (r !== "valve_3way_mix" && r !== "valve_3way_2rel") continue;
       const p = outsCfg[mi]?.params || {};
       const peerRel = Number(p.peerRel ?? (mi + 2)); // 1-based
       const peer0 = peerRel - 1;
@@ -241,7 +241,7 @@ const renderIO = () => {
     for (let i=0;i<RELAY_COUNT;i++){
       // 3c ventil (2 relé) se neovládá jako jednoduché relé – je zobrazen jako widget v dashboardu
       const role = String(cfg?.iofunc?.outputs?.[i]?.role || "none");
-      if (role === "valve_3way_2rel" || role === "valve_3way_peer" || peerRelays.has(i)) continue;
+      if (role === "valve_3way_mix" || role === "valve_3way_2rel" || role === "valve_3way_peer" || peerRelays.has(i)) continue;
       const isOn = !!relays[i];
       const el = document.createElement("div");
       el.className = "io";
@@ -404,7 +404,7 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
       name: String(s?.name || "Plán"),
       days: Array.isArray(s?.days) ? s.days.map(n=>Number(n)).filter(n=>n>=1&&n<=7) : [1,2,3,4,5,6,7],
       at: String(s?.at || "06:00"),
-      kind: String(s?.kind || "set_mode"), // set_mode | set_control_mode | tuv_enable | night_mode
+      kind: String(s?.kind || "set_mode"), // set_mode | set_control_mode | dhw_enable | night_mode
       value: (s && typeof s.value === "object") ? s.value : {},
     }));
 

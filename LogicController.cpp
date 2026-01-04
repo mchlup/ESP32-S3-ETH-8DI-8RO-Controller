@@ -318,6 +318,10 @@ static int8_t s_tuvValveMaster0 = -1; // 0..7 or -1 (TUV přepínací ventil)
 static uint8_t s_tuvValveTargetPct = 0;
 static uint8_t s_tuvEqValveTargetPct = 0;
 static uint32_t s_tuvLastValveCmdMs = 0;
+// Při přechodu Ekviterm -> TUV si uložíme polohu směšovacího ventilu a po ukončení TUV ji vrátíme.
+static bool    s_tuvPrevModeActive    = false;
+static bool    s_tuvEqValveSavedValid = false;
+static uint8_t s_tuvEqValveSavedPct   = 0;
 
 // Nastavení relé s respektem k šablonám (např. 3c ventil)
 // Pokud je ekviterm aktivní a používá 3c ventil, v AUTO režimu nenecháme relayMap přepisovat jeho relé.
@@ -362,7 +366,7 @@ static void relayApplyLogical(uint8_t r0, bool on){
 
 
 // ---------------- Time schedules + TUV ----------------
-enum class ScheduleKind : uint8_t { SET_MODE=0, SET_CONTROL_MODE=1, TUV_ENABLE=2, NIGHT_MODE=3 };
+enum class ScheduleKind : uint8_t { SET_MODE=0, SET_CONTROL_MODE=1, dhw_enable=2, NIGHT_MODE=3 };
 
 struct ScheduleItem {
     bool enabled = true;
@@ -752,7 +756,31 @@ static void applyTuvModeValves(uint32_t nowMs) {
 }
 
 static void updateTuvModeState(uint32_t nowMs) {
-    s_tuvModeActive = isTuvEnabledEffective();
+    const bool newActive = isTuvEnabledEffective();
+
+    // hrany: uložit/vrátit polohu směšovacího ventilu (ekviterm)
+    if (newActive && !s_tuvPrevModeActive) {
+        // právě začal ohřev TUV
+        if (s_eqValveMaster0 >= 0 && isValveMaster((uint8_t)s_eqValveMaster0)) {
+            s_tuvEqValveSavedPct = valveComputePosPct(s_valves[(uint8_t)s_eqValveMaster0], nowMs);
+            s_tuvEqValveSavedValid = true;
+        } else {
+            s_tuvEqValveSavedValid = false;
+        }
+    }
+
+    if (!newActive && s_tuvPrevModeActive) {
+        // právě skončil ohřev TUV -> vrať směšovací ventil do předchozí polohy
+        if (s_tuvEqValveSavedValid && s_eqValveMaster0 >= 0 && isValveMaster((uint8_t)s_eqValveMaster0)) {
+            valveMoveToPct((uint8_t)s_eqValveMaster0, s_tuvEqValveSavedPct);
+            // zabráníme tomu, aby ekviterm hned v tom samém okamžiku přepočetl a přepsal návrat
+            s_eqLastAdjustMs = nowMs;
+        }
+        s_tuvEqValveSavedValid = false;
+    }
+
+    s_tuvModeActive = newActive;
+    s_tuvPrevModeActive = newActive;
     applyTuvModeValves(nowMs);
 }
 
@@ -940,7 +968,7 @@ bool logicSetManualModeByName(const String& name) {
     s.toUpperCase();
 
     // Alias: MODE1 -> MODE1 (pro kompatibilitu UI/configu)
-    if (s == "MODE1" || s == "MODE1") {
+    if (s == "MODE1" || s == "MODE2") {
         return logicSetManualMode(SystemMode::MODE1);
     } else if (s == "MODE2") {
         return logicSetManualMode(SystemMode::MODE2);
@@ -1039,7 +1067,7 @@ void logicUpdate() {
                     Serial.printf("[SCHED] control_mode -> %s\n", currentControlMode == ControlMode::AUTO ? "AUTO" : "MANUAL");
                     break;
 
-                case ScheduleKind::TUV_ENABLE:
+                case ScheduleKind::dhw_enable:
                     if (hasTuvEnableInput) break;
                     s_tuvScheduleEnabled = s.enableValue;
                     updateTuvModeState(nowMs);
@@ -1222,7 +1250,7 @@ void logicApplyConfig(const String& json) {
     filter["schedules"][0]["value"] = true;
     filter["schedules"][0]["params"] = true;
 
-    DynamicJsonDocument doc(8192);
+    DynamicJsonDocument doc(16384);
     DeserializationError err = deserializeJson(doc, json, DeserializationOption::Filter(filter));
     if (err) {
         Serial.print(F("[LOGIC] Config JSON parse error: "));
@@ -1318,7 +1346,7 @@ void logicApplyConfig(const String& json) {
                 JsonObject io = in[i].as<JsonObject>();
                 const String role = String((const char*)(io["role"] | "none"));
 
-                if (role == "tuv_enable") {
+                if (role == "dhw_enable") {
                     s_tuvEnableInput = (int8_t)i;
                 } else if (role == "night_mode") {
                     s_nightModeInput = (int8_t)i;
@@ -1335,7 +1363,8 @@ void logicApplyConfig(const String& json) {
                 const String role = String((const char*)(oo["role"] | "none"));
                 JsonObject params = oo["params"].as<JsonObject>();
 
-                if (role == "valve_3way_2rel") {
+                // 3c ventil master – podporujeme nové rozdělení i legacy
+                if (role == "valve_3way_mix" || role == "valve_3way_tuv" || role == "valve_3way_2rel" || role == "valve_3way_spring") {
                     // peer relé (1-based v UI), default je i+2 = "další relé"
                     uint8_t peerRel = (uint8_t)(params["peerRel"] | 0);
                     if (peerRel == 0) {
@@ -1567,7 +1596,7 @@ void logicApplyConfig(const String& json) {
             RelayProfile* target = nullptr;
             int modeIndex = -1;
 
-            if (sid == "MODE1" || sid == "MODE1") {
+            if (sid == "MODE1" || sid == "MODE2") {
                 target = &profileMODE1;
                 modeIndex = 0;
             } else if (sid == "MODE2") {
@@ -1625,6 +1654,9 @@ void logicApplyConfig(const String& json) {
     s_tuvDemandActive = false;
     s_tuvModeActive = false;
     s_tuvLastValveCmdMs = 0;
+    s_tuvPrevModeActive = false;
+    s_tuvEqValveSavedValid = false;
+    s_tuvEqValveSavedPct = 0;
 
     JsonObject tuv = doc["tuv"].as<JsonObject>();
     if (!tuv.isNull()) {
@@ -1708,8 +1740,8 @@ void logicApplyConfig(const String& json) {
                 String c = String((const char*)(val["control"] | val["mode"] | "auto"));
                 c.toLowerCase();
                 it.controlValue = (c == "auto") ? ControlMode::AUTO : ControlMode::MANUAL;
-            } else if (kind == "tuv_enable") {
-                it.kind = ScheduleKind::TUV_ENABLE;
+            } else if (kind == "dhw_enable") {
+                it.kind = ScheduleKind::dhw_enable;
                 it.enableValue = (bool)(val["enable"] | val["enabled"] | true);
             } else if (kind == "night_mode") {
                 it.kind = ScheduleKind::NIGHT_MODE;

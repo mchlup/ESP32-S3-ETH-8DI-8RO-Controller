@@ -1,5 +1,7 @@
 #include "RuleEngine.h"
+#include "config_pins.h"
 
+#if FEATURE_RULE_ENGINE
 #include <ArduinoJson.h>
 #include <string.h>
 
@@ -557,3 +559,21 @@ void ruleEngineUpdate() {
 
   s_status.lastEvalDurationUs = (uint32_t)(micros() - t0);
 }
+
+#else
+
+// RuleEngine disabled at build time (FEATURE_RULE_ENGINE=0)
+#include <Arduino.h>
+
+void ruleEngineInit() {}
+void ruleEngineSetTickMs(uint16_t) {}
+uint16_t ruleEngineGetTickMs() { return 100; }
+void ruleEngineSetEnabled(bool) {}
+bool ruleEngineIsEnabled() { return false; }
+RuleEngineStatus ruleEngineGetStatus() { return RuleEngineStatus{}; }
+String ruleEngineGetStatusJson() { return String("{\"enabled\":false,\"disabledByBuild\":true}"); }
+String ruleEngineExportJson() { return String("{\"enabled\":false,\"rules\":[]}"); }
+bool ruleEngineLoadFromJson(const String&, String* errOut) { if (errOut) *errOut = "RuleEngine disabled by build"; return false; }
+void ruleEngineUpdate() {}
+
+#endif

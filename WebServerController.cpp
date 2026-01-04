@@ -8,6 +8,7 @@
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <math.h>
+#include "config_pins.h"
 #include <ctype.h>
 
 #include "RelayController.h"
@@ -48,8 +49,10 @@ static void applyAllConfig(const String& json){
 
 
 // Rule engine JSON (uložené v LittleFS jako /rules.json)
-static String g_rulesJson;
-static bool   g_rulesEnabled = false;
+#if FEATURE_RULE_ENGINE
+    static String g_rulesJson;
+    static bool   g_rulesEnabled = false;
+#endif
 
 // ===== JSON helper =====
 
@@ -163,6 +166,7 @@ static bool isValidJsonObject(const String& json) {
 static void loadConfigFromFS() {
     const char* cfgPath = "/config.json";
     const char* bakPath = "/config.json.bak";
+    bool restoredFromBak = false;
 
     if (!LittleFS.exists(cfgPath)) {
         g_configJson = "{}";
@@ -191,6 +195,7 @@ static void loadConfigFromFS() {
                 bak.trim();
                 if (bak.length() && isValidJsonObject(bak)) {
                     cfg = bak;
+                    restoredFromBak = true;
                     Serial.println(F("[CFG] Restored config from /config.json.bak"));
                 } else {
                     Serial.println(F("[CFG] config.json.bak invalid, using {}"));
@@ -207,6 +212,29 @@ static void loadConfigFromFS() {
     }
 
     g_configJson = cfg;
+
+    // Pokud jsme obnovili z .bak, je lepší zapsat opravený config zpět do /config.json,
+    // aby se zařízení po každém restartu neopíralo o .bak.
+    // Zároveň necháváme .bak beze změny.
+    if (restoredFromBak) {
+        const char* tmpPath = "/config.json.restore.tmp";
+        File wf = LittleFS.open(tmpPath, "w");
+        if (wf) {
+            wf.print(g_configJson);
+            wf.flush();
+            wf.close();
+
+            LittleFS.remove(cfgPath); // může to být poškozené
+            if (!LittleFS.rename(tmpPath, cfgPath)) {
+                LittleFS.remove(tmpPath);
+                Serial.println(F("[CFG] Restore write-back failed (rename)."));
+            } else {
+                Serial.println(F("[CFG] Restored config written back to /config.json"));
+            }
+        } else {
+            Serial.println(F("[CFG] Restore write-back failed (open tmp)."));
+        }
+    }
 
     applyAllConfig(g_configJson);
 
@@ -357,6 +385,7 @@ static bool saveConfigToFS() {
 }
 
 // ===== Rules (rules.json) =====
+#if FEATURE_RULE_ENGINE
 // forward declaration (používá se v loadRulesFromFS)
 static bool saveRulesToFS();
 
@@ -427,6 +456,7 @@ static bool saveRulesToFS() {
     Serial.println(F("[RULES] rules.json saved."));
     return true;
 }
+#endif
 
 // ===== API status =====
 
@@ -544,6 +574,7 @@ void handleApiStatus() {
 
     // UI kompatibilita: top-level alias
     doc["ruleEngineEnabled"] = ruleEngineIsEnabled();
+    #if FEATURE_RULE_ENGINE
 
     // Rule Engine status (jako objekt)
     {
@@ -557,6 +588,7 @@ void handleApiStatus() {
             ro["error"] = err.c_str();
         }
     }
+    #endif
 
     String out;
     serializeJson(doc, out);
@@ -643,7 +675,7 @@ void handleApiConfigPost() {
     filter["autoDefaultOffUnmapped"] = true;
     filter["auto_default_off_unmapped"] = true;
 
-    DynamicJsonDocument doc(16384);
+    DynamicJsonDocument doc(32768);
     DeserializationError err = deserializeJson(doc, body, DeserializationOption::Filter(filter));
     if (err) {
         server.send(400, "application/json", "{\"error\":\"invalid json\"}");
@@ -865,7 +897,7 @@ void handleApiModeCtrlPost() {
 }
 
 // ===== RULES API =====
-
+#if FEATURE_RULE_ENGINE
 void handleApiRulesGet() {
     // vždy vrať to, co drží runtime engine (nejspolehlivější zdroj)
     // fallback: lokální kopie / default
@@ -912,7 +944,7 @@ void handleApiRulesPost() {
 void handleApiRulesStatus() {
     server.send(200, "application/json", ruleEngineGetStatusJson());
 }
-
+#endif
 // ===== REBOOT API =====
 
 void handleApiRebootPost() {
@@ -1074,7 +1106,11 @@ static void handleApiCaps() {
     doc["rtc"] = networkIsRtcPresent();
     doc["schedules"] = true;
     doc["iofunc"] = true;
-    doc["ruleEngine"] = true;
+    #if FEATURE_RULE_ENGINE
+        doc["ruleEngine"] = true;
+    #else
+        doc["ruleEngine"] = false;
+    #endif
     doc["mqtt"] = true;
     doc["ble"] = true;
     doc["opentherm"] = true;
@@ -1109,7 +1145,9 @@ void webserverInit() {
     // FS je mountnutý v setup() přes fsInit(); tady jen načti konfiguraci, pokud je dostupná
     if (fsIsReady()) {
         loadConfigFromFS();
-        loadRulesFromFS();
+        #if FEATURE_RULE_ENGINE
+            loadRulesFromFS();
+        #endif
     }
 
     server.on("/", HTTP_GET, []() {
@@ -1166,9 +1204,11 @@ void webserverInit() {
     server.on("/api/mode_ctrl", HTTP_POST, handleApiModeCtrlPost);
 
     // Rules
+    #if FEATURE_RULE_ENGINE
     server.on("/api/rules", HTTP_GET, handleApiRulesGet);
     server.on("/api/rules", HTTP_POST, handleApiRulesPost);
     server.on("/api/rules/status", HTTP_GET, handleApiRulesStatus);
+    #endif
 
     // Reboot
     server.on("/api/reboot", HTTP_POST, handleApiRebootPost);

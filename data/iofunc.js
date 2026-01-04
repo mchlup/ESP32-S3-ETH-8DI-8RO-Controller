@@ -20,7 +20,7 @@
     { v: "none", t: "—" },
     { v: "thermostat", t: "Termostat (kontakt)" },
     { v: "mode_trigger", t: "Přepínač režimu (MODE)" },
-    { v: "tuv_enable", t: "Aktivace ohřevu TUV" },
+    { v: "dhw_enable", t: "Aktivace ohřevu TUV" },
     { v: "night_mode", t: "Aktivace nočního útlumu" },
     { v: "generic", t: "Obecný digitální vstup" },
   ];
@@ -28,12 +28,15 @@
   const OUTPUT_ROLES = [
     { v: "none", t: "—" },
     { v: "valve_onoff", t: "Ventil ON/OFF (230V)" },
-    { v: "valve_3way_2rel", t: "Trojcestný ventil 2‑bod (230V, 2 relé A/B)" },
-    { v: "valve_3way_peer", t: "(součást 3c ventilu – řízeno párem)" },
-    { v: "pump", t: "Čerpadlo" },
-    { v: "heater_stage", t: "Topné těleso" },
-    { v: "boiler_enable", t: "Kotel – povolení (bezpot.)" },
-    { v: "generic", t: "Obecný výstup" },
+    // 3c ventily: rozlišujeme směšovací (Ekviterm, ovládá 2 relé) a přepínací (TUV, ovládá 1 relé)
+    { v: "valve_3way_mix", t: "Směšovací trojcestný ventil (Ekviterm) – 2-bod (230V, 2 relé A/B)" },
+    { v: "valve_3way_dhw", t: "Přepínací trojcestný ventil (TUV) – 2-bod (230V, 1 relé A/B)" },
+    { v: "valve_3way_peer", t: "Trojcestný ventil – peer relé (nepřiřazovat ručně)" },
+    { v: "boiler_enable_dhw", t: "Kotel - signál TUV" },
+    { v: "boiler_enable_nm", t: "Kotel - signál NÚ" },
+    { v: "heater_aku", t: "Topná spirála AKU (stykač)" },
+    { v: "circ_pump", t: "Cirkulační čerpadlo" },
+    { v: "generic", t: "Obecný výstup" }
   ];
   
   function isForbiddenInputRole(role) {
@@ -67,6 +70,8 @@
     // legacy migrate
     for (let i = 0; i < outs.length; i++) {
       if (outs[i].role === "valve_3way_spring") outs[i].role = "valve_3way_2rel";
+      // starší konfigurace: původní role se mapuje na směšovací ventil (Ekviterm)
+      if (outs[i].role === "valve_3way_2rel") outs[i].role = "valve_3way_mix";
     }
 
     // reset existing peers (budou znovu nastaveny podle masterů)
@@ -80,8 +85,9 @@
     // seznam master relé, abychom je nepoužili jako peer
     const isMaster = new Set();
     for (let i = 0; i < outs.length; i++) {
-      if (outs[i].role === "valve_3way_2rel") isMaster.add(i);
-    }
+       const r = String(outs[i]?.role || "none");
+       if (r === "valve_3way_mix" || r === "valve_3way_2rel") isMaster.add(i);
+     }
 
     const usedPeers = new Set();
 
@@ -97,7 +103,9 @@
 
     for (let i = 0; i < outs.length; i++) {
       const o = outs[i];
-      if (o.role !== "valve_3way_2rel") continue;
+      const r = String(o?.role || "none");
+      //if (o.role !== "valve_3way_2rel") continue;
+      if (r !== "valve_3way_mix" && r !== "valve_3way_2rel") continue;
 
       o.params = (o.params && typeof o.params === "object") ? o.params : {};
 
@@ -222,7 +230,7 @@
       return `<div class="muted">Kontakt termostatu (logika HIGH/LOW se nastavuje v „Vstupy & relé“).</div>`;
     }
 
-    if (role === "tuv_enable") {
+    if (role === "dhw_enable") {
       return `<div class="muted">Aktivní vstup zapne „Ohřev TUV → Aktivace ohřevu TUV“.</div>`;
     }
 
@@ -240,7 +248,7 @@
       return `<div class="muted">Pevně nastaveno jako <b>směr B</b> pro ventil na DO${master}.</div>`;
     }
 
-    if (role === "valve_3way_2rel") {
+    if (role === "valve_3way_mix" || role === "valve_3way_2rel") {
       const travel = Number(params.travelTime ?? 6);
       const pulse = Number(params.pulseTime ?? Math.min(1.0, travel));
       const guard = Number(params.guardTime ?? 0.3);
@@ -477,7 +485,7 @@
       container.params[k] = parseValue(field);
 
       // Změna peer relé -> přepárování (nastaví/aktualizuje roli PEER na zvoleném relé)
-      if (typ === "out" && container.role === "valve_3way_2rel" && (k === "peerRel" || k === "partnerRelay")) {
+      if (typ === "out" && container.role === "valve_3way_mix" || container.role === "valve_3way_2rel" && (k === "peerRel" || k === "partnerRelay")) {
         const cfg = App.getConfig?.();
         if (cfg) {
           ensureShape(cfg);

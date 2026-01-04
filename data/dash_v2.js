@@ -6,7 +6,7 @@
 
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const isTempRole = (r) => r === "temp_ntc10k" || r === "temp_dallas";
-  const isValveMaster = (r) => r === "valve_3way_2rel";
+  const isValveMaster = (r) => r === "valve_3way_mix" || r === "valve_3way_2rel";
 
   const fmtTemp = (v) => (typeof v === "number" && Number.isFinite(v)) ? `${v.toFixed(1)} °C` : "—";
 
