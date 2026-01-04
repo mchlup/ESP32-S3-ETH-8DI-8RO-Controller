@@ -986,6 +986,22 @@ static bool timeInRecircWindow(const struct tm &t, const RecircWindow &w) {
     return (cur >= start || cur <= end);
 }
 
+static uint32_t recircWindowRemainingMs(const struct tm &t, const RecircWindow &w) {
+    const uint16_t cur = (uint16_t)(t.tm_hour * 60 + t.tm_min);
+    const uint16_t start = (uint16_t)(w.startHour * 60 + w.startMin);
+    const uint16_t end = (uint16_t)(w.endHour * 60 + w.endMin);
+    uint16_t remainingMin = 0;
+    if (start <= end) {
+        if (cur > end) return 0;
+        remainingMin = (uint16_t)(end - cur);
+    } else {
+        // okno přes půlnoc
+        if (cur <= end) remainingMin = (uint16_t)(end - cur);
+        else remainingMin = (uint16_t)((1440 - cur) + end);
+    }
+    return (uint32_t)remainingMin * 60000UL;
+}
+
 static void recircApplyRelay(bool on) {
     if (s_recircPumpRelay < 0 || s_recircPumpRelay >= (int8_t)RELAY_COUNT) return;
     relaySet(static_cast<RelayId>(s_recircPumpRelay), on);
@@ -1120,10 +1136,12 @@ static void recircUpdate(uint32_t nowMs) {
     }
 
     bool windowActive = false;
+    uint32_t windowRemainingMs = 0;
     if ((s_recircMode == "time_windows" || s_recircMode == "hybrid") && timeValid) {
         for (uint8_t i = 0; i < s_recircWindowCount; i++) {
             if (timeInRecircWindow(t, s_recircWindows[i])) {
                 windowActive = true;
+                windowRemainingMs = recircWindowRemainingMs(t, s_recircWindows[i]);
                 break;
             }
         }
@@ -1142,9 +1160,9 @@ static void recircUpdate(uint32_t nowMs) {
         }
     }
 
-    if (!s_recircActive && windowActive) {
+    if (!s_recircActive && windowActive && windowRemainingMs > 0) {
         if (s_recircLastOffMs == 0 || (uint32_t)(nowMs - s_recircLastOffMs) >= s_recircMinOffMs) {
-            recircStart(nowMs, 0);
+            recircStart(nowMs, windowRemainingMs);
         }
     }
 
