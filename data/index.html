@@ -999,10 +999,11 @@
               <option value="on_demand">On-demand</option>
               <option value="time_windows">Časová okna</option>
               <option value="hybrid">Hybrid</option>
+              <option value="window_cycle">Okna + cyklus</option>
             </select>
           </div>
         </div>
-        <div class="ioRow">
+        <div class="ioRow" id="recircDemandRow">
           <div class="ioLabel">Požadavek (vstup)</div>
           <div class="ioValue">
             <select id="recircDemandInput"></select>
@@ -1014,13 +1015,27 @@
             <select id="recircPumpRelay"></select>
           </div>
         </div>
-        <div class="ioRow">
-          <div class="ioLabel">Časy</div>
+        <div class="ioRow" id="recircOnDemandRow">
+          <div class="ioLabel">On-demand běh</div>
           <div class="ioValue">
-            <div class="row3">
-              <div><label class="mini">On-demand běh (s)</label><input id="recircOnDemandRunS" type="number" step="1"></div>
+            <div><label class="mini">Doba běhu (s)</label><input id="recircOnDemandRunS" type="number" step="1"></div>
+          </div>
+        </div>
+        <div class="ioRow" id="recircMinTimesRow">
+          <div class="ioLabel">Minimální doby</div>
+          <div class="ioValue">
+            <div class="row2">
               <div><label class="mini">Min OFF (s)</label><input id="recircMinOffS" type="number" step="1"></div>
               <div><label class="mini">Min ON (s)</label><input id="recircMinOnS" type="number" step="1"></div>
+            </div>
+          </div>
+        </div>
+        <div class="ioRow" id="recircCycleRow">
+          <div class="ioLabel">Cyklus</div>
+          <div class="ioValue">
+            <div class="row2">
+              <div><label class="mini">Zapnuto (s)</label><input id="recircCycleOnS" type="number" step="1"></div>
+              <div><label class="mini">Vypnuto (s)</label><input id="recircCycleOffS" type="number" step="1"></div>
             </div>
           </div>
         </div>
@@ -1052,7 +1067,7 @@
             <input id="recircStopTempC" type="number" step="0.1">
           </div>
         </div>
-        <div class="ioRow">
+        <div class="ioRow" id="recircWindowsRow">
           <div class="ioLabel">Časová okna</div>
           <div class="ioValue">
             <div id="recircWindows"></div>

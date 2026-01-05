@@ -339,6 +339,8 @@ const renderIO = () => {
     r.onDemandRunMs = (typeof r.onDemandRunMs === "number") ? r.onDemandRunMs : 120000;
     r.minOffMs = (typeof r.minOffMs === "number") ? r.minOffMs : 300000;
     r.minOnMs = (typeof r.minOnMs === "number") ? r.minOnMs : 30000;
+    r.cycleOnMs = (typeof r.cycleOnMs === "number") ? r.cycleOnMs : 300000;
+    r.cycleOffMs = (typeof r.cycleOffMs === "number") ? r.cycleOffMs : 900000;
     r.stopTempC = (typeof r.stopTempC === "number") ? r.stopTempC : 42;
     r.tempReturnSource = (r.tempReturnSource && typeof r.tempReturnSource === "object") ? r.tempReturnSource : {};
     r.tempReturnSource.source = r.tempReturnSource.source || "none";
@@ -348,7 +350,7 @@ const renderIO = () => {
     r.tempReturnSource.jsonKey = r.tempReturnSource.jsonKey || r.tempReturnSource.key || r.tempReturnSource.field || "";
     r.tempReturnSource.mqttIdx = Number.isFinite(Number(r.tempReturnSource.mqttIdx || r.tempReturnSource.preset)) ? Number(r.tempReturnSource.mqttIdx || r.tempReturnSource.preset) : 0;
     r.tempReturnSource.bleId = r.tempReturnSource.bleId || r.tempReturnSource.id || "";
-    r.windows = Array.isArray(r.windows) ? r.windows : [];
+    r.windows = Array.isArray(r.windows) ? r.windows : (Array.isArray(r.timeWindows) ? r.timeWindows : []);
 
     
 // Ekviterm (weather compensation) + role-based I/O mapping
