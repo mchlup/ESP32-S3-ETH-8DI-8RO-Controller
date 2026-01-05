@@ -172,6 +172,10 @@ struct ValveUiStatus {
 };
 
 bool logicGetValveUiStatus(uint8_t relay1based, ValveUiStatus& out);
+bool logicIsValvePeer(uint8_t relay1based);
+bool logicIsValveMaster(uint8_t relay1based);
+bool logicSetValveTargetPct(uint8_t relay1based, uint8_t targetPct);
+bool logicCommandValve(uint8_t relay1based, const String& cmd);
 
 // MQTT: seznam topiců, které je potřeba odebírat (např. Ekviterm zdroje)
 // outTopics může být nullptr pro zjištění počtu.

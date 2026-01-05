@@ -706,6 +706,17 @@ void handleApiRelay() {
         return;
     }
 
+    const bool isPeer = logicIsValvePeer((uint8_t)id);
+    const bool isMaster = logicIsValveMaster((uint8_t)id);
+    if (isPeer && (cmd == "on" || cmd == "toggle")) {
+        server.send(409, "application/json", "{\"error\":\"valve peer relay blocked\"}");
+        return;
+    }
+    if (isMaster) {
+        server.send(409, "application/json", "{\"error\":\"valve master blocked, use /api/valve\"}");
+        return;
+    }
+
     // Bezpečné chování: ruční zásah => MANUAL
     if (logicGetControlMode() == ControlMode::AUTO) {
         logicSetControlMode(ControlMode::MANUAL);
@@ -728,6 +739,48 @@ void handleApiRelay() {
     json += relayGetState(static_cast<RelayId>(id - 1)) ? "true" : "false";
     json += "}";
     server.send(200, "application/json", json);
+}
+
+// ===== API ventil =====
+
+void handleApiValve() {
+    if (!server.hasArg("id")) {
+        server.send(400, "application/json", "{\"error\":\"missing id\"}");
+        return;
+    }
+
+    int id = server.arg("id").toInt();
+    if (id < 1 || id > RELAY_COUNT) {
+        server.send(400, "application/json", "{\"error\":\"invalid id\"}");
+        return;
+    }
+
+    if (logicGetControlMode() == ControlMode::AUTO) {
+        logicSetControlMode(ControlMode::MANUAL);
+    }
+
+    if (server.hasArg("pct")) {
+        int pct = server.arg("pct").toInt();
+        if (pct < 0 || pct > 100) {
+            server.send(400, "application/json", "{\"error\":\"invalid pct\"}");
+            return;
+        }
+        if (!logicSetValveTargetPct((uint8_t)id, (uint8_t)pct)) {
+            server.send(409, "application/json", "{\"error\":\"valve not configured\"}");
+            return;
+        }
+    } else if (server.hasArg("cmd")) {
+        const String cmd = server.arg("cmd");
+        if (!logicCommandValve((uint8_t)id, cmd)) {
+            server.send(400, "application/json", "{\"error\":\"invalid cmd or valve\"}");
+            return;
+        }
+    } else {
+        server.send(400, "application/json", "{\"error\":\"missing pct or cmd\"}");
+        return;
+    }
+
+    server.send(200, "application/json", "{\"status\":\"ok\"}");
 }
 
 // ===== API config =====
@@ -1261,6 +1314,7 @@ void webserverInit() {
     server.on("/api/caps", HTTP_GET, handleApiCaps);
 
     server.on("/api/relay", HTTP_GET, handleApiRelay);
+    server.on("/api/valve", HTTP_GET, handleApiValve);
 
     server.on("/api/config", HTTP_GET, handleApiConfigGet);
     server.on("/api/config", HTTP_POST, handleApiConfigPost);
