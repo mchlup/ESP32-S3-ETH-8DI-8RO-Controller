@@ -3,6 +3,8 @@
 
 void networkInit();
 bool networkIsConnected();
+bool networkIsWifiConnected();
+bool networkIsEthernetConnected();
 String networkGetIp();
 
 // Config + time helpers (NTP/RTC)
