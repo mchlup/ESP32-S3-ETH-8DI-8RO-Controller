@@ -277,8 +277,10 @@ static void valveTick(uint32_t nowMs){
                 relaySet(static_cast<RelayId>(v.relayB), false);
             } else {
                 if (v.singleRelay) {
+                    // Jednocivkovy/prepinaci ventil (spring-return apod.): ovladame pouze relayA.
+                    // relayB muze byt shodne s relayA (kvuli legacy nastaveni), proto na nej nesahame,
+                    // jinak by doslo k okamzitemu vypnuti vystupu.
                     relaySet(static_cast<RelayId>(v.relayA), v.currentB);
-                    relaySet(static_cast<RelayId>(v.relayB), false);
                 } else {
                     // během pohybu je sepnutá jen správná cívka
                     const bool wantB = v.currentB;
@@ -301,7 +303,7 @@ static void valveTick(uint32_t nowMs){
             if (v.singleRelay) {
                 const bool holdOn = (v.targetPct >= 50);
                 relaySet(static_cast<RelayId>(v.relayA), holdOn);
-                relaySet(static_cast<RelayId>(v.relayB), false);
+                //relaySet(static_cast<RelayId>(v.relayB), false);
             } else {
                 // jistota: nic nedržet
                 relaySet(static_cast<RelayId>(v.relayA), false);
@@ -1678,22 +1680,14 @@ void logicUpdate() {
 
             switch (s.kind) {
                 case ScheduleKind::SET_MODE:
-                    manualMode = s.modeValue;
-                    if (currentControlMode == ControlMode::MANUAL) {
-                        currentMode = manualMode;
-                        updateRelaysForMode(currentMode);
-                    }
+                    // jednotne chovani (buzzer + pripadna okamzita aplikace v MANUAL)
+                    logicSetManualMode(s.modeValue);
                     Serial.printf("[SCHED] set_mode -> %s\n", logicModeToString(manualMode));
                     break;
 
                 case ScheduleKind::SET_CONTROL_MODE:
-                    currentControlMode = s.controlValue;
-                    if (currentControlMode == ControlMode::AUTO) {
-                        logicRecomputeFromInputs();
-                    } else {
-                        currentMode = manualMode;
-                        updateRelaysForMode(currentMode);
-                    }
+                    // pouzij setter kvuli konzistenci (buzzer + side effects)
+                    logicSetControlMode(s.controlValue);
                     Serial.printf("[SCHED] control_mode -> %s\n", currentControlMode == ControlMode::AUTO ? "AUTO" : "MANUAL");
                     break;
 

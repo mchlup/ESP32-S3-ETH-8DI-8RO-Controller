@@ -512,10 +512,13 @@ void handleApiStatus() {
     doc["uptimeMs"] = (uint32_t)millis();
 
     // --- wifi ---
-    const bool wifiConn = networkIsConnected();
+    const bool netConn = networkIsConnected();
+    const bool wifiConn = networkIsWifiConnected();
+    const bool ethConn  = networkIsEthernetConnected();
     JsonObject wifi = doc.createNestedObject("wifi");
-    wifi["connected"] = wifiConn;
+    wifi["connected"] = netConn;
     wifi["ip"] = networkGetIp();
+    wifi["link"] = wifiConn ? "wifi" : (ethConn ? "eth" : "down");
     if (wifiConn) wifi["rssi"] = WiFi.RSSI();
 
     // --- MQTT ---
