@@ -22,7 +22,6 @@
 #include "TempParse.h"
 #include "OpenThermController.h"
 #include "RuleEngine.h"
-#include "NtcController.h"
 #include "DallasController.h"
 
 static WebServer server(80);
@@ -37,7 +36,6 @@ static String g_configJson;
 
 static void applyAllConfig(const String& json){
     networkApplyConfig(json);
-    ntcApplyConfig(json);
     dallasApplyConfig(json);
     thermometersApplyConfig(json);
     openthermApplyConfig(json);
@@ -537,10 +535,13 @@ void handleApiStatus() {
     JsonObject tuv = doc.createNestedObject("tuv");
     TuvStatus ts = logicGetTuvStatus();
     tuv["enabled"] = ts.enabled;
-    tuv["active"] = ts.modeActive;
+    tuv["active"] = ts.active;
     tuv["scheduleEnabled"] = ts.scheduleEnabled;
     tuv["demandActive"] = ts.demandActive;
     tuv["modeActive"] = ts.modeActive;
+    tuv["reason"] = ts.reason;
+    tuv["source"] = ts.source;
+    tuv["boilerRelayOn"] = ts.boilerRelayOn;
     tuv["eqValveMaster"] = ts.eqValveMaster;
     tuv["eqValveTargetPct"] = ts.eqValveTargetPct;
     tuv["eqValveSavedPct"] = ts.eqValveSavedPct;
@@ -548,6 +549,7 @@ void handleApiStatus() {
     tuv["valveMaster"] = ts.valveMaster;
     tuv["valveTargetPct"] = ts.valveTargetPct;
     tuv["valvePosPct"] = ts.valvePosPct;
+    tuv["valveMoving"] = ts.valveMoving;
     tuv["valveMode"] = ts.valveMode;
     tuv["bypassPct"] = ts.bypassPct;
     tuv["chPct"] = ts.chPct;
@@ -1212,26 +1214,6 @@ static void handleApiCaps() {
     server.send(200, "application/json", out);
 }
 
-static void handleApiTemps() {
-  StaticJsonDocument<1024> doc;
-  JsonArray arr = doc.createNestedArray("ntc");
-
-  for (uint8_t i = 0; i < 3; i++) {
-    JsonObject o = arr.createNestedObject();
-    o["idx"] = i + 1;
-    o["en"] = ntcIsEnabled(i);
-    o["gpio"] = ntcGetGpio(i);
-    o["valid"] = ntcIsValid(i);
-    o["raw"] = ntcGetRaw(i);
-    if (ntcIsValid(i)) o["c"] = ntcGetTempC(i);
-    else o["c"] = nullptr;
-  }
-
-  String out;
-  serializeJson(doc, out);
-  server.send(200, "application/json", out);
-}
-
 // ===== Inicializace webserveru =====
 void webserverInit() {
     // FS je mountnutý v setup() přes fsInit(); tady jen načti konfiguraci, pokud je dostupná
@@ -1304,8 +1286,6 @@ void webserverInit() {
 
     // Reboot
     server.on("/api/reboot", HTTP_POST, handleApiRebootPost);
-
-    server.on("/api/temps", HTTP_GET, handleApiTemps);
 
     // FS manager
     server.on("/api/fs/list", HTTP_GET, handleApiFsList);

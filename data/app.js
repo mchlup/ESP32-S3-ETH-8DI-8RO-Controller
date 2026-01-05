@@ -161,7 +161,10 @@
       else if (eq.active) eqHint = " • Ekviterm: aktivní";
       else eqHint = ` • Ekviterm: čeká${eq.reason ? " ("+eq.reason+")" : ""}`;
     }
-    if (typeof tuv.modeActive !== "undefined") {
+    if (typeof tuv.active !== "undefined") {
+      if (tuv.active) tuvHint = " • TUV: aktivní";
+      else if (tuv.scheduleEnabled) tuvHint = " • TUV: čeká";
+    } else if (typeof tuv.modeActive !== "undefined") {
       if (tuv.modeActive) tuvHint = " • TUV: aktivní";
       else if (tuv.scheduleEnabled) tuvHint = " • TUV: čeká";
     }
