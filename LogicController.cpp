@@ -4,7 +4,6 @@
 #include "ConfigStore.h"
 #include "RuleEngine.h"
 #include "BuzzerController.h"
-#include "NtcController.h"
 #include "DallasController.h"
 #include "MqttController.h"
 #include "OpenThermController.h"
@@ -354,6 +353,8 @@ static uint8_t s_tuvChPct = 100;
 static bool    s_tuvBypassInvert = false;
 static uint8_t s_tuvValveCurrentPct = 0;
 static String  s_tuvValveMode = "ch";
+static String  s_tuvReason = "off";
+static String  s_tuvSource = "none";
 
 // Smart cirkulace TUV
 static bool     s_recircEnabled = false;
@@ -1156,6 +1157,20 @@ static void applyTuvModeValves(uint32_t nowMs) {
 static void updateTuvModeState(uint32_t nowMs) {
     const bool newActive = isTuvEnabledEffective();
 
+    if (s_tuvScheduleEnabled && s_tuvDemandActive) {
+        s_tuvReason = "schedule+demand";
+        s_tuvSource = "schedule+demand";
+    } else if (s_tuvScheduleEnabled) {
+        s_tuvReason = "schedule";
+        s_tuvSource = "schedule";
+    } else if (s_tuvDemandActive) {
+        s_tuvReason = "demand";
+        s_tuvSource = "demand";
+    } else {
+        s_tuvReason = "off";
+        s_tuvSource = "none";
+    }
+
     // hrany: uložit/vrátit polohu směšovacího ventilu (ekviterm)
     if (newActive && !s_tuvPrevModeActive) {
         // právě začal ohřev TUV
@@ -1417,9 +1432,19 @@ bool logicGetHeatCallActive() {
 TuvStatus logicGetTuvStatus() {
     TuvStatus st;
     st.enabled = isTuvEnabledEffective();
+    st.active = s_tuvModeActive;
     st.scheduleEnabled = s_tuvScheduleEnabled;
     st.demandActive = s_tuvDemandActive;
     st.modeActive = s_tuvModeActive;
+    st.reason = s_tuvReason;
+    st.source = s_tuvSource;
+    st.boilerRelayOn = false;
+    {
+        const int8_t relayIdx = (s_boilerDhwRelay >= 0) ? s_boilerDhwRelay : s_tuvRequestRelay;
+        if (relayIdx >= 0 && relayIdx < (int8_t)RELAY_COUNT) {
+            st.boilerRelayOn = relayGetState(static_cast<RelayId>(relayIdx));
+        }
+    }
     st.eqValveMaster = (s_eqValveMaster0 >= 0) ? (uint8_t)(s_eqValveMaster0 + 1) : 0;
     st.eqValveTargetPct = s_tuvEqValveTargetPct;
     st.eqValveSavedPct = s_tuvEqValveSavedPct;
@@ -1427,9 +1452,11 @@ TuvStatus logicGetTuvStatus() {
     st.valveMaster = (s_tuvValveMaster0 >= 0) ? (uint8_t)(s_tuvValveMaster0 + 1) : 0;
     st.valveTargetPct = s_tuvValveCurrentPct;
     st.valvePosPct = 0;
+    st.valveMoving = false;
     if (s_tuvValveMaster0 >= 0 && s_tuvValveMaster0 < (int8_t)RELAY_COUNT && isValveMaster((uint8_t)s_tuvValveMaster0)) {
         const uint32_t nowMs = millis();
         st.valvePosPct = valveComputePosPct(s_valves[(uint8_t)s_tuvValveMaster0], nowMs);
+        st.valveMoving = s_valves[(uint8_t)s_tuvValveMaster0].moving;
     }
     st.bypassPct = s_tuvBypassPct;
     st.chPct = s_tuvChPct;
@@ -1575,8 +1602,9 @@ bool logicSetManualModeByName(const String& name) {
     String s = name;
     s.toUpperCase();
 
-    // Alias: MODE1 -> MODE1 (pro kompatibilitu UI/configu)
-    if (s == "MODE1" || s == "MODE2") {
+    if (s == "MODE0") {
+        return logicSetManualMode(SystemMode::MODE1);
+    } else if (s == "MODE1") {
         return logicSetManualMode(SystemMode::MODE1);
     } else if (s == "MODE2") {
         return logicSetManualMode(SystemMode::MODE2);
@@ -1612,10 +1640,9 @@ void logicUpdate() {
     static uint32_t lastTickMs = 0;
     const uint32_t nowMs = millis();
     valveTick(nowMs);
-    // Aktualizace teplot (TEMP1..TEMP8): preferuj Dallas, fallback NTC
+    // Aktualizace teplot (TEMP1..TEMP8): Dallas
     for (uint8_t i=0;i<INPUT_COUNT;i++){
         if (dallasIsValid(i)) { s_tempValid[i]=true; s_tempC[i]=dallasGetTempC(i); }
-        else if (ntcIsValid(i)) { s_tempValid[i]=true; s_tempC[i]=ntcGetTempC(i); }
         else { s_tempValid[i]=false; /* keep last value to show on dashboard */ }
     }
     updateInputBasedModes();
@@ -1998,9 +2025,6 @@ void logicApplyConfig(const String& json) {
         return;
     }
 
-    // NTC konfiguraci řeší samostatný modul (NtcController)
-    ntcApplyConfig(json);
-
     // reset relayMap + triggers (umožní "smazat" mapování v UI)
     for (uint8_t r = 0; r < RELAY_COUNT; r++) {
         relayMap[r].input = 0;
@@ -2084,7 +2108,7 @@ void logicApplyConfig(const String& json) {
     JsonObject iof = doc["iofunc"].as<JsonObject>();
     if (!iof.isNull()) {
 
-        // Inputs: např. NTC teploměr
+        // Inputs: např. vstupní role
         JsonArray in = iof["inputs"].as<JsonArray>();
         if (!in.isNull()) {
             const uint8_t cnt = (in.size() > INPUT_COUNT) ? INPUT_COUNT : (uint8_t)in.size();
@@ -2495,7 +2519,7 @@ void logicApplyConfig(const String& json) {
             RelayProfile* target = nullptr;
             int modeIndex = -1;
 
-            if (sid == "MODE1" || sid == "MODE2") {
+            if (sid == "MODE1") {
                 target = &profileMODE1;
                 modeIndex = 0;
             } else if (sid == "MODE2") {

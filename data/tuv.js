@@ -171,9 +171,11 @@
   function updateStatusBox(status, cfg) {
     const st = status?.tuv || {};
     const lines = [];
-    const active = !!st.modeActive;
+    const active = (typeof st.active === "boolean") ? st.active : !!st.modeActive;
     lines.push(`Režim: ${active ? "AKTIVNÍ" : "neaktivní"}`);
+    if (st.reason || st.source) lines.push(`Důvod: ${String(st.reason || st.source)}`);
     if (typeof st.scheduleEnabled !== "undefined") lines.push(`Plán: ${st.scheduleEnabled ? "ON" : "OFF"}`);
+    if (typeof st.boilerRelayOn !== "undefined") lines.push(`Relé TUV: ${st.boilerRelayOn ? "ON" : "OFF"}`);
 
     const eqMaster = Number(st.eqValveMaster || cfg?.equitherm?.valve?.master || 0);
     if (eqMaster > 0) {
@@ -186,7 +188,8 @@
       const pos = clampPct(st.valvePosPct ?? 0);
       const bv = cfg?.tuv?.bypassValve || {};
       const tgt = clampPct(st.valveTargetPct ?? (active ? (bv.bypassPct ?? 100) : (bv.chPct ?? 100)));
-      lines.push(`Bypass ventil: master ${tuvMaster} • ${pos}% → ${tgt}%`);
+      const moving = st.valveMoving ? " • pohyb" : "";
+      lines.push(`Bypass ventil: master ${tuvMaster} • ${pos}% → ${tgt}%${moving}`);
     }
 
     el.statusBox.textContent = lines.join("\n");

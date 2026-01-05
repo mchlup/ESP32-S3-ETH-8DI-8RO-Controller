@@ -8,11 +8,6 @@
   const INPUT_COUNT = 8;
   const RELAY_COUNT = 8;
 
-  // ESP32-S3 common ADC-capable GPIOs (project-friendly default list)
-  const NTC_GPIO_PINS = [
-    0,1,2,3,21
-  ];
-
   const escapeHtml = (s) =>
     String(s ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
@@ -43,10 +38,6 @@
     { v: "generic", t: "Obecný výstup" }
   ];
   
-  function isForbiddenInputRole(role) {
-    return role === "temp_dallas" || role === "temp_ntc10k" || role === "temp_ntc" || role === "temp";
-  }
-
   const ensureShape = (cfg) => {
     cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
 
@@ -159,45 +150,8 @@
     }).join("");
   };
 
-  const ntcPinOptions = (cur) => {
-    const v = Number(cur || 0);
-    const opts = [];
-    opts.push(`<option value="0">—</option>`);
-    for (const p of NTC_GPIO_PINS) {
-      opts.push(`<option value="${p}" ${p === v ? "selected" : ""}>GPIO${p}</option>`);
-    }
-    opts.push(`<option value="-1" ${v && !NTC_GPIO_PINS.includes(v) ? "selected" : ""}>Vlastní...</option>`);
-    return opts.join("");
-  };
-
   const renderInputParams = (role, params, idx) => {
     params = (params && typeof params === "object") ? params : {};
-    if (role === "temp_ntc10k") {
-      const gpio = Number(params.gpio || 0);
-      const beta = Number(params.beta ?? 3950);
-      const rSeries = Number(params.rSeries ?? 10000);
-      const r0 = Number(params.r0 ?? 10000);
-      const t0 = Number(params.t0 ?? 25);
-      const offset = Number(params.offset ?? 0);
-
-      const customPin = (gpio && !NTC_GPIO_PINS.includes(gpio)) ? gpio : "";
-
-      return `
-        <div class="inline" style="flex-wrap:wrap;gap:10px">
-          <div class="field" style="min-width:170px">
-            <label>ADC GPIO</label>
-            <select class="pfield" data-k="gpio" data-typ="n">${ntcPinOptions(gpio)}</select>
-            <input class="pfield pCustomGpio ${gpio && !NTC_GPIO_PINS.includes(gpio) ? "" : "hidden"}" data-k="gpio" data-typ="n" placeholder="GPIO číslo" value="${escapeHtml(customPin)}">
-          </div>
-          <div class="field" style="min-width:160px"><label>β (Beta)</label><input class="pfield" data-k="beta" data-typ="n" type="number" value="${beta}"></div>
-          <div class="field" style="min-width:160px"><label>R série (Ω)</label><input class="pfield" data-k="rSeries" data-typ="n" type="number" value="${rSeries}"></div>
-          <div class="field" style="min-width:160px"><label>R0 (Ω)</label><input class="pfield" data-k="r0" data-typ="n" type="number" value="${r0}"></div>
-          <div class="field" style="min-width:160px"><label>T0 (°C)</label><input class="pfield" data-k="t0" data-typ="n" type="number" value="${t0}"></div>
-          <div class="field" style="min-width:160px"><label>Offset (°C)</label><input class="pfield" data-k="offset" data-typ="n" type="number" step="0.1" value="${offset}"></div>
-        </div>
-      `;
-    }
-
     if (role === "temp_dallas") {
       const gpio = Number(params.gpio || 0);
       const addr = String(params.addr || "");
@@ -410,13 +364,6 @@
     }
     outTbl.innerHTML = outRows.join("");
 
-    // show/hide custom GPIO input fields for NTC
-    outTbl.querySelectorAll(".pCustomGpio").forEach(el => {
-      // handled in change event too
-    });
-    inTbl.querySelectorAll('select.pfield[data-k="gpio"]').forEach(sel => {
-      if (!sel.closest('[data-type="in"]')) return;
-    });
   };
 
   // Alias for older handlers (prevents "render is not defined")
@@ -492,31 +439,6 @@
 
       const container = (typ === "in") ? cfg.iofunc.inputs[idx] : cfg.iofunc.outputs[idx];
       container.params = (container.params && typeof container.params === "object") ? container.params : {};
-
-      // Special: NTC pin dropdown "Vlastní..."
-      if (typ === "in" && container.role === "temp_ntc10k" && k === "gpio" && field.tagName === "SELECT") {
-        const v = Number(field.value);
-        const custom = row.querySelector(".pCustomGpio");
-        if (v === -1) {
-          // show custom input
-          custom?.classList?.remove("hidden");
-          return;
-        } else {
-          custom?.classList?.add("hidden");
-          if (v === 0) delete container.params.gpio;
-          else container.params.gpio = v;
-          renderTables(); // reflect state
-          return;
-        }
-      }
-
-      // Custom GPIO input case
-      if (typ === "in" && container.role === "temp_ntc10k" && k === "gpio" && field.classList.contains("pCustomGpio")) {
-        const v = Number(field.value);
-        if (Number.isFinite(v) && v > 0) container.params.gpio = v;
-        else delete container.params.gpio;
-        return;
-      }
 
       container.params[k] = parseValue(field);
 

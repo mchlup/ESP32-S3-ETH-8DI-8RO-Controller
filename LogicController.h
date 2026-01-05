@@ -115,9 +115,13 @@ bool logicGetAutoDefaultOffUnmapped();
 // TUV status (pro dashboard / UI)
 struct TuvStatus {
     bool enabled = false;        // schedule enabled AND (demand active if demand input configured)
+    bool active = false;
     bool scheduleEnabled = false;
     bool demandActive = false;
     bool modeActive = false;     // TUV režim aktivní (přepnutí ventilu)
+    String reason = "";
+    String source = "";
+    bool boilerRelayOn = false;
     uint8_t eqValveMaster = 0;   // 1..8 (ekvitermní ventil)
     uint8_t eqValveTargetPct = 0;
     uint8_t eqValveSavedPct = 0;
@@ -125,6 +129,7 @@ struct TuvStatus {
     uint8_t valveMaster = 0;     // 1..8 (TUV přepínací ventil)
     uint8_t valveTargetPct = 0;
     uint8_t valvePosPct = 0;
+    bool    valveMoving = false;
     uint8_t bypassPct = 0;
     uint8_t chPct = 0;
     bool    bypassInvert = false;

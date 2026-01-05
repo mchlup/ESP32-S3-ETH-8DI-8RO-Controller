@@ -12,7 +12,6 @@
 #include "RgbLedController.h"
 #include "BuzzerController.h"
 #include "RuleEngine.h"
-#include "NtcController.h"
 #include "DallasController.h"
 #include "FsController.h"
 #include "ThermometerController.h"
@@ -137,7 +136,6 @@ void setup() {
     openthermInit();    // OpenTherm (boiler) - zatím stub/placeholder
     fsInit();           // Network + Web + MQTT + OTA
     networkInit();
-    ntcInit();
     DallasController::begin();
     DallasController::configureGpio(0, TEMP_INPUT_AUTO);
     DallasController::configureGpio(1, TEMP_INPUT_AUTO);
@@ -172,10 +170,10 @@ void loop() {
     inputUpdate();
 
     // senzory (před logikou)
-    ntcLoop();
     DallasController::loop();
     //dallasLoop();
     networkLoop();
+    mqttLoop();
 
     // pravidla (běží pouze v AUTO)
     #if FEATURE_RULE_ENGINE
@@ -191,8 +189,6 @@ void loop() {
     bleLoop();
     rgbLedLoop();
     buzzerLoop();
-    mqttLoop();
-
     // web server
     webserverLoop();
     OTA::loop();

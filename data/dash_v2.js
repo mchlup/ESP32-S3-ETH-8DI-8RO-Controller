@@ -5,7 +5,7 @@
   const $id = (id) => document.getElementById(id);
 
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
-  const isTempRole = (r) => r === "temp_ntc10k" || r === "temp_dallas";
+  const isTempRole = (r) => r === "temp_dallas";
   const isValveMaster = (r) => r === "valve_3way_mix" || r === "valve_3way_2rel";
 
   const fmtTemp = (v) => (typeof v === "number" && Number.isFinite(v)) ? `${v.toFixed(1)} °C` : "—";
@@ -494,7 +494,9 @@
         if (v3Master >= 1 && v3Master <= RELAY_COUNT) {
           const pos = clamp(Number(st?.tuv?.valvePosPct ?? st?.tuv?.valveTargetPct ?? 0), 0, 100);
           const tgt = clamp(Number(st?.tuv?.valveTargetPct ?? pos), 0, 100);
-          const moving = !!vByMaster.get(v3Master - 1)?.moving;
+          const moving = (typeof st?.tuv?.valveMoving === "boolean")
+            ? st.tuv.valveMoving
+            : !!vByMaster.get(v3Master - 1)?.moving;
           const mode = String(st?.tuv?.valveMode || (st?.tuv?.modeActive ? "dhw" : "ch")).toUpperCase();
           const chPct = Number.isFinite(st?.tuv?.chPct) ? Math.round(st.tuv.chPct) : 100;
           const bpPct = Number.isFinite(st?.tuv?.bypassPct) ? Math.round(st.tuv.bypassPct) : 100;
@@ -522,7 +524,7 @@
     const tuv = st?.tuv || {};
     const hasTuvCfg = !!tuvCfg?.enabled || (tuvCfg?.demandInput > 0) || (tuvCfg?.requestRelay > 0) || (tuvCfg?.valveMaster > 0);
     if (cardTuv && tuvGrid) {
-      const active = !!tuv.modeActive;
+      const active = (typeof tuv.active === "boolean") ? tuv.active : !!tuv.modeActive;
       if (!hasTuvCfg && !active) {
         cardTuv.style.display = "none";
         tuvGrid.innerHTML = "";
@@ -533,17 +535,21 @@
         const relayRoles = getRoleRelays(cfg);
         const relays = Array.isArray(st?.relays) ? st.relays : [];
         const dhwRelayIdx = relayRoles.findIndex((r) => r === "boiler_enable_dhw");
-        const dhwRelayTxt = (dhwRelayIdx >= 0 && relays.length > dhwRelayIdx) ? (relays[dhwRelayIdx] ? "relé: ON" : "relé: OFF") : "relé: —";
+        const dhwRelayOn = (typeof tuv.boilerRelayOn === "boolean")
+          ? tuv.boilerRelayOn
+          : ((dhwRelayIdx >= 0 && relays.length > dhwRelayIdx) ? !!relays[dhwRelayIdx] : null);
+        const dhwRelayTxt = (dhwRelayOn === null) ? "relé: —" : (dhwRelayOn ? "relé: ON" : "relé: OFF");
 
         const modeTile = document.createElement("div");
         modeTile.className = "ioTile";
         const modeLabel = active ? "Aktivní" : "Neaktivní";
         const demandTxt = (typeof tuv.demandActive !== "undefined") ? (tuv.demandActive ? "požadavek: ANO" : "požadavek: ne") : "požadavek: —";
         const schedTxt = (typeof tuv.scheduleEnabled !== "undefined") ? (tuv.scheduleEnabled ? "plán: ON" : "plán: OFF") : "plán: —";
+        const reasonTxt = (tuv.reason || tuv.source) ? `důvod: ${String(tuv.reason || tuv.source)}` : "důvod: —";
         modeTile.innerHTML = `
           <div>
             <div class="ioName">Ohřev TUV</div>
-            <div class="ioSub">${escapeHtml(demandTxt)} • ${escapeHtml(schedTxt)} • ${escapeHtml(dhwRelayTxt)}</div>
+            <div class="ioSub">${escapeHtml(demandTxt)} • ${escapeHtml(schedTxt)} • ${escapeHtml(reasonTxt)} • ${escapeHtml(dhwRelayTxt)}</div>
           </div>
           <div class="ioRight">
             <div class="tempValue ${active ? "" : "muted"}">${modeLabel}</div>
@@ -574,15 +580,17 @@
         if (tuvMaster >= 1 && tuvMaster <= RELAY_COUNT) {
           const vTile = document.createElement("div");
           vTile.className = "ioTile";
+          const pos = Number.isFinite(tuv.valvePosPct) ? Math.round(tuv.valvePosPct) : 0;
           const tgt = Number.isFinite(tuv.valveTargetPct) ? Math.round(tuv.valveTargetPct) : 0;
+          const moving = !!tuv.valveMoving;
           vTile.innerHTML = `
             <div>
               <div class="ioName">V3 bypass</div>
-              <div class="ioSub">${escapeHtml(getNameRelays(cfg, tuvMaster - 1))} • cíl ${tgt}%</div>
+              <div class="ioSub">${escapeHtml(getNameRelays(cfg, tuvMaster - 1))} • ${pos}% → ${tgt}%${moving ? " • pohyb" : ""}</div>
             </div>
             <div class="ioRight">
-              <div class="dial" style="--p:${tgt}%">
-                <div class="dialTxt">${tgt}%</div>
+              <div class="dial" style="--p:${pos}%">
+                <div class="dialTxt">${pos}%</div>
               </div>
             </div>
           `;
@@ -683,7 +691,8 @@
       cardReasons.style.display = "";
       const heatCallRaw = st?.heatCall?.raw;
       const heatCall = (typeof heatCallRaw === "boolean") ? (heatCallRaw ? "ON (den)" : "OFF (noc)") : "—";
-      const dhwMode = st?.tuv?.modeActive ? "ON" : "OFF";
+      const dhwMode = (typeof st?.tuv?.active === "boolean") ? (st.tuv.active ? "ON" : "OFF") : (st?.tuv?.modeActive ? "ON" : "OFF");
+      const dhwReason = st?.tuv?.reason || st?.tuv?.source || "—";
       const outdoorOk = st?.equitherm?.outdoorValid ? "OK" : "stale";
       const outdoorAge = Number.isFinite(st?.equitherm?.outdoorAgeMs) ? `${Math.round(st.equitherm.outdoorAgeMs / 1000)}s` : "—";
       const eqActive = st?.equitherm?.active ? "active" : "paused";
@@ -693,13 +702,18 @@
       const relays = Array.isArray(st?.relays) ? st.relays : [];
       const nmRelayIdx = relayRoles.findIndex((r) => r === "boiler_enable_nm");
       const nmRelayTxt = (nmRelayIdx >= 0 && relays.length > nmRelayIdx) ? (relays[nmRelayIdx] ? "ON" : "OFF") : "—";
+      const dhwRelayIdx = relayRoles.findIndex((r) => r === "boiler_enable_dhw");
+      const dhwRelayTxt = (typeof st?.tuv?.boilerRelayOn === "boolean")
+        ? (st.tuv.boilerRelayOn ? "ON" : "OFF")
+        : ((dhwRelayIdx >= 0 && relays.length > dhwRelayIdx) ? (relays[dhwRelayIdx] ? "ON" : "OFF") : "—");
       reasonsGrid.innerHTML = `
         <div class="ioTile"><div><div class="ioName">Heat call</div><div class="ioSub">${escapeHtml(heatCall)}</div></div></div>
-        <div class="ioTile"><div><div class="ioName">DHW mode</div><div class="ioSub">${escapeHtml(dhwMode)}</div></div></div>
+        <div class="ioTile"><div><div class="ioName">DHW režim</div><div class="ioSub">${escapeHtml(dhwMode)} • ${escapeHtml(dhwReason)}</div></div></div>
         <div class="ioTile"><div><div class="ioName">Outdoor</div><div class="ioSub">${escapeHtml(outdoorOk)} • ${escapeHtml(outdoorAge)}</div></div></div>
         <div class="ioTile"><div><div class="ioName">Equitherm</div><div class="ioSub">${escapeHtml(eqActive)} • ${escapeHtml(eqReason)}</div></div></div>
         <div class="ioTile"><div><div class="ioName">Profil</div><div class="ioSub">${escapeHtml(profile)}</div></div></div>
         <div class="ioTile"><div><div class="ioName">Noční relé</div><div class="ioSub">${escapeHtml(nmRelayTxt)}</div></div></div>
+        <div class="ioTile"><div><div class="ioName">Relé TUV</div><div class="ioSub">${escapeHtml(dhwRelayTxt)}</div></div></div>
       `;
     }
 
@@ -825,7 +839,7 @@
     for (let i=0;i<INPUT_COUNT;i++){
       if (eqEnabled && skip.tempIdx.has(i)) continue;
       const role = String(inRoles[i] || "none");
-      const isTemp = role === "temp_ntc10k" || role === "temp_dallas";
+      const isTemp = role === "temp_dallas";
       if (!isTemp) continue;
       // avoid duplicating header GPIO0..3 tiles
       if (role === "temp_dallas" && i <= 3) continue;
@@ -838,7 +852,7 @@
       tile.innerHTML = `
         <div>
           <div class="ioName">${getNameInputs(cfg, i)}</div>
-          <div class="ioSub">${role === "temp_dallas" ? "Dallas/DS18B20" : "NTC"} • vstup ${i+1}</div>
+          <div class="ioSub">Dallas/DS18B20 • vstup ${i+1}</div>
         </div>
         <div class="ioRight">
           <div class="tempValue ${isValid ? "" : "muted"}" title="${isValid ? "" : "Neplatné / poslední známá hodnota"}">${fmtTemp(t)}</div>
