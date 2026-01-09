@@ -3,6 +3,10 @@
 // Local copy of https://github.com/junkfix/esp32-ds18b20 (RMT-based OneWire)
 #include "OneWireESP32.h"
 
+// Ensure 1-Wire line has a pull-up even if the external resistor is missing.
+// (External ~4.7k to 3V3 is still strongly recommended for reliability.)
+#include <driver/gpio.h>
+
 // IMPORTANT (ESP32-S3 / IDF5+):
 // OneWire32 allocates RMT TX+RX channels in its constructor.
 // Keeping one instance per GPIO quickly exhausts available channels
@@ -46,6 +50,12 @@ static inline bool gpioSupportsDallas(uint8_t gpio) {
     return gpio >= GPIO_MIN && gpio <= GPIO_MAX;
 }
 
+static inline void ensureDallasPullup(uint8_t gpio) {
+    // Internal pull-up helps in short runs / diagnostics, but is too weak for long cables.
+    // We keep it enabled as a safety net.
+    gpio_set_pull_mode((gpio_num_t)gpio, GPIO_PULLUP_ONLY);
+}
+
 static void clearBus(uint8_t gpio) {
     g_bus[gpio].devices.clear();
     g_bus[gpio].converting = false;
@@ -55,15 +65,27 @@ static void clearBus(uint8_t gpio) {
     g_bus[gpio].lastReadMs = 0;
 }
 
+static void invalidateTemps(uint8_t gpio) {
+    // Prevent "stale tempC" values from remaining in /api/dash when reads fail
+    for (auto &dev : g_bus[gpio].devices) {
+        dev.valid = false;
+        dev.temperature = NAN;
+    }
+}
+
 static bool probeAndDiscover(uint8_t gpio) {
+    ensureDallasPullup(gpio);
+
     // transient OneWire32 instance (allocates/free RMT channels)
     OneWire32* ow = new OneWire32(gpio);
     if (!ow) return false;
 
-    // If RMT init fails internally, reset() returns false
+    // reset() == false usually means "no presence" (no sensor), not a hard error.
     if (!ow->reset()) {
         delete ow;
-        return false;
+        g_bus[gpio].devices.clear();
+        g_bus[gpio].status = TEMP_STATUS_NO_SENSOR;
+        return true;
     }
 
     uint64_t addrs[MAX_DEVICES_PER_GPIO] = {0};
@@ -117,15 +139,18 @@ static bool startConversion(uint8_t gpio) {
         return false;
     }
 
+    ensureDallasPullup(gpio);
     OneWire32* ow = new OneWire32(gpio);
     if (!ow) {
         g_bus[gpio].status = TEMP_STATUS_ERROR;
+        invalidateTemps(gpio);
         return false;
     }
 
     if (!ow->reset()) {
         delete ow;
         g_bus[gpio].status = TEMP_STATUS_NO_SENSOR;
+        g_bus[gpio].devices.clear(); // drop stale ROMs after disconnect
         return false;
     }
 
@@ -146,10 +171,11 @@ static void readTemperatures(uint8_t gpio) {
         return;
     }
 
+    ensureDallasPullup(gpio);
     OneWire32* ow = new OneWire32(gpio);
     if (!ow) {
         g_bus[gpio].status = TEMP_STATUS_ERROR;
-        for (auto& dev : g_bus[gpio].devices) dev.valid = false;
+        invalidateTemps(gpio);
         return;
     }
 
@@ -164,6 +190,7 @@ static void readTemperatures(uint8_t gpio) {
             anyOk = true;
         } else {
             dev.valid = false;
+            dev.temperature = NAN; // IMPORTANT: prevent stale tempC in JSON
         }
     }
 
@@ -397,7 +424,7 @@ void applyCfgObj(const JsonObjectConst& root){
             usedGpio[gpio] = true;
           }
         }
-  idx++;
+        idx++;
       }
     }
   }

@@ -1,0 +1,193 @@
+/* schematic.css (scoped for dashboard embed)
+   Styles for the dynamic SVG schematic rendered inside #schemaWrap.
+*/
+
+.schemaWrap{
+  --bg:#0b0f14;
+  --line:rgba(255,255,255,.14);
+  --text:rgba(255,255,255,.92);
+  --muted:rgba(255,255,255,.65);
+  --bad:#ff5f73;
+  --accent:#6be5ff;
+  --warn:#ffd36b;
+  --violet:#b48bff;
+}
+
+.schemaWrap svg{width:100%;height:auto;max-height:680px;display:block;}
+
+/* pipes */
+.schemaWrap .pipe{fill:none;stroke:rgba(255,255,255,.18);stroke-width:5;stroke-linecap:round;stroke-linejoin:round;}
+.schemaWrap .pipe.supply{stroke:rgba(255,107,125,.45);}
+.schemaWrap .pipe.return{stroke:rgba(107,229,255,.30);}
+.schemaWrap .pipe.preheat{stroke:rgba(180,139,255,.38);}
+.schemaWrap .pipe.dashed{stroke-dasharray:10 10;}
+.schemaWrap .pipe.preheat.dashed{stroke-dasharray:7 6;}
+
+/* blocks + labels */
+.schemaWrap .comp{fill:rgba(255,255,255,.02);stroke:rgba(78,229,154,.45);stroke-width:2;}
+.schemaWrap .label{fill:var(--text);font:700 16px system-ui,-apple-system,Segoe UI,Roboto,Arial;}
+.schemaWrap .sublabel{fill:var(--muted);font:600 12px system-ui,-apple-system,Segoe UI,Roboto,Arial;}
+
+/* generic ports */
+.schemaWrap .portLine{fill:none;stroke:rgba(255,255,255,.55);stroke-width:3;stroke-linecap:round;}
+.schemaWrap .portDot{fill:rgba(255,255,255,.85);}
+.schemaWrap .portRing{fill:none;stroke:rgba(255,255,255,.25);stroke-width:1.4;}
+
+/* valve */
+.schemaWrap .valve3mix{ color: rgba(255,255,255,.78); }
+.schemaWrap .valve3mix .v3tri-stroke { stroke: currentColor; stroke-width: 3; stroke-linejoin: round; }
+.schemaWrap .valve3mix .v3tri-fill   { fill: currentColor; }
+.schemaWrap .valve3mix .v3tri-nofill { fill: none; }
+.schemaWrap .valve3mix .v3tri-port   { fill: none; stroke: currentColor; stroke-width: 3; stroke-linecap: round; }
+.schemaWrap .valve3mix .v3tri-dot    { fill: currentColor; stroke: none; }
+.schemaWrap .valve3mix .v3tri-label  { fill: currentColor; font: 700 12px system-ui,-apple-system,Segoe UI,Roboto,Arial; }
+.schemaWrap .valveName { fill: rgba(255,255,255,.75); font: 800 12px system-ui,-apple-system,Segoe UI,Roboto,Arial; }
+
+/* boiler */
+.schemaWrap .boilerTpl { color: rgba(255,255,255,.78); }
+.schemaWrap .boilerBody{ fill: rgba(255,255,255,.02); stroke: rgba(255,255,255,.28); stroke-width: 2; }
+.schemaWrap .boilerPort{ fill:none; stroke: currentColor; stroke-width: 3; stroke-linecap: round; }
+.schemaWrap .boilerDot{ fill: currentColor; }
+.schemaWrap .boilerTitle{ fill: rgba(255,255,255,.90); font: 800 14px system-ui,-apple-system,Segoe UI,Roboto,Arial; }
+.schemaWrap .boilerSub{ fill: rgba(255,255,255,.55); font: 600 12px system-ui,-apple-system,Segoe UI,Roboto,Arial; }
+.schemaWrap .boilerLabel{ fill: rgba(255,255,255,.65); font: 800 10px system-ui,-apple-system,Segoe UI,Roboto,Arial; }
+.schemaWrap .pumpCircle{ fill: rgba(255,255,255,.02); stroke: rgba(255,255,255,.35); stroke-width: 2; }
+.schemaWrap .pumpTri{ fill: rgba(255,255,255,.70); }
+.schemaWrap .boilerTpl .pumpCircle{ stroke: var(--warn); }
+.schemaWrap .boilerTpl .pumpTri{ fill: var(--warn); opacity:.95; }
+.schemaWrap .boilerTpl .pumpRotStatic{ transform-box: fill-box; transform-origin: center; transform: rotate(var(--pumpAngle, 0deg)); }
+.schemaWrap .boilerTpl .pumpRotSpin{ transform-box: fill-box; transform-origin: center; animation: none; }
+.schemaWrap .boilerFlow{ fill:none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; opacity: .85; }
+
+/* DHW fill + temperature states */
+.schemaWrap .dhwFill{ stroke: none; fill: rgba(107,229,255,.10); }
+.schemaWrap .dhwTempCold .dhwFill{ fill: rgba(107,229,255,.12); }
+.schemaWrap .dhwTempWarm .dhwFill{ fill: rgba(255,211,107,.14); }
+.schemaWrap .dhwTempHot  .dhwFill{ fill: rgba(255,95,115,.16); }
+.schemaWrap .dhwInternal{ fill:none; stroke: rgba(255,255,255,.28); stroke-width:2; stroke-linecap:round; }
+
+.schemaWrap .dhwTplHost .recircInDhw .pumpRotStatic{
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: rotate(var(--recircAngle, 0deg));
+}
+.schemaWrap .dhwTplHost.recircMoving .recircInDhw .pumpRotSpin{
+  animation: spin 1.1s linear infinite;
+}
+.schemaWrap .dhwTplHost.recircOn .recircInDhw .recircBody{ stroke: var(--warn); }
+.schemaWrap .dhwTplHost.recircOn .recircInDhw .recircTri{ fill: var(--warn); opacity:.9; }
+.schemaWrap .dhwTplHost.recircOn .recircInDhw{
+  filter: drop-shadow(0 0 10px rgba(255,211,107,.18));
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pumpSpinCCW { to { transform: rotate(-360deg); } }
+
+/* boiler port coloring */
+.schemaWrap .boilerPortSupply{ stroke: var(--bad); }
+.schemaWrap .boilerDotSupply{ fill: var(--bad); }
+.schemaWrap .boilerPortReturn{ stroke: var(--violet); stroke-dasharray:6 5; }
+.schemaWrap .boilerDotReturn{ fill: var(--violet); }
+.schemaWrap .boilerPortSensor{ stroke: rgba(255,255,255,.55); stroke-width:2.4; }
+.schemaWrap .boilerDotSensor{ fill: rgba(255,255,255,.85); }
+
+.schemaWrap .boilerFlowSupply{ stroke: var(--bad); opacity:.9; }
+.schemaWrap .boilerFlowReturn{ stroke: var(--violet); stroke-dasharray:6 5; opacity:.9; color: var(--violet); }
+
+/* AKU ports coloring + labels */
+.schemaWrap .akuPortLabel{ fill: rgba(255,255,255,.70); font: 800 10px system-ui,-apple-system,Segoe UI,Roboto,Arial; }
+.schemaWrap .akuPortSupply{ stroke: var(--bad); }
+.schemaWrap .akuDotSupply{ fill: var(--bad); }
+.schemaWrap .akuPortReturn{ stroke: var(--accent); stroke-dasharray:7 6; opacity:.85; }
+.schemaWrap .akuDotReturn{ fill: var(--accent); opacity:.9; }
+
+/* outdoor sensor */
+.schemaWrap .outdoorBody{ fill: rgba(255,255,255,.02); stroke: rgba(255,255,255,.35); stroke-width: 2; }
+.schemaWrap .outdoorValue{ fill: rgba(255,255,255,.85); font: 800 12px system-ui,-apple-system,Segoe UI,Roboto,Arial; }
+.schemaWrap .outdoorPort{ stroke: rgba(255,255,255,.45); stroke-width: 2.6; }
+.schemaWrap .outdoorDot{ fill: rgba(255,255,255,.85); }
+
+/* thermometer */
+.schemaWrap .thermoBody{ fill: rgba(255,255,255,.02); stroke: rgba(255,255,255,.35); stroke-width: 2; }
+.schemaWrap .thermoValue{ fill: rgba(255,255,255,.88); font: 800 8px system-ui,-apple-system,Segoe UI,Roboto,Arial; }
+.schemaWrap .thermoLabel{ fill: rgba(255,255,255,.65); font: 700 7px system-ui,-apple-system,Segoe UI,Roboto,Arial; }
+.schemaWrap .thermoPort{ stroke: rgba(255,255,255,.45); stroke-width: 2.6; }
+.schemaWrap .thermoDot{ fill: rgba(255,255,255,.85); }
+
+/* sensor wire */
+.schemaWrap .wire{ fill:none; stroke: rgba(255,255,255,.28); stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+.schemaWrap .wire.dashed{ stroke-dasharray:6 6; }
+
+/* valve gauge */
+.schemaWrap .valveGauge .gaugeBg{fill:rgba(255,255,255,.02);stroke:rgba(255,255,255,.18);stroke-width:2;}
+.schemaWrap .valveGauge .gaugeTrack{fill:none;stroke:rgba(255,255,255,.18);stroke-width:4;}
+.schemaWrap .valveGauge .gaugeArc{fill:none;stroke:var(--warn);stroke-width:4;stroke-linecap:round;stroke-dasharray:0 100;}
+.schemaWrap .valveGauge .gaugeText{fill:rgba(255,255,255,.82);font:800 10px system-ui,-apple-system,Segoe UI,Roboto,Arial;}
+
+/* ===== Fixes for filled shapes (black blobs) ===== */
+
+/* AKU heater spiral */
+.schemaWrap .akuTpl .akuHeaterStroke{
+  fill:none;
+  stroke: rgba(255,255,255,.20);
+  stroke-width:3;
+  stroke-linecap:round;
+  stroke-linejoin:round;
+  opacity:.85;
+}
+.schemaWrap .akuTplHost.heaterOn .akuHeaterStroke{
+  stroke: var(--warn);
+  opacity: .98;
+  filter: drop-shadow(0 0 10px rgba(255,211,107,.18));
+  animation: heaterPulse 1.35s ease-in-out infinite;
+}
+
+@keyframes heaterPulse {
+  0%,100% { opacity: .65; stroke-width: 3; }
+  50%     { opacity: 1;   stroke-width: 4; }
+}
+
+/* Floor heating symbol */
+.schemaWrap .floorTpl .floorLoop{
+  fill:none;
+  stroke-width:3;
+  stroke-linecap:round;
+  stroke-linejoin:round;
+}
+.schemaWrap .floorTpl .floorLoopSupply{ stroke: rgba(255,107,125,.55); }
+.schemaWrap .floorTpl .floorLoopReturn{ stroke: rgba(107,229,255,.40); stroke-dasharray:6 6; }
+
+/* DHW recirculation pump (standalone + integrated) */
+.schemaWrap .recircBody{ fill: rgba(255,255,255,.02); stroke: rgba(255,255,255,.35); stroke-width: 2; }
+.schemaWrap .recircTri{  fill: rgba(255,255,255,.70); }
+.schemaWrap .recircLbl{ fill: rgba(255,255,255,.55); font: 700 10px system-ui,-apple-system,Segoe UI,Roboto,Arial; }
+
+/* ===== Dynamic flow styling (movement + dimming) ===== */
+.schemaWrap .pipe.inactive{ opacity: .28; }
+.schemaWrap .pipe.supply.inactive{ opacity: .35; }
+.schemaWrap .pipe.return.inactive{ opacity: .32; }
+.schemaWrap .pipe.preheat.inactive{ opacity: .32; }
+.schemaWrap .pipe.active{ opacity: .95; }
+
+/* movement (direction follows path definition from -> to) */
+.schemaWrap .pipe.moving{
+  stroke-dasharray: 16 12;
+  animation: pipeFlow .85s linear infinite;
+}
+.schemaWrap .pipe.return.moving{
+  stroke-dasharray: 10 10;
+  animation-duration: .75s;
+}
+.schemaWrap .pipe.preheat.moving{
+  stroke-dasharray: 7 6;
+  animation-duration: .75s;
+}
+
+@keyframes pipeFlow { to { stroke-dashoffset: -60; } }
+
+/* valve moving highlight */
+.schemaWrap .valveMoving .gaugeArc{ animation: gaugePulse .85s ease-in-out infinite; }
+@keyframes gaugePulse { 0%,100%{ opacity:.45; } 50%{ opacity:1; } }
+
+/* boiler pump: rotate only when schema marks it on */
+.schemaWrap .boilerTplHost.pumpOn .pumpRotSpin{ animation: pumpSpinCCW 1.1s linear infinite; }

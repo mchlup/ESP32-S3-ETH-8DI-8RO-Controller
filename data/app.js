@@ -18,7 +18,11 @@
     rules: null,
     rulesStatus: null,
     files: null,
-  ui: { lock: { controlUntil: 0, systemUntil: 0 }, timers: { autoApply: null } },
+    ui: {
+      lock: { controlUntil: 0, systemUntil: 0 },
+      timers: { autoApply: null },
+      dirty: { cfgJson: false },
+    },
   };
 
   // ---------- utils ----------
@@ -101,14 +105,45 @@
 
   const showPage = (name, ctab = "") => {
     const sub = String(ctab || "");
+
+    // pages
+    $$(".page").forEach(p => p.classList.toggle("active", p.id === `page-${name}`));
+
+    // sidebar highlight: exact match if exists, otherwise fallback to base item for the page
+    let matched = false;
     $$(".navItem").forEach(b => {
       const p = String(b.dataset.page || "");
       const t = String(b.dataset.ctab || "");
-      b.classList.toggle("active", p === name && t === sub);
+      const ok = (p === name && t === sub);
+      if (ok) matched = true;
+      b.classList.toggle("active", ok);
     });
-    $$(".page").forEach(p => p.classList.toggle("active", p.id === `page-${name}`));
+    if (!matched) {
+      $$(".navItem").forEach(b => {
+        const p = String(b.dataset.page || "");
+        const t = String(b.dataset.ctab || "");
+        if (p === name && t === "") b.classList.add("active");
+      });
+    }
 
+    // config tabs should be deep-linkable
     if (name === "config" && sub) setCfgTab(sub);
+
+    // header title
+    const h1 = $(".h1");
+    if (h1) {
+      if (name === "dash") {
+        h1.textContent = "Řídicí panel";
+      } else if (name === "config") {
+        const tab = sub || $("#page-config .tab.active")?.dataset?.ctab || "";
+        const label = $(tab ? `#page-config .tab[data-ctab='${tab}']` : "#page-config .tab")?.textContent?.trim();
+        h1.textContent = label ? `Konfigurace – ${label}` : "Konfigurace";
+      } else {
+        const activeNav = $(".navItem.active");
+        const label = activeNav?.textContent?.trim();
+        h1.textContent = label || "Heat Controller";
+      }
+    }
 
     const h = sub ? `#${name}/${sub}` : `#${name}`;
     if (location.hash !== h) history.replaceState(null, "", h);
@@ -339,8 +374,6 @@ const renderIO = () => {
     r.onDemandRunMs = (typeof r.onDemandRunMs === "number") ? r.onDemandRunMs : 120000;
     r.minOffMs = (typeof r.minOffMs === "number") ? r.minOffMs : 300000;
     r.minOnMs = (typeof r.minOnMs === "number") ? r.minOnMs : 30000;
-    r.cycleOnMs = (typeof r.cycleOnMs === "number") ? r.cycleOnMs : 300000;
-    r.cycleOffMs = (typeof r.cycleOffMs === "number") ? r.cycleOffMs : 900000;
     r.stopTempC = (typeof r.stopTempC === "number") ? r.stopTempC : 42;
     r.tempReturnSource = (r.tempReturnSource && typeof r.tempReturnSource === "object") ? r.tempReturnSource : {};
     r.tempReturnSource.source = r.tempReturnSource.source || "none";
@@ -350,7 +383,7 @@ const renderIO = () => {
     r.tempReturnSource.jsonKey = r.tempReturnSource.jsonKey || r.tempReturnSource.key || r.tempReturnSource.field || "";
     r.tempReturnSource.mqttIdx = Number.isFinite(Number(r.tempReturnSource.mqttIdx || r.tempReturnSource.preset)) ? Number(r.tempReturnSource.mqttIdx || r.tempReturnSource.preset) : 0;
     r.tempReturnSource.bleId = r.tempReturnSource.bleId || r.tempReturnSource.id || "";
-    r.windows = Array.isArray(r.windows) ? r.windows : (Array.isArray(r.timeWindows) ? r.timeWindows : []);
+    r.windows = Array.isArray(r.windows) ? r.windows : [];
 
     
 // Ekviterm (weather compensation) + role-based I/O mapping
@@ -587,10 +620,20 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
   window.App.getConfig = () => state.config;
   window.App.getStatus = () => state.status;
   window.App.setConfig = (cfg) => { state.config = cfg; ensureConfigShape(); };
-  window.App.saveConfig = async (cfg) => {
+  // Save config to firmware and (by default) reload config+status so UI stays consistent across tabs.
+  window.App.saveConfig = async (cfg, opts={}) => {
     if (cfg && typeof cfg === "object") state.config = cfg;
     ensureConfigShape();
-    return apiPostJson("/api/config", state.config);
+    const r = await apiPostJson("/api/config", state.config);
+
+    // successful save => editor is no longer dirty
+    if (state.ui?.dirty) state.ui.dirty.cfgJson = false;
+
+    const reload = (opts && typeof opts === "object" && opts.reload === false) ? false : true;
+    if (reload && typeof window.App.reloadCore === "function") {
+      await window.App.reloadCore().catch(() => {});
+    }
+    return r;
   };
   window.App.onConfigLoaded = window.App.onConfigLoaded || null;
   window.App.onStatusLoaded = window.App.onStatusLoaded || null;
@@ -811,6 +854,7 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     const parsed = safeJson(txt);
     if (!parsed) { toast("Neplatný JSON", "bad"); return; }
     await apiPostText("/api/config", JSON.stringify(parsed));
+    if (state.ui?.dirty) state.ui.dirty.cfgJson = false;
     toast("Konfigurace uložena");
     await loadAll();
   };
@@ -1426,8 +1470,14 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
       selSM.value = MODE_IDS.includes(sm) ? sm : MODE_IDS[0];
     }
 
-    // keep config editor synced if open
-    if (state.config) $("#cfgJson").value = prettyJson(state.config);
+    // Keep config JSON editor synced, but NEVER clobber user's unsaved edits.
+    // (Polling runs often; without this guard the editor is unusable.)
+    const cfgEd = $("#cfgJson");
+    const jsonTabActive = $("#cfg-json")?.classList?.contains("active");
+    if (jsonTabActive && cfgEd && state.config && document.activeElement !== cfgEd && !state.ui?.dirty?.cfgJson) {
+      const next = prettyJson(state.config);
+      if (cfgEd.value !== next) cfgEd.value = next;
+    }
 
     if (typeof window.App?.onStatusLoaded === "function") {
       try { window.App.onStatusLoaded(state.status); } catch(e) {}
@@ -1442,7 +1492,11 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     renderInputsTable();
     renderRelaysTable();
     renderModes();
-    $("#cfgJson").value = prettyJson(state.config);
+    // Populate JSON editor unless user is actively editing it.
+    const cfgEd = $("#cfgJson");
+    if (cfgEd && document.activeElement !== cfgEd && !state.ui?.dirty?.cfgJson) {
+      cfgEd.value = prettyJson(state.config);
+    }
 
     // mqtt fields
     const m = state.config.mqtt || {};
@@ -1468,6 +1522,13 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     await loadFiles();
   };
 
+  // Expose reload helpers (modules can call, and App.saveConfig uses reloadCore by default)
+  window.App.reloadConfig = loadConfig;
+  window.App.reloadStatus = loadStatus;
+  window.App.reloadCore = async () => { await loadConfig(); await loadStatus(); };
+  window.App.reloadAll = loadAll;
+  window.App.showPage = showPage;
+
   // ---------- DOM events ----------
   const wireEvents = () => {
     // nav
@@ -1486,8 +1547,12 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
       applyTheme(next);
     });
 
-    // config tabs
-    $$(".tab").forEach(b => b.addEventListener("click", () => setCfgTab(b.dataset.ctab)));
+    // config tabs (keep URL hash + sidebar consistent)
+    $$(".tab").forEach(b => b.addEventListener("click", () => {
+      const tab = String(b.dataset.ctab || "");
+      if (!tab) return;
+      showPage("config", tab);
+    }));
 
     
     // rules tabs
@@ -1605,10 +1670,15 @@ $("#btnAutoRecompute").addEventListener("click", async () => {
     $("#btnSaveModes").addEventListener("click", () => saveModesFromForm().catch(e=>toast(e.message,"bad")));
 
     // cfg json
+    $("#cfgJson")?.addEventListener("input", () => {
+      if (state.ui?.dirty) state.ui.dirty.cfgJson = true;
+    });
+
     $("#btnFmtCfg").addEventListener("click", () => {
       const obj = safeJson($("#cfgJson").value);
       if (!obj) return toast("Neplatný JSON", "bad");
       $("#cfgJson").value = prettyJson(obj);
+      if (state.ui?.dirty) state.ui.dirty.cfgJson = true;
     });
     $("#btnSaveCfgJson").addEventListener("click", () => saveConfigJsonFromEditor().catch(e=>toast(e.message,"bad")));
 

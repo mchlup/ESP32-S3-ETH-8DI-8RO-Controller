@@ -108,12 +108,52 @@
   border: 1px solid var(--line);
 }
 
+/* Schéma topného systému (SVG) */
+.schemaWrap{ width: 100%; }
+.schemaWrap svg{
+  width: 100%;
+  height: auto;
+  max-height: 380px;
+  display: block;
+}
+.schemaWrap .pipe{
+  fill: none;
+  stroke: rgba(255,255,255,.18);
+  stroke-width: 5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.schemaWrap .pipe.supply{ stroke: rgba(255,107,125,.35); }
+.schemaWrap .pipe.return{ stroke: rgba(107,229,255,.30); }
+.schemaWrap .pipe.active{
+  stroke-opacity: 1;
+  stroke-dasharray: 10 10;
+  animation: schemaFlow 1.2s linear infinite;
+}
+.schemaWrap .pipe.supply.active{ stroke: var(--bad); }
+.schemaWrap .pipe.return.active{ stroke: var(--accent); }
+.schemaWrap .comp{
+  fill: rgba(255,255,255,.02);
+  stroke: var(--line);
+  stroke-width: 2;
+}
+.schemaWrap .comp.on{ stroke: rgba(78,229,154,.65); }
+.schemaWrap .label{ fill: var(--text); font: 700 16px system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+.schemaWrap .sublabel{ fill: var(--muted); font: 600 12px system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+.schemaWrap .valve{ fill: rgba(255,255,255,.02); stroke: rgba(255,255,255,.25); stroke-width: 2; }
+.schemaWrap .valve.moving{ stroke: var(--warn); animation: valvePulse 1s ease-in-out infinite; }
+.schemaWrap .hidden{ display:none; }
+
+@keyframes schemaFlow{ to { stroke-dashoffset: -40; } }
+@keyframes valvePulse{ 0%{opacity:.85} 50%{opacity:1} 100%{opacity:.85} }
+
 
 /* Dashboard layout – Ekviterm jako hlavní widget */
 #page-dash .dashLayout{
   display:grid;
   grid-template-columns: 1.55fr .85fr;
   grid-template-areas:
+    "schema schema"
     "equitherm modes"
     "aku reasons"
     "valvemix reasons"
@@ -125,6 +165,7 @@
 
 /* Při skrytí karet (display:none) se layout automaticky zabalí */
 #page-dash #cardEquitherm{ grid-area: equitherm; }
+#page-dash #cardSchema{ grid-area: schema; }
 #page-dash #cardAku{ grid-area: aku; }
 #page-dash #cardValveMix{ grid-area: valvemix; }
 #page-dash #cardTuv{ grid-area: tuv; }
@@ -162,6 +203,7 @@
   #page-dash .dashLayout{
     grid-template-columns: 1fr;
     grid-template-areas:
+      "schema"
       "equitherm"
       "aku"
       "valvemix"

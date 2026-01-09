@@ -7,14 +7,11 @@
 #include "DallasController.h"
 #include "MqttController.h"
 #include "OpenThermController.h"
-#include "FsController.h"
-#include "RtcController.h"
 
 #include "ThermometerController.h"
 #include "TempParse.h"
 
 #include <ArduinoJson.h>
-#include <LittleFS.h>
 #include <time.h>
 #include <math.h>
 #include "BleController.h"
@@ -61,8 +58,6 @@ static bool s_autoDefaultOffUnmapped = true;
 
 // Diagnostika AUTO (status pro UI)
 static AutoStatus s_autoStatus = { false, 0, SystemMode::MODE1, false, false };
-static uint8_t s_autoLastRelayMask = 0;
-static uint32_t s_autoLastRelayLogMs = 0;
 
 // Aktuální řízení a režim
 static ControlMode currentControlMode = ControlMode::AUTO;
@@ -113,12 +108,6 @@ struct Valve3WayState {
 };
 static Valve3WayState s_valves[RELAY_COUNT];
 static int8_t s_valvePeerOf[RELAY_COUNT] = { -1,-1,-1,-1,-1,-1,-1,-1 };
-static uint8_t s_valveSavedPosPct[RELAY_COUNT] = { 0 };
-static bool s_valveSavedInvert[RELAY_COUNT] = { false };
-static bool s_valveStateLoaded = false;
-static bool s_valveStateDirty = false;
-static uint32_t s_valveStateLastSaveMs = 0;
-static const char* kValveStatePath = "/state/valves.json";
 
 static void valveResetAll() {
     for (uint8_t i=0;i<RELAY_COUNT;i++){
@@ -211,9 +200,16 @@ static void valveCommand(uint8_t masterA0, bool wantB){
             v.posPct = targetPct;
             v.startPct = targetPct;
             v.targetPct = targetPct;
+            v.currentB = wantB;
             v.hasPending = false;
-            relaySet(static_cast<RelayId>(v.relayA), false);
-            relaySet(static_cast<RelayId>(v.relayB), false);
+            if (v.singleRelay) {
+                // Jednocívkový přepínací ventil (spring-return apod.): drž stabilní stav relé dle cílové polohy.
+                // Důležité: nesmí docházet k periodickému OFF/ON "cukání" při opakovaných povelích na stejný cíl.
+                relaySet(static_cast<RelayId>(v.relayA), wantB);
+            } else {
+                relaySet(static_cast<RelayId>(v.relayA), false);
+                relaySet(static_cast<RelayId>(v.relayB), false);
+            }
             return;
         }
     }
@@ -255,9 +251,16 @@ static void valveMoveToPct(uint8_t masterA0, uint8_t targetPctExt){
         v.posPct = curPct;
         v.startPct = curPct;
         v.targetPct = curPct;
+        v.currentB = (curPct >= 50);
         v.hasPending = false;
-        relaySet(static_cast<RelayId>(v.relayA), false);
-        relaySet(static_cast<RelayId>(v.relayB), false);
+        if (v.singleRelay) {
+            // U jednocívkového ventilu udržuj stabilní stav relé dle cílové polohy.
+            const bool holdOn = (v.targetPct >= 50);
+            relaySet(static_cast<RelayId>(v.relayA), holdOn);
+        } else {
+            relaySet(static_cast<RelayId>(v.relayA), false);
+            relaySet(static_cast<RelayId>(v.relayB), false);
+        }
         return;
     }
 
@@ -272,9 +275,6 @@ static void valveMoveToPct(uint8_t masterA0, uint8_t targetPctExt){
     v.lastCmdMs = nowMs;
     valveStartMoveInternal(v, targetPct, nowMs);
 }
-
-static bool valveShouldPersist(const Valve3WayState &v);
-static void valveStateMarkDirty();
 
 static void valveTick(uint32_t nowMs){
     for (uint8_t i=0;i<RELAY_COUNT;i++){
@@ -307,16 +307,17 @@ static void valveTick(uint32_t nowMs){
 
             // konec pohybu
             if ((int32_t)(nowMs - v.moveEndMs) >= 0){
-                relaySet(static_cast<RelayId>(v.relayA), false);
-                relaySet(static_cast<RelayId>(v.relayB), false);
+                if (v.singleRelay) {
+                    // U jednocívkového ventilu po doběhu nepřepínej relé OFF, pokud má zůstat v poloze B.
+                    const bool holdOn = (v.targetPct >= 50);
+                    relaySet(static_cast<RelayId>(v.relayA), holdOn);
+                } else {
+                    relaySet(static_cast<RelayId>(v.relayA), false);
+                    relaySet(static_cast<RelayId>(v.relayB), false);
+                }
                 v.moving = false;
                 v.posPct = v.targetPct;
                 v.startPct = v.targetPct;
-                if (valveShouldPersist(v)) {
-                    if (v.posPct != s_valveSavedPosPct[i] || v.invertDir != s_valveSavedInvert[i]) {
-                        valveStateMarkDirty();
-                    }
-                }
             }
         } else {
             if (v.singleRelay) {
@@ -338,110 +339,6 @@ static void valveTick(uint32_t nowMs){
             valveStartMoveInternal(v, tgt, nowMs);
         }
     }
-}
-
-static bool valveShouldPersist(const Valve3WayState &v) {
-    return v.configured && !v.singleRelay;
-}
-
-static void valveStateSyncSaved() {
-    for (uint8_t i = 0; i < RELAY_COUNT; i++) {
-        const Valve3WayState &v = s_valves[i];
-        if (!valveShouldPersist(v)) continue;
-        s_valveSavedPosPct[i] = v.posPct;
-        s_valveSavedInvert[i] = v.invertDir;
-    }
-}
-
-static void valveStateLoadOnce() {
-    if (s_valveStateLoaded) return;
-    s_valveStateLoaded = true;
-    if (!fsIsReady()) {
-        valveStateSyncSaved();
-        return;
-    }
-    if (!LittleFS.exists(kValveStatePath)) {
-        valveStateSyncSaved();
-        return;
-    }
-
-    File f = LittleFS.open(kValveStatePath, "r");
-    if (!f) return;
-
-    DynamicJsonDocument doc(2048);
-    DeserializationError err = deserializeJson(doc, f);
-    f.close();
-    if (err) return;
-
-    JsonArray arr = doc["valves"].as<JsonArray>();
-    if (!arr.isNull()) {
-        for (JsonObject vj : arr) {
-            const int id = vj["id"] | -1;
-            if (id < 0 || id >= (int)RELAY_COUNT) continue;
-            Valve3WayState &v = s_valves[(uint8_t)id];
-            if (!valveShouldPersist(v)) continue;
-
-            int pos = vj["posPct"] | (int)v.posPct;
-            if (pos < 0) pos = 0;
-            if (pos > 100) pos = 100;
-            const bool savedInvert = (bool)(vj["invertDir"] | v.invertDir);
-            if (savedInvert != v.invertDir) {
-                pos = 100 - pos;
-            }
-
-            v.posPct = (uint8_t)pos;
-            v.startPct = (uint8_t)pos;
-            v.targetPct = (uint8_t)pos;
-            v.currentB = (pos >= 50);
-            v.hasPending = false;
-            v.moving = false;
-            v.moveStartMs = 0;
-            v.moveEndMs = 0;
-            v.guardEndMs = 0;
-        }
-    }
-
-    valveStateSyncSaved();
-    s_valveStateDirty = false;
-}
-
-static void valveStateMarkDirty() {
-    s_valveStateDirty = true;
-}
-
-static void valveStateSaveIfDue(uint32_t nowMs) {
-    if (!s_valveStateDirty) return;
-    if (!fsIsReady()) return;
-    if (s_valveStateLastSaveMs != 0 && (uint32_t)(nowMs - s_valveStateLastSaveMs) < 2000) return;
-
-    if (!LittleFS.exists("/state")) {
-        LittleFS.mkdir("/state");
-    }
-
-    DynamicJsonDocument doc(2048);
-    JsonObject root = doc.to<JsonObject>();
-    root["version"] = 1;
-    time_t epoch = 0;
-    if (rtcGetEpoch(epoch)) root["updatedAt"] = (uint32_t)epoch;
-    JsonArray arr = root.createNestedArray("valves");
-    for (uint8_t i = 0; i < RELAY_COUNT; i++) {
-        const Valve3WayState &v = s_valves[i];
-        if (!valveShouldPersist(v)) continue;
-        JsonObject obj = arr.createNestedObject();
-        obj["id"] = i;
-        obj["type"] = "mix";
-        obj["posPct"] = v.posPct;
-        obj["invertDir"] = v.invertDir;
-        s_valveSavedPosPct[i] = v.posPct;
-        s_valveSavedInvert[i] = v.invertDir;
-    }
-
-    File f = LittleFS.open(kValveStatePath, "w");
-    if (!f) return;
-    serializeJson(doc, f);
-    f.close();
-    s_valveStateLastSaveMs = nowMs;
-    s_valveStateDirty = false;
 }
 
 // Pozn.: ekviterm se aplikuje pouze v CONTROL=AUTO, ale hodnoty počítáme pro diagnostiku i v MANUAL.
@@ -490,8 +387,6 @@ static int8_t   s_recircPumpRelayRole = -1;
 static uint32_t s_recircOnDemandRunMs = 120000;
 static uint32_t s_recircMinOffMs = 300000;
 static uint32_t s_recircMinOnMs = 30000;
-static uint32_t s_recircCycleOnMs = 300000;
-static uint32_t s_recircCycleOffMs = 900000;
 static EqSourceCfg s_recircReturnCfg;
 static float    s_recircStopTempC = 42.0f;
 static bool     s_recircActive = false;
@@ -502,10 +397,6 @@ static uint32_t s_recircLastOffMs = 0;
 static bool     s_recircPrevDemand = false;
 static float    s_recircReturnC = NAN;
 static bool     s_recircReturnValid = false;
-static bool     s_recircWindowPrev = false;
-static bool     s_recircCycleActive = false;
-static bool     s_recircCycleOn = false;
-static uint32_t s_recircCycleUntilMs = 0;
 
 // AKU heater
 static bool     s_akuHeaterEnabled = false;
@@ -1337,18 +1228,8 @@ static void updateTuvModeState(uint32_t nowMs) {
 static void recircUpdate(uint32_t nowMs) {
     if (!s_recircEnabled) {
         if (s_recircActive) recircStop(nowMs);
-        s_recircStopReached = false;
-        s_recircCycleActive = false;
-        s_recircCycleOn = false;
-        s_recircCycleUntilMs = 0;
-        s_recircWindowPrev = false;
         return;
     }
-
-    const bool modeOnDemand = (s_recircMode == "on_demand" || s_recircMode == "hybrid");
-    const bool modeTimeWindows = (s_recircMode == "time_windows" || s_recircMode == "hybrid");
-    const bool modeWindowCycle = (s_recircMode == "window_cycle");
-    const bool modeUsesWindows = (modeTimeWindows || modeWindowCycle);
 
     bool timeValid = false;
     struct tm t;
@@ -1359,7 +1240,7 @@ static void recircUpdate(uint32_t nowMs) {
 
     bool windowActive = false;
     uint32_t windowRemainingMs = 0;
-    if (modeUsesWindows && timeValid) {
+    if ((s_recircMode == "time_windows" || s_recircMode == "hybrid") && timeValid) {
         for (uint8_t i = 0; i < s_recircWindowCount; i++) {
             if (timeInRecircWindow(t, s_recircWindows[i])) {
                 windowActive = true;
@@ -1376,67 +1257,17 @@ static void recircUpdate(uint32_t nowMs) {
         s_recircPrevDemand = cur;
     }
 
-    if (modeOnDemand && demandEdge) {
+    if ((s_recircMode == "on_demand" || s_recircMode == "hybrid") && demandEdge) {
         if (s_recircLastOffMs == 0 || (uint32_t)(nowMs - s_recircLastOffMs) >= s_recircMinOffMs) {
             recircStart(nowMs, s_recircOnDemandRunMs);
         }
     }
 
-    if (modeTimeWindows && !s_recircActive && windowActive && windowRemainingMs > 0) {
+    if (!s_recircActive && windowActive && windowRemainingMs > 0) {
         if (s_recircLastOffMs == 0 || (uint32_t)(nowMs - s_recircLastOffMs) >= s_recircMinOffMs) {
             recircStart(nowMs, windowRemainingMs);
         }
     }
-
-    if (modeWindowCycle) {
-        const uint32_t effectiveOn = (s_recircCycleOnMs > s_recircMinOnMs) ? s_recircCycleOnMs : s_recircMinOnMs;
-        const uint32_t effectiveOff = (s_recircCycleOffMs > s_recircMinOffMs) ? s_recircCycleOffMs : s_recircMinOffMs;
-
-        if (!windowActive) {
-            if (s_recircActive) recircStop(nowMs);
-            s_recircStopReached = false;
-            s_recircCycleActive = false;
-            s_recircCycleOn = false;
-            s_recircCycleUntilMs = 0;
-        } else {
-            if (!s_recircWindowPrev) {
-                s_recircCycleActive = true;
-                s_recircCycleOn = false;
-                s_recircCycleUntilMs = 0;
-            }
-
-            if (s_recircStopReached) {
-                if (s_recircActive) recircStop(nowMs);
-            } else if (s_recircCycleUntilMs == 0) {
-                const bool minOffOk = (s_recircLastOffMs == 0) || (uint32_t)(nowMs - s_recircLastOffMs) >= effectiveOff;
-                if (minOffOk) {
-                    s_recircCycleOn = true;
-                    s_recircCycleUntilMs = nowMs + effectiveOn;
-                    recircStart(nowMs, effectiveOn);
-                } else {
-                    s_recircCycleOn = false;
-                    s_recircCycleUntilMs = s_recircLastOffMs + effectiveOff;
-                    if (s_recircActive) recircStop(nowMs);
-                }
-            } else if (s_recircCycleOn) {
-                const bool minOnOk = (s_recircLastOnMs == 0) || (uint32_t)(nowMs - s_recircLastOnMs) >= s_recircMinOnMs;
-                if ((int32_t)(nowMs - s_recircCycleUntilMs) >= 0 && minOnOk) {
-                    recircStop(nowMs);
-                    s_recircCycleOn = false;
-                    s_recircCycleUntilMs = nowMs + effectiveOff;
-                }
-            } else {
-                const bool minOffOk = (s_recircLastOffMs == 0) || (uint32_t)(nowMs - s_recircLastOffMs) >= s_recircMinOffMs;
-                if ((int32_t)(nowMs - s_recircCycleUntilMs) >= 0 && minOffOk) {
-                    s_recircCycleOn = true;
-                    s_recircCycleUntilMs = nowMs + effectiveOn;
-                    recircStart(nowMs, effectiveOn);
-                }
-            }
-        }
-    }
-
-    s_recircWindowPrev = windowActive;
 
     // aktualizace návratové teploty
     s_recircReturnValid = tryGetTempFromSource(s_recircReturnCfg, s_recircReturnC, nullptr) && isfinite(s_recircReturnC);
@@ -1446,22 +1277,18 @@ static void recircUpdate(uint32_t nowMs) {
         if (s_recircReturnValid && s_recircStopTempC > 0.0f && s_recircReturnC >= s_recircStopTempC && minOnOk) {
             s_recircStopReached = true;
             recircStop(nowMs);
-            s_recircCycleOn = false;
-            s_recircCycleUntilMs = 0;
             return;
         }
 
-        if (!modeWindowCycle) {
-            if (s_recircUntilMs != 0 && (int32_t)(nowMs - s_recircUntilMs) >= 0 && minOnOk && !windowActive) {
-                recircStop(nowMs);
-                return;
-            }
-            if (s_recircUntilMs == 0 && !windowActive && minOnOk) {
-                recircStop(nowMs);
-                return;
-            }
+        if (s_recircUntilMs != 0 && (int32_t)(nowMs - s_recircUntilMs) >= 0 && minOnOk && !windowActive) {
+            recircStop(nowMs);
+            return;
         }
-    } else if (!windowActive || !modeWindowCycle) {
+        if (s_recircUntilMs == 0 && !windowActive && minOnOk) {
+            recircStop(nowMs);
+            return;
+        }
+    } else if (!windowActive) {
         s_recircStopReached = false;
     }
 }
@@ -1715,21 +1542,6 @@ static void applyRelayMapFromInputs(bool defaultOffUnmapped) {
     }
 }
 
-static void autoLogRelayStates(const __FlashStringHelper* reason) {
-    const uint8_t mask = relayGetMask();
-    const uint32_t nowMs = millis();
-    if (mask == s_autoLastRelayMask && s_autoLastRelayLogMs != 0 &&
-        (uint32_t)(nowMs - s_autoLastRelayLogMs) < 1500) {
-        return;
-    }
-    if (reason) {
-        Serial.println(reason);
-    }
-    relayPrintStates(Serial);
-    s_autoLastRelayMask = mask;
-    s_autoLastRelayLogMs = nowMs;
-}
-
 void logicRecomputeFromInputs() {
     // V AUTO režimu: pokud je aktivní spouštěcí vstup některého režimu,
     // použijeme profil režimu. Jinak použijeme relayMap (konfigurace z UI).
@@ -1755,7 +1567,7 @@ void logicRecomputeFromInputs() {
             Serial.println(logicModeToString(currentMode));
         }
         updateRelaysForMode(currentMode);
-        autoLogRelayStates(F("[LOGIC] AUTO: relays updated (mode trigger)"));
+        relayPrintStates(Serial);
         return;
     }
 
@@ -1766,7 +1578,8 @@ void logicRecomputeFromInputs() {
     s_autoStatus.blockedByRules = false;
 
     applyRelayMapFromInputs(s_autoDefaultOffUnmapped);
-    autoLogRelayStates(F("[LOGIC] AUTO: relayMap applied from inputs (no mode trigger)"));
+    Serial.println(F("[LOGIC] AUTO: relayMap applied from inputs (no mode trigger)"));
+    relayPrintStates(Serial);
 }
 
 void logicSetControlMode(ControlMode mode) {
@@ -1849,7 +1662,6 @@ void logicUpdate() {
     static uint32_t lastTickMs = 0;
     const uint32_t nowMs = millis();
     valveTick(nowMs);
-    valveStateSaveIfDue(nowMs);
     // Aktualizace teplot (TEMP1..TEMP8): Dallas
     for (uint8_t i=0;i<INPUT_COUNT;i++){
         if (dallasIsValid(i)) { s_tempValid[i]=true; s_tempC[i]=dallasGetTempC(i); }
@@ -1983,31 +1795,211 @@ void logicOnInputChanged(InputId id, bool newState) {
 //  ]
 //
 void logicApplyConfig(const String& json) {
-    StaticJsonDocument<512> filter;
-    filter["equitherm"] = true;
-    filter["tuv"] = true;
-    filter["dhwRecirc"] = true;
-    filter["iofunc"] = true;
-    filter["inputs"] = true;
-    filter["relays"] = true;
-    filter["valves"] = true;
+    StaticJsonDocument<4096> filter;
     filter["inputActiveLevels"] = true;
-    filter["relayMap"] = true;
-    filter["modes"] = true;
-    filter["system"] = true;
-    filter["nightMode"] = true;
-    filter["sensors"] = true;
-    filter["boiler"] = true;
-    filter["akuHeater"] = true;
-    filter["schedules"] = true;
-    filter["mqtt"] = true;
-    filter["thermometers"] = true;
-    filter["opentherm"] = true;
-    filter["relayNames"] = true;
-    filter["inputNames"] = true;
+    filter["inputs"][0]["activeLevel"] = true;
+    filter["inputs"][0]["active_level"] = true;
+    filter["relayMap"][0]["input"] = true;
+    filter["relayMap"][0]["polarity"] = true;
     filter["autoDefaultOffUnmapped"] = true;
     filter["auto_default_off_unmapped"] = true;
-    // Legacy root keys
+    filter["modes"][0]["id"] = true;
+    filter["modes"][0]["relayStates"][0] = true;
+    filter["modes"][0]["triggerInput"] = true;
+    filter["iofunc"]["inputs"][0]["role"] = true;
+    filter["iofunc"]["outputs"][0]["role"] = true;
+    filter["iofunc"]["outputs"][0]["params"]["peerRel"] = true;
+    filter["iofunc"]["outputs"][0]["params"]["partnerRelay"] = true;
+    filter["iofunc"]["outputs"][0]["params"]["travelTime"] = true;
+    filter["iofunc"]["outputs"][0]["params"]["pulseTime"] = true;
+    filter["iofunc"]["outputs"][0]["params"]["guardTime"] = true;
+    filter["iofunc"]["outputs"][0]["params"]["minSwitchS"] = true;
+    filter["iofunc"]["outputs"][0]["params"]["invertDir"] = true;
+    filter["iofunc"]["outputs"][0]["params"]["defaultPos"] = true;
+    filter["equitherm"]["enabled"] = true;
+    filter["equitherm"]["outdoor"]["source"] = true;
+    filter["equitherm"]["outdoor"]["gpio"] = true;
+    filter["equitherm"]["outdoor"]["rom"] = true;
+    filter["equitherm"]["outdoor"]["addr"] = true;
+    filter["equitherm"]["outdoor"]["topic"] = true;
+    filter["equitherm"]["outdoor"]["jsonKey"] = true;
+    filter["equitherm"]["outdoor"]["key"] = true;
+    filter["equitherm"]["outdoor"]["field"] = true;
+    filter["equitherm"]["outdoor"]["mqttIdx"] = true;
+    filter["equitherm"]["outdoor"]["preset"] = true;
+    filter["equitherm"]["outdoor"]["maxAgeMs"] = true;
+    filter["equitherm"]["outdoor"]["max_age_ms"] = true;
+    filter["equitherm"]["outdoor"]["bleId"] = true;
+    filter["equitherm"]["outdoor"]["id"] = true;
+    filter["equitherm"]["flow"]["source"] = true;
+    filter["equitherm"]["flow"]["gpio"] = true;
+    filter["equitherm"]["flow"]["rom"] = true;
+    filter["equitherm"]["flow"]["addr"] = true;
+    filter["equitherm"]["flow"]["topic"] = true;
+    filter["equitherm"]["flow"]["jsonKey"] = true;
+    filter["equitherm"]["flow"]["key"] = true;
+    filter["equitherm"]["flow"]["field"] = true;
+    filter["equitherm"]["flow"]["mqttIdx"] = true;
+    filter["equitherm"]["flow"]["preset"] = true;
+    filter["equitherm"]["flow"]["maxAgeMs"] = true;
+    filter["equitherm"]["flow"]["max_age_ms"] = true;
+    filter["equitherm"]["flow"]["bleId"] = true;
+    filter["equitherm"]["flow"]["id"] = true;
+    filter["equitherm"]["akuTop"]["source"] = true;
+    filter["equitherm"]["akuTop"]["gpio"] = true;
+    filter["equitherm"]["akuTop"]["rom"] = true;
+    filter["equitherm"]["akuTop"]["addr"] = true;
+    filter["equitherm"]["akuTop"]["topic"] = true;
+    filter["equitherm"]["akuTop"]["jsonKey"] = true;
+    filter["equitherm"]["akuTop"]["key"] = true;
+    filter["equitherm"]["akuTop"]["field"] = true;
+    filter["equitherm"]["akuTop"]["mqttIdx"] = true;
+    filter["equitherm"]["akuTop"]["preset"] = true;
+    filter["equitherm"]["akuTop"]["maxAgeMs"] = true;
+    filter["equitherm"]["akuTop"]["max_age_ms"] = true;
+    filter["equitherm"]["akuTop"]["bleId"] = true;
+    filter["equitherm"]["akuTop"]["id"] = true;
+    filter["equitherm"]["akuMid"]["source"] = true;
+    filter["equitherm"]["akuMid"]["gpio"] = true;
+    filter["equitherm"]["akuMid"]["rom"] = true;
+    filter["equitherm"]["akuMid"]["addr"] = true;
+    filter["equitherm"]["akuMid"]["topic"] = true;
+    filter["equitherm"]["akuMid"]["jsonKey"] = true;
+    filter["equitherm"]["akuMid"]["key"] = true;
+    filter["equitherm"]["akuMid"]["field"] = true;
+    filter["equitherm"]["akuMid"]["mqttIdx"] = true;
+    filter["equitherm"]["akuMid"]["preset"] = true;
+    filter["equitherm"]["akuMid"]["maxAgeMs"] = true;
+    filter["equitherm"]["akuMid"]["max_age_ms"] = true;
+    filter["equitherm"]["akuMid"]["bleId"] = true;
+    filter["equitherm"]["akuMid"]["id"] = true;
+    filter["equitherm"]["akuBottom"]["source"] = true;
+    filter["equitherm"]["akuBottom"]["gpio"] = true;
+    filter["equitherm"]["akuBottom"]["rom"] = true;
+    filter["equitherm"]["akuBottom"]["addr"] = true;
+    filter["equitherm"]["akuBottom"]["topic"] = true;
+    filter["equitherm"]["akuBottom"]["jsonKey"] = true;
+    filter["equitherm"]["akuBottom"]["key"] = true;
+    filter["equitherm"]["akuBottom"]["field"] = true;
+    filter["equitherm"]["akuBottom"]["mqttIdx"] = true;
+    filter["equitherm"]["akuBottom"]["preset"] = true;
+    filter["equitherm"]["akuBottom"]["maxAgeMs"] = true;
+    filter["equitherm"]["akuBottom"]["max_age_ms"] = true;
+    filter["equitherm"]["akuBottom"]["bleId"] = true;
+    filter["equitherm"]["akuBottom"]["id"] = true;
+    filter["equitherm"]["boilerIn"]["source"] = true;
+    filter["equitherm"]["boilerIn"]["gpio"] = true;
+    filter["equitherm"]["boilerIn"]["rom"] = true;
+    filter["equitherm"]["boilerIn"]["addr"] = true;
+    filter["equitherm"]["boilerIn"]["topic"] = true;
+    filter["equitherm"]["boilerIn"]["jsonKey"] = true;
+    filter["equitherm"]["boilerIn"]["key"] = true;
+    filter["equitherm"]["boilerIn"]["field"] = true;
+    filter["equitherm"]["boilerIn"]["mqttIdx"] = true;
+    filter["equitherm"]["boilerIn"]["preset"] = true;
+    filter["equitherm"]["boilerIn"]["maxAgeMs"] = true;
+    filter["equitherm"]["boilerIn"]["max_age_ms"] = true;
+    filter["equitherm"]["boilerIn"]["bleId"] = true;
+    filter["equitherm"]["boilerIn"]["id"] = true;
+    filter["equitherm"]["minFlow"] = true;
+    filter["equitherm"]["maxFlow"] = true;
+    filter["equitherm"]["akuMinTopC"] = true;
+    filter["equitherm"]["akuMinTopC_day"] = true;
+    filter["equitherm"]["akuMinTopC_night"] = true;
+    filter["equitherm"]["akuMinDeltaToTargetC"] = true;
+    filter["equitherm"]["akuMinDeltaToTargetC_day"] = true;
+    filter["equitherm"]["akuMinDeltaToTargetC_night"] = true;
+    filter["equitherm"]["akuMinDeltaToBoilerInC"] = true;
+    filter["equitherm"]["akuMinDeltaToBoilerInC_day"] = true;
+    filter["equitherm"]["akuMinDeltaToBoilerInC_night"] = true;
+    filter["equitherm"]["akuSupportEnabled"] = true;
+    filter["equitherm"]["akuNoSupportBehavior"] = true;
+    filter["equitherm"]["curveOffsetC"] = true;
+    filter["equitherm"]["deadbandC"] = true;
+    filter["equitherm"]["stepPct"] = true;
+    filter["equitherm"]["controlPeriodMs"] = true;
+    filter["equitherm"]["maxBoilerInC"] = true;
+    filter["equitherm"]["noFlowDetectEnabled"] = true;
+    filter["equitherm"]["noFlowTimeoutMs"] = true;
+    filter["equitherm"]["noFlowTestPeriodMs"] = true;
+    filter["equitherm"]["slopeDay"] = true;
+    filter["equitherm"]["shiftDay"] = true;
+    filter["equitherm"]["slopeNight"] = true;
+    filter["equitherm"]["shiftNight"] = true;
+    filter["equitherm"]["refs"]["day"]["tout1"] = true;
+    filter["equitherm"]["refs"]["day"]["tflow1"] = true;
+    filter["equitherm"]["refs"]["day"]["tout2"] = true;
+    filter["equitherm"]["refs"]["day"]["tflow2"] = true;
+    filter["equitherm"]["refs"]["night"]["tout1"] = true;
+    filter["equitherm"]["refs"]["night"]["tflow1"] = true;
+    filter["equitherm"]["refs"]["night"]["tout2"] = true;
+    filter["equitherm"]["refs"]["night"]["tflow2"] = true;
+    filter["equitherm"]["valve"]["master"] = true;
+    filter["equitherm"]["valveMaster"] = true;
+    filter["equitherm"]["control"]["deadbandC"] = true;
+    filter["equitherm"]["control"]["deadband"] = true;
+    filter["equitherm"]["control"]["stepPct"] = true;
+    filter["equitherm"]["control"]["step"] = true;
+    filter["equitherm"]["control"]["periodMs"] = true;
+    filter["equitherm"]["control"]["period"] = true;
+    filter["equitherm"]["control"]["minPct"] = true;
+    filter["equitherm"]["control"]["maxPct"] = true;
+    filter["equitherm"]["control"]["maxPct_day"] = true;
+    filter["equitherm"]["control"]["maxPct_night"] = true;
+    filter["equitherm"]["maxPct_day"] = true;
+    filter["equitherm"]["maxPct_night"] = true;
+    filter["sensors"]["outdoor"]["maxAgeMs"] = true;
+    filter["equitherm"]["fallbackOutdoorC"] = true;
+    filter["system"]["profile"] = true;
+    filter["system"]["nightModeSource"] = true;
+    filter["system"]["nightModeManual"] = true;
+    filter["nightMode"]["source"] = true;
+    filter["nightMode"]["manual"] = true;
+    filter["dhwRecirc"]["enabled"] = true;
+    filter["dhwRecirc"]["mode"] = true;
+    filter["dhwRecirc"]["demandInput"] = true;
+    filter["dhwRecirc"]["pumpRelay"] = true;
+    filter["dhwRecirc"]["onDemandRunMs"] = true;
+    filter["dhwRecirc"]["minOffMs"] = true;
+    filter["dhwRecirc"]["minOnMs"] = true;
+    filter["dhwRecirc"]["tempReturnSource"]["source"] = true;
+    filter["dhwRecirc"]["tempReturnSource"]["gpio"] = true;
+    filter["dhwRecirc"]["tempReturnSource"]["rom"] = true;
+    filter["dhwRecirc"]["tempReturnSource"]["addr"] = true;
+    filter["dhwRecirc"]["tempReturnSource"]["topic"] = true;
+    filter["dhwRecirc"]["tempReturnSource"]["jsonKey"] = true;
+    filter["dhwRecirc"]["tempReturnSource"]["key"] = true;
+    filter["dhwRecirc"]["tempReturnSource"]["field"] = true;
+    filter["dhwRecirc"]["tempReturnSource"]["mqttIdx"] = true;
+    filter["dhwRecirc"]["tempReturnSource"]["preset"] = true;
+    filter["dhwRecirc"]["tempReturnSource"]["maxAgeMs"] = true;
+    filter["dhwRecirc"]["tempReturnSource"]["max_age_ms"] = true;
+    filter["dhwRecirc"]["tempReturnSource"]["bleId"] = true;
+    filter["dhwRecirc"]["tempReturnSource"]["id"] = true;
+    filter["dhwRecirc"]["stopTempC"] = true;
+    filter["dhwRecirc"]["windows"][0]["start"] = true;
+    filter["dhwRecirc"]["windows"][0]["end"] = true;
+    filter["dhwRecirc"]["windows"][0]["days"][0] = true;
+    filter["tuv"]["demandInput"] = true;
+    filter["tuv"]["demand_input"] = true;
+    filter["tuv"]["relay"] = true;
+    filter["tuv"]["requestRelay"] = true;
+    filter["tuv"]["request_relay"] = true;
+    filter["tuv"]["enabled"] = true;
+    filter["tuv"]["valveMaster"] = true;
+    filter["tuv"]["shortValveMaster"] = true;
+    filter["tuv"]["valveTargetPct"] = true;
+    filter["tuv"]["targetPct"] = true;
+    filter["tuv"]["eqValveTargetPct"] = true;
+    filter["tuv"]["mixValveTargetPct"] = true;
+    filter["tuv"]["bypassValve"]["enabled"] = true;
+    filter["tuv"]["bypassValve"]["mode"] = true;
+    filter["tuv"]["bypassValve"]["masterRelay"] = true;
+    filter["tuv"]["bypassValve"]["bypassPct"] = true;
+    filter["tuv"]["bypassValve"]["chPct"] = true;
+    filter["tuv"]["bypassValve"]["invert"] = true;
+    filter["tuvDemandInput"] = true;
+    filter["tuv_demand_input"] = true;
     filter["tuvRelay"] = true;
     filter["tuv_relay"] = true;
     filter["tuvEnabled"] = true;
@@ -2017,8 +2009,29 @@ void logicApplyConfig(const String& json) {
     filter["tuv_valve_target_pct"] = true;
     filter["tuvEqValveTargetPct"] = true;
     filter["tuv_eq_valve_target_pct"] = true;
+    filter["boiler"]["dhwRequestRelay"] = true;
+    filter["boiler"]["nightModeRelay"] = true;
+    filter["akuHeater"]["enabled"] = true;
+    filter["akuHeater"]["relay"] = true;
+    filter["akuHeater"]["mode"] = true;
+    filter["akuHeater"]["manualOn"] = true;
+    filter["akuHeater"]["targetTopC"] = true;
+    filter["akuHeater"]["hysteresisC"] = true;
+    filter["akuHeater"]["maxOnMs"] = true;
+    filter["akuHeater"]["minOffMs"] = true;
+    filter["akuHeater"]["windows"][0]["start"] = true;
+    filter["akuHeater"]["windows"][0]["end"] = true;
+    filter["akuHeater"]["windows"][0]["days"][0] = true;
+    filter["schedules"][0]["enabled"] = true;
+    filter["schedules"][0]["days"][0] = true;
+    filter["schedules"][0]["at"] = true;
+    filter["schedules"][0]["time"] = true;
+    filter["schedules"][0]["kind"] = true;
+    filter["schedules"][0]["type"] = true;
+    filter["schedules"][0]["value"] = true;
+    filter["schedules"][0]["params"] = true;
 
-    DynamicJsonDocument doc(32768);
+    DynamicJsonDocument doc(16384);
     DeserializationError err = deserializeJson(doc, json, DeserializationOption::Filter(filter));
     if (err) {
         Serial.print(F("[LOGIC] Config JSON parse error: "));
@@ -2248,8 +2261,6 @@ void logicApplyConfig(const String& json) {
             }
         }
     }
-
-    valveStateLoadOnce();
 
 
     // ---------------- Equitherm konfigurace ----------------
@@ -2639,8 +2650,6 @@ void logicApplyConfig(const String& json) {
     s_recircOnDemandRunMs = 120000;
     s_recircMinOffMs = 300000;
     s_recircMinOnMs = 30000;
-    s_recircCycleOnMs = 300000;
-    s_recircCycleOffMs = 900000;
     s_recircStopTempC = 42.0f;
     s_recircReturnCfg = EqSourceCfg{};
     s_recircActive = false;
@@ -2649,10 +2658,6 @@ void logicApplyConfig(const String& json) {
     s_recircLastOnMs = 0;
     s_recircLastOffMs = 0;
     s_recircPrevDemand = false;
-    s_recircWindowPrev = false;
-    s_recircCycleActive = false;
-    s_recircCycleOn = false;
-    s_recircCycleUntilMs = 0;
     s_recircWindowCount = 0;
 
     JsonObject rec = doc["dhwRecirc"].as<JsonObject>();
@@ -2666,8 +2671,6 @@ void logicApplyConfig(const String& json) {
         s_recircOnDemandRunMs = (uint32_t)(rec["onDemandRunMs"] | s_recircOnDemandRunMs);
         s_recircMinOffMs = (uint32_t)(rec["minOffMs"] | s_recircMinOffMs);
         s_recircMinOnMs = (uint32_t)(rec["minOnMs"] | s_recircMinOnMs);
-        s_recircCycleOnMs = (uint32_t)(rec["cycleOnMs"] | rec["cycle_on_ms"] | s_recircCycleOnMs);
-        s_recircCycleOffMs = (uint32_t)(rec["cycleOffMs"] | rec["cycle_off_ms"] | s_recircCycleOffMs);
         s_recircStopTempC = (float)(rec["stopTempC"] | s_recircStopTempC);
 
         JsonObject ret = rec["tempReturnSource"].as<JsonObject>();
@@ -2684,7 +2687,6 @@ void logicApplyConfig(const String& json) {
         }
 
         JsonArray win = rec["windows"].as<JsonArray>();
-        if (win.isNull()) win = rec["timeWindows"].as<JsonArray>();
         if (!win.isNull()) {
             for (JsonVariant wv : win) {
                 if (s_recircWindowCount >= MAX_RECIRC_WINDOWS) break;
@@ -2917,44 +2919,6 @@ bool logicGetValveUiStatus(uint8_t relay1based, ValveUiStatus& out){
 
     out.targetPct = v.targetPct;
     out.targetB   = (v.targetPct >= 50); // legacy (pro starší UI)
-    return true;
-}
-
-bool logicIsValvePeer(uint8_t relay1based) {
-    if (relay1based < 1 || relay1based > RELAY_COUNT) return false;
-    return isValvePeer((uint8_t)(relay1based - 1));
-}
-
-bool logicIsValveMaster(uint8_t relay1based) {
-    if (relay1based < 1 || relay1based > RELAY_COUNT) return false;
-    return isValveMaster((uint8_t)(relay1based - 1));
-}
-
-bool logicSetValveTargetPct(uint8_t relay1based, uint8_t targetPct) {
-    if (relay1based < 1 || relay1based > RELAY_COUNT) return false;
-    const uint8_t r0 = relay1based - 1;
-    if (!isValveMaster(r0)) return false;
-    valveMoveToPct(r0, targetPct);
-    return true;
-}
-
-bool logicCommandValve(uint8_t relay1based, const String& cmd) {
-    if (relay1based < 1 || relay1based > RELAY_COUNT) return false;
-    const uint8_t r0 = relay1based - 1;
-    if (!isValveMaster(r0)) return false;
-    String c = cmd;
-    c.toLowerCase();
-    bool wantB = false;
-    if (c == "a") {
-        wantB = false;
-    } else if (c == "b") {
-        wantB = true;
-    } else if (c == "toggle") {
-        wantB = !s_valves[r0].currentB;
-    } else {
-        return false;
-    }
-    valveCommand(r0, wantB);
     return true;
 }
 

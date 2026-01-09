@@ -6,17 +6,11 @@
     btnSave: $("btnSaveRecirc"),
     enabled: $("recircEnabled"),
     mode: $("recircMode"),
-    demandRow: $("recircDemandRow"),
     demandInput: $("recircDemandInput"),
     pumpRelay: $("recircPumpRelay"),
-    onDemandRow: $("recircOnDemandRow"),
     onDemandRunS: $("recircOnDemandRunS"),
-    minTimesRow: $("recircMinTimesRow"),
     minOffS: $("recircMinOffS"),
     minOnS: $("recircMinOnS"),
-    cycleRow: $("recircCycleRow"),
-    cycleOnS: $("recircCycleOnS"),
-    cycleOffS: $("recircCycleOffS"),
     returnSource: $("recircReturnSource"),
     returnDallasRow: $("recircReturnDallasRow"),
     returnDallas: $("recircReturnDallas"),
@@ -27,7 +21,6 @@
     returnBleRow: $("recircReturnBleRow"),
     returnBle: $("recircReturnBle"),
     stopTempC: $("recircStopTempC"),
-    windowsRow: $("recircWindowsRow"),
     windows: $("recircWindows"),
     addWindow: $("recircAddWindow"),
   };
@@ -168,17 +161,6 @@
     el.returnBleRow.style.display = rs === "ble" ? "" : "none";
   }
 
-  function updateModeVisibility() {
-    const mode = String(el.mode.value || "on_demand");
-    const usesWindows = ["time_windows", "hybrid", "window_cycle"].includes(mode);
-    const usesDemand = ["on_demand", "hybrid"].includes(mode);
-    const usesCycle = mode === "window_cycle";
-    if (el.demandRow) el.demandRow.style.display = usesDemand ? "" : "none";
-    if (el.onDemandRow) el.onDemandRow.style.display = usesDemand ? "" : "none";
-    if (el.windowsRow) el.windowsRow.style.display = usesWindows ? "" : "none";
-    if (el.cycleRow) el.cycleRow.style.display = usesCycle ? "" : "none";
-  }
-
   function renderWindows(cfg) {
     if (!el.windows) return;
     const win = Array.isArray(cfg?.dhwRecirc?.windows) ? cfg.dhwRecirc.windows : [];
@@ -221,8 +203,6 @@
     el.onDemandRunS.value = Math.round((r.onDemandRunMs ?? 120000) / 1000);
     el.minOffS.value = Math.round((r.minOffMs ?? 300000) / 1000);
     el.minOnS.value = Math.round((r.minOnMs ?? 30000) / 1000);
-    el.cycleOnS.value = Math.round((r.cycleOnMs ?? 300000) / 1000);
-    el.cycleOffS.value = Math.round((r.cycleOffMs ?? 900000) / 1000);
     el.stopTempC.value = Number.isFinite(r.stopTempC) ? r.stopTempC : 42;
 
     const src = r.tempReturnSource || {};
@@ -236,7 +216,6 @@
     el.returnBle.value = src.bleId || src.id || "meteo.tempC";
     updateSourceRows();
     renderWindows(cfg);
-    updateModeVisibility();
   }
 
   function saveToConfig(cfg) {
@@ -249,8 +228,6 @@
     cfg.dhwRecirc.onDemandRunMs = Math.max(0, (parseInt(el.onDemandRunS.value || "0", 10) || 0) * 1000);
     cfg.dhwRecirc.minOffMs = Math.max(0, (parseInt(el.minOffS.value || "0", 10) || 0) * 1000);
     cfg.dhwRecirc.minOnMs = Math.max(0, (parseInt(el.minOnS.value || "0", 10) || 0) * 1000);
-    cfg.dhwRecirc.cycleOnMs = Math.max(0, (parseInt(el.cycleOnS.value || "0", 10) || 0) * 1000);
-    cfg.dhwRecirc.cycleOffMs = Math.max(0, (parseInt(el.cycleOffS.value || "0", 10) || 0) * 1000);
     cfg.dhwRecirc.stopTempC = parseFloat(el.stopTempC.value || "0") || 0;
 
     cfg.dhwRecirc.tempReturnSource = cfg.dhwRecirc.tempReturnSource || {};
@@ -315,7 +292,6 @@
 
   function bindEvents() {
     el.returnSource.addEventListener("change", updateSourceRows);
-    el.mode.addEventListener("change", updateModeVisibility);
     el.returnMqttPreset?.addEventListener("change", () => {
       const cfg = App.getConfig();
       applyMqttPresetToInputs(el.returnMqttPreset.value, cfg, el.returnTopic, el.returnJsonKey);

@@ -322,7 +322,7 @@
       const i = parseInt(src.substring(4) || "0", 10) - 1;
       if (i>=0 && i<8){
         const v = dash.temps?.[i];
-        const ok = dash.tempValid?.[i];
+        const ok = dash.tempsValid?.[i];
         if (ok && isFiniteNum(v)) return { valid:true, tempC: v };
       }
       return { valid:false };
@@ -543,10 +543,37 @@
       const gpio = Number(g?.gpio ?? 0);
       const st = statusLabel(g?.status);
       const devs = Array.isArray(g?.devices) ? g.devices : [];
-      const details = devs.map(d=>{
-        const rom = escapeHtml(d?.rom || "—");
+
+      // Role badges (from config: Teploměry -> Význam teploměrů)
+      const cfg = ensureShape(App.getConfig?.() || {});
+      const roles = (cfg.thermometers && cfg.thermometers.roles && typeof cfg.thermometers.roles === "object") ? cfg.thermometers.roles : {};
+
+      const roleTagsFor = (gpio, rom, isFirstDevice) => {
+        const tags = [];
+        const romU = String(rom||"").trim().toUpperCase();
+        for (const k of Object.keys(ROLE_LABELS)){
+          const r = roles[k] || {};
+          if (String(r.source||"") !== "dallas") continue;
+          const rg = Number(r.gpio ?? 0);
+          if (rg !== gpio) continue;
+          const rr = String(r.rom || r.addr || "").trim().toUpperCase();
+          if (rr){
+            if (rr === romU) tags.push(ROLE_LABELS[k]);
+          }else{
+            // "auto" mapping (no ROM) -> annotate the first device on that GPIO
+            if (isFirstDevice) tags.push(ROLE_LABELS[k] + " (auto)");
+          }
+        }
+        if (!tags.length) return "";
+        return tags.map(t=>`<span class="badge" style="padding:2px 8px; font-size:11px; margin-left:6px">${escapeHtml(t)}</span>`).join("");
+      };
+
+      const details = devs.map((d, idx)=>{
+        const rom = String(d?.rom || "—");
+        const romHtml = escapeHtml(rom);
         const t = isFiniteNum(d?.tempC) ? `${d.tempC.toFixed(1)} °C` : "—";
-        return `<div class="mono" style="font-size:12px">ROM ${rom} • ${t} ${d?.valid ? "" : "<span class='muted'>(invalid)</span>"}</div>`;
+        const tags = roleTagsFor(gpio, rom, idx === 0);
+        return `<div class="mono" style="font-size:12px">ROM ${romHtml} • ${t} ${d?.valid ? "" : "<span class=\"muted\">(invalid)</span>"}${tags}</div>`;
       }).join("");
 
       const row = document.createElement("div");

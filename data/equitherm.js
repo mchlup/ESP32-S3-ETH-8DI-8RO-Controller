@@ -643,6 +643,59 @@
     el.akuBottomTopic.value = akuBottom.topic || "";
     el.akuBottomJsonKey.value = akuBottom.jsonKey || akuBottom.key || akuBottom.field || "";
     el.akuBottomBle.value = akuBottom.bleId || akuBottom.id || "meteo.tempC";
+    
+    // Auto-přiřazení AKU teploměrů z "Teploměry → Význam teploměrů"
+    // Pokud nejsou v ekvitermu nastavené (source == "none"), převezmeme role tankTop/tankMid/tankBottom.
+    const roles = (cfg && cfg.thermometers && cfg.thermometers.roles) ? cfg.thermometers.roles : {};
+
+    const applyRoleToAkuUi = (roleCfg, sourceSel, dallasSel, mqttPresetSel, topicInp, keyInp, bleSel) => {
+      if (!roleCfg || typeof roleCfg !== "object") return false;
+      const src = String(roleCfg.source || "none").trim();
+      if (src === "none") return false;
+
+      sourceSel.value = src;
+
+      if (src === "dallas") {
+        const gpio = Number.isFinite(Number(roleCfg.gpio)) ? Number(roleCfg.gpio) : 0;
+        const rom = String(roleCfg.rom || roleCfg.addr || "").toUpperCase();
+        const v = makeDallasValue(gpio, rom);
+        dallasSel.value = v;
+        if (String(dallasSel.value) !== v) dallasSel.value = makeDallasValue(gpio, "");
+        return true;
+      }
+
+      if (src === "mqtt") {
+        const idx = Number(roleCfg.mqttIdx || roleCfg.preset || 0);
+        if (mqttPresetSel) {
+          if (idx >= 1 && idx <= 2) mqttPresetSel.value = String(idx);
+          else mqttPresetSel.value = "custom";
+        }
+        if (topicInp) topicInp.value = String(roleCfg.topic || "");
+        if (keyInp) keyInp.value = String(roleCfg.jsonKey || roleCfg.key || roleCfg.field || "");
+        return true;
+      }
+
+      if (src === "ble") {
+        const id = String(roleCfg.bleId || roleCfg.id || cfg?.thermometers?.ble?.id || "meteo.tempC");
+        if (bleSel) bleSel.value = id;
+        return true;
+      }
+
+      // legacy temp1..temp8
+      if (/^temp\\d+$/.test(src)) return true;
+
+      return false;
+    };
+
+    if ((akuTop.source || "none") === "none") {
+      applyRoleToAkuUi(roles.tankTop, el.akuTopSource, el.akuTopDallas, el.akuTopMqttPreset, el.akuTopTopic, el.akuTopJsonKey, el.akuTopBle);
+    }
+    if ((akuMid.source || "none") === "none") {
+      applyRoleToAkuUi(roles.tankMid, el.akuMidSource, el.akuMidDallas, el.akuMidMqttPreset, el.akuMidTopic, el.akuMidJsonKey, el.akuMidBle);
+    }
+    if ((akuBottom.source || "none") === "none") {
+      applyRoleToAkuUi(roles.tankBottom, el.akuBottomSource, el.akuBottomDallas, el.akuBottomMqttPreset, el.akuBottomTopic, el.akuBottomJsonKey, el.akuBottomBle);
+    }
 
     // valve
     const vm = (e.valve && typeof e.valve.master === "number") ? e.valve.master : 0;

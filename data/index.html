@@ -6,6 +6,7 @@
   <title>ESP Heat Controller</title>
   <link rel="stylesheet" href="/styles.css" />
   <link rel="stylesheet" href="/dash_v2.css" />
+  <link rel="stylesheet" href="/schematic.css?v=2" />
 </head>
 <body>
   <div class="app">
@@ -79,6 +80,25 @@
       <section class="page active" id="page-dash">
 
         <div class="dashLayout">
+
+          <div class="card" id="cardSchema" style="display:none">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Schéma systému</div>
+                <div class="muted">Dynamický náhled okruhu podle aktivních funkcí</div>
+              </div>
+            </div>
+            <div class="pad" style="padding-top:10px">
+              <div id="schemaWrap" class="schemaWrap" aria-label="Schéma topného systému">
+              <svg id="svg" viewBox="0 0 920 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Schéma topného systému">
+                <defs></defs>
+                <rect x="0" y="0" width="920" height="420" fill="url(#bgGrid)"></rect>
+                <g id="pipes"></g>
+                <g id="instances"></g>
+              </svg>
+            </div>
+            </div>
+          </div>
           <div class="card" id="cardEquitherm" style="display:none">
                       <div class="cardHead">
                         <div>
@@ -999,11 +1019,10 @@
               <option value="on_demand">On-demand</option>
               <option value="time_windows">Časová okna</option>
               <option value="hybrid">Hybrid</option>
-              <option value="window_cycle">Okna + cyklus</option>
             </select>
           </div>
         </div>
-        <div class="ioRow" id="recircDemandRow">
+        <div class="ioRow">
           <div class="ioLabel">Požadavek (vstup)</div>
           <div class="ioValue">
             <select id="recircDemandInput"></select>
@@ -1015,27 +1034,13 @@
             <select id="recircPumpRelay"></select>
           </div>
         </div>
-        <div class="ioRow" id="recircOnDemandRow">
-          <div class="ioLabel">On-demand běh</div>
+        <div class="ioRow">
+          <div class="ioLabel">Časy</div>
           <div class="ioValue">
-            <div><label class="mini">Doba běhu (s)</label><input id="recircOnDemandRunS" type="number" step="1"></div>
-          </div>
-        </div>
-        <div class="ioRow" id="recircMinTimesRow">
-          <div class="ioLabel">Minimální doby</div>
-          <div class="ioValue">
-            <div class="row2">
+            <div class="row3">
+              <div><label class="mini">On-demand běh (s)</label><input id="recircOnDemandRunS" type="number" step="1"></div>
               <div><label class="mini">Min OFF (s)</label><input id="recircMinOffS" type="number" step="1"></div>
               <div><label class="mini">Min ON (s)</label><input id="recircMinOnS" type="number" step="1"></div>
-            </div>
-          </div>
-        </div>
-        <div class="ioRow" id="recircCycleRow">
-          <div class="ioLabel">Cyklus</div>
-          <div class="ioValue">
-            <div class="row2">
-              <div><label class="mini">Zapnuto (s)</label><input id="recircCycleOnS" type="number" step="1"></div>
-              <div><label class="mini">Vypnuto (s)</label><input id="recircCycleOffS" type="number" step="1"></div>
             </div>
           </div>
         </div>
@@ -1067,7 +1072,7 @@
             <input id="recircStopTempC" type="number" step="0.1">
           </div>
         </div>
-        <div class="ioRow" id="recircWindowsRow">
+        <div class="ioRow">
           <div class="ioLabel">Časová okna</div>
           <div class="ioValue">
             <div id="recircWindows"></div>
@@ -1725,6 +1730,12 @@
   <script src="/valve_calib.js?v=2"></script>
   <script src="/time_ntp.js?v=1"></script>
   <script src="/schedules.js?v=1"></script>
+  
+  <script src="/schematic.templates.js?v=1"></script>
+  <script src="/schematic.paths.js?v=1"></script>
+  <script src="/schematic.router.js?v=1"></script>
+  <script src="/schematic.main.js?v=1"></script>
+  <script src="/schematic.js?v=2"></script>
   <script src="/dash_v2.js?v=1"></script>
 
 </body>

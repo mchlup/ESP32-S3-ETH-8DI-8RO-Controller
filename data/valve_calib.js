@@ -31,7 +31,8 @@
   };
 
   const setRelayAbs = async (relay1based, on) => {
-    await apiPostJson("/api/mode_ctrl", { action:"relay_raw", relay: relay1based, value: !!on });
+    // /api/mode_ctrl action:"relay_raw" expects { relay:1..8, on:true/false }
+    await apiPostJson("/api/mode_ctrl", { action:"relay_raw", relay: relay1based, on: !!on });
   };
 
   const stopBoth = async (a, b) => {

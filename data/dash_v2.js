@@ -949,7 +949,8 @@
       const idx = Number(sw.dataset.relay);
       const on = !sw.classList.contains("on");
       try {
-        await apiPostJson("/api/mode_ctrl", { action: "relay_set", relay: idx+1, value: on });
+        // /api/mode_ctrl expects action:"relay" (1..8, value:true/false)
+        await apiPostJson("/api/mode_ctrl", { action: "relay", relay: idx+1, value: on });
         refreshDash();
       } catch {}
     });
