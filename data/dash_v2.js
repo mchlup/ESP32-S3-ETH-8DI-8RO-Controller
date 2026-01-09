@@ -32,6 +32,34 @@
     return cl;
   };
 
+  const setCardDisabled = (cardId, reason, actionHash) => {
+    const card = $id(cardId);
+    if (!card) return;
+    const disabled = !!reason;
+    card.classList.toggle("cardDisabled", disabled);
+    let overlay = card.querySelector(".cardOverlay");
+    if (!overlay) {
+      overlay = document.createElement("div");
+      overlay.className = "cardOverlay";
+      overlay.innerHTML = `
+        <div class="overlayContent">
+          <div class="overlayTitle">Funkce není aktivní</div>
+          <div class="overlayReason"></div>
+          <a class="btn mini overlayBtn" href="#">Opravit</a>
+        </div>
+      `;
+      card.appendChild(overlay);
+    }
+    const reasonEl = overlay.querySelector(".overlayReason");
+    const actionEl = overlay.querySelector(".overlayBtn");
+    if (reasonEl) reasonEl.textContent = reason || "";
+    if (actionEl) {
+      actionEl.setAttribute("href", actionHash || "#");
+      actionEl.style.display = actionHash ? "" : "none";
+    }
+    overlay.style.display = disabled ? "flex" : "none";
+  };
+
   const getEqCfg = (cfg) => {
     const e = (cfg && typeof cfg === "object" && cfg.equitherm && typeof cfg.equitherm === "object") ? cfg.equitherm : {};
     return {
@@ -270,12 +298,6 @@
 
   let dash = { temps: [], valves: [] };
 
-  async function apiGetJson(url){
-    const r = await fetch(url, { cache: "no-store" });
-    if (!r.ok) throw new Error(`${r.status}`);
-    return await r.json();
-  }
-
   async function apiPostJson(url, body){
     const r = await fetch(url, {
       method: "POST",
@@ -291,6 +313,9 @@
   }
   function getStatus(){
     return (window.App && window.App.getStatus) ? (window.App.getStatus() || {}) : {};
+  }
+  function getDash(){
+    return (window.App && window.App.getDash) ? (window.App.getDash() || {}) : dash;
   }
 
   function getRoleInputs(cfg){
@@ -313,8 +338,10 @@
   }
 
   function render() {
+    dash = getDash() || dash;
     const cfg = getCfg();
     const st  = getStatus();
+    const roleMap = window.App?.getRoleMap?.() || { inputs: {}, outputs: {}, temps: {} };
     const valves = Array.isArray(dash.valves) ? dash.valves : [];
     const vByMaster = new Map();
     for (const v of valves){
@@ -334,12 +361,8 @@
       if (vm >= 1 && vm <= RELAY_COUNT) eqValveMaster0 = vm-1;
     }
     if (cardEq && eqGrid){
-      if (!eqEnabled){
-        cardEq.style.display = "none";
-        eqGrid.innerHTML = "";
-      } else {
-        cardEq.style.display = "";
-
+      eqGrid.innerHTML = "";
+      if (eqEnabled){
         const outdoorOk = Number.isFinite(eq.outdoorC);
         const flowVal   = Number.isFinite(eq.actualC) ? eq.actualC : eq.flowC;
         const flowOk    = Number.isFinite(flowVal);
@@ -431,6 +454,8 @@
         // draw after inserted
         const canvas = tCurve.querySelector("#eqMiniCurve");
         if (canvas) drawEqMiniCurve(canvas, cfg, eqCfg, eq);
+      } else {
+        eqGrid.innerHTML = `<div class="muted">Ekviterm je vypnutý.</div>`;
       }
     }
 
@@ -439,11 +464,8 @@
     const akuGrid = $id("akuDashGrid");
     const hasAkuCfg = ["akuTop", "akuMid", "akuBottom"].some((k) => String(eqCfg?.[k]?.source || "none") !== "none");
     if (cardAku && akuGrid) {
-      if (!hasAkuCfg && !Number.isFinite(eq?.akuTopC)) {
-        cardAku.style.display = "none";
-        akuGrid.innerHTML = "";
-      } else {
-        cardAku.style.display = "";
+      akuGrid.innerHTML = "";
+      if (hasAkuCfg || Number.isFinite(eq?.akuTopC)) {
         const topTxt = Number.isFinite(eq.akuTopC) ? fmtTemp(eq.akuTopC) : "—";
         const midTxt = Number.isFinite(eq.akuMidC) ? fmtTemp(eq.akuMidC) : "—";
         const bottomTxt = Number.isFinite(eq.akuBottomC) ? fmtTemp(eq.akuBottomC) : "—";
@@ -457,6 +479,8 @@
             <div class="akuStatus"><span class="akuDot ${eq?.akuSupportActive ? "on" : ""}"></span>AKU support: ${escapeHtml(support)}${escapeHtml(supportReason)}</div>
           </div>
         `;
+      } else {
+        akuGrid.innerHTML = `<div class="muted">AKU senzory nejsou přiřazené.</div>`;
       }
     }
 
@@ -466,12 +490,10 @@
     if (cardValveMix && valveMixGrid) {
       const v2Master = Number(eq?.valveMaster || 0);
       const v3Master = Number(st?.tuv?.valveMaster || 0);
+      valveMixGrid.innerHTML = "";
       if (!v2Master && !v3Master) {
-        cardValveMix.style.display = "none";
-        valveMixGrid.innerHTML = "";
+        valveMixGrid.innerHTML = `<div class="muted">Ventily nejsou nakonfigurované.</div>`;
       } else {
-        cardValveMix.style.display = "";
-        valveMixGrid.innerHTML = "";
 
         if (v2Master >= 1 && v2Master <= RELAY_COUNT) {
           const pos = clamp(Number(eq?.valvePosPct ?? 0), 0, 100);
@@ -525,12 +547,10 @@
     const hasTuvCfg = !!tuvCfg?.enabled || (tuvCfg?.demandInput > 0) || (tuvCfg?.requestRelay > 0) || (tuvCfg?.valveMaster > 0);
     if (cardTuv && tuvGrid) {
       const active = (typeof tuv.active === "boolean") ? tuv.active : !!tuv.modeActive;
+      tuvGrid.innerHTML = "";
       if (!hasTuvCfg && !active) {
-        cardTuv.style.display = "none";
-        tuvGrid.innerHTML = "";
+        tuvGrid.innerHTML = `<div class="muted">TUV není nakonfigurováno.</div>`;
       } else {
-        cardTuv.style.display = "";
-        tuvGrid.innerHTML = "";
 
         const relayRoles = getRoleRelays(cfg);
         const relays = Array.isArray(st?.relays) ? st.relays : [];
@@ -605,10 +625,8 @@
     const rec = st?.recirc || {};
     if (cardRecirc && recircGrid) {
       if (!rec?.enabled) {
-        cardRecirc.style.display = "none";
-        recircGrid.innerHTML = "";
+        recircGrid.innerHTML = `<div class="muted">Cirkulace je vypnutá.</div>`;
       } else {
-        cardRecirc.style.display = "";
         const active = !!rec.active;
         const remaining = Number(rec.remainingMs || 0) ? Math.round(rec.remainingMs / 1000) : 0;
         const stopTxt = rec.stopReached ? "stop reached" : "stop: —";
@@ -652,10 +670,8 @@
     const heaterCfg = cfg?.akuHeater || {};
     if (cardAkuHeater && akuHeaterGrid) {
       if (!heater?.enabled) {
-        cardAkuHeater.style.display = "none";
-        akuHeaterGrid.innerHTML = "";
+        akuHeaterGrid.innerHTML = `<div class="muted">AKU heater je vypnutý.</div>`;
       } else {
-        cardAkuHeater.style.display = "";
         const active = !!heater.active;
         const mode = String(heater.mode || heaterCfg.mode || "—");
         const reason = String(heater.reason || "—");
@@ -757,7 +773,9 @@
       valveGrid && valveGrid.appendChild(tile);
     }
 
-    if (cardValves) cardValves.style.display = valveCount ? "" : "none";
+    if (valveGrid && !valveCount) {
+      valveGrid.innerHTML = `<div class="muted">Žádné další ventily nejsou aktivní.</div>`;
+    }
     const cardTemps = $id("cardTemps");
     const tempGrid  = $id("tempGrid");
     let tempCount = 0;
@@ -914,14 +932,93 @@
       tempGrid && tempGrid.appendChild(tile);
     }
 
-    if (cardTemps) cardTemps.style.display = tempCount ? "" : "none";
-  }
+    if (tempGrid && !tempCount) {
+      tempGrid.innerHTML = `<div class="muted">Teploty nejsou dostupné.</div>`;
+    }
 
-  async function refreshDash(){
-    try {
-      dash = await apiGetJson("/api/dash");
-      render();
-    } catch(e) {}
+    const missingTemp = (role) => (roleMap.temps?.[role]?.source || "none") === "none";
+    const missingInput = (role) => !roleMap.inputs?.[role];
+    const missingOutput = (role) => !roleMap.outputs?.[role];
+
+    let eqReason = null;
+    let eqAction = "#ekviterm";
+    if (!eqCfg?.enabled) {
+      eqReason = "Funkce je vypnutá v konfiguraci.";
+    } else if (missingTemp("outdoor")) {
+      eqReason = "Chybí role outdoor.";
+      eqAction = "#temps";
+    } else if (missingTemp("flow")) {
+      eqReason = "Chybí role flow (boiler_in).";
+      eqAction = "#temps";
+    } else if (missingOutput("valve_3way_mix")) {
+      eqReason = "Není přiřazen ventil valve_3way_mix.";
+      eqAction = "#iofunc";
+    }
+    setCardDisabled("cardEquitherm", eqReason, eqReason ? eqAction : "");
+
+    let akuReason = null;
+    let akuAction = "#aku";
+    if (!eqCfg?.akuSupportEnabled) {
+      akuReason = "Podpora AKU je vypnutá.";
+    } else if (missingTemp("tankTop")) {
+      akuReason = "Chybí role tankTop.";
+      akuAction = "#temps";
+    } else if (missingTemp("tankMid")) {
+      akuReason = "Chybí role tankMid.";
+      akuAction = "#temps";
+    } else if (missingTemp("tankBottom")) {
+      akuReason = "Chybí role tankBottom.";
+      akuAction = "#temps";
+    }
+    setCardDisabled("cardAku", akuReason, akuReason ? akuAction : "");
+
+    let tuvReason = null;
+    let tuvAction = "#tuv";
+    if (!tuvCfg?.enabled) {
+      tuvReason = "Ohřev TUV je vypnutý.";
+    } else if (missingInput("dhw_enable")) {
+      tuvReason = "Chybí role vstupu dhw_enable.";
+      tuvAction = "#iofunc";
+    } else if (missingOutput("boiler_enable_dhw")) {
+      tuvReason = "Chybí role výstupu boiler_enable_dhw.";
+      tuvAction = "#iofunc";
+    } else if (missingOutput("valve_3way_tuv")) {
+      tuvReason = "Chybí ventil valve_3way_tuv.";
+      tuvAction = "#iofunc";
+    }
+    setCardDisabled("cardTuv", tuvReason, tuvReason ? tuvAction : "");
+
+    let recReason = null;
+    let recAction = "#recirc";
+    if (!cfg?.dhwRecirc?.enabled) {
+      recReason = "Cirkulace je vypnutá.";
+    } else if (missingInput("recirc_demand")) {
+      recReason = "Chybí role vstupu recirc_demand.";
+      recAction = "#iofunc";
+    } else if (missingOutput("dhw_recirc_pump")) {
+      recReason = "Chybí role výstupu dhw_recirc_pump.";
+      recAction = "#iofunc";
+    } else if (missingTemp("return")) {
+      recReason = "Chybí role teploty return.";
+      recAction = "#temps";
+    }
+    setCardDisabled("cardRecirc", recReason, recReason ? recAction : "");
+
+    let heaterReason = null;
+    let heaterAction = "#aku_heater";
+    if (!cfg?.akuHeater?.enabled) {
+      heaterReason = "AKU heater je vypnutý.";
+    } else if (missingOutput("heater_aku")) {
+      heaterReason = "Chybí role výstupu heater_aku.";
+      heaterAction = "#iofunc";
+    } else if (missingTemp("tankTop")) {
+      heaterReason = "Chybí role tankTop.";
+      heaterAction = "#temps";
+    }
+    setCardDisabled("cardAkuHeater", heaterReason, heaterReason ? heaterAction : "");
+
+    const anyValve = !!roleMap.outputs?.valve_3way_mix || !!roleMap.outputs?.valve_3way_tuv;
+    setCardDisabled("cardValveMix", anyValve ? "" : "Ventily nejsou přiřazené.", anyValve ? "" : "#iofunc");
   }
 
   window.App = window.App || {};
@@ -938,9 +1035,8 @@
   };
 
   document.addEventListener("DOMContentLoaded", () => {
+    dash = getDash() || dash;
     render();
-    refreshDash();
-    setInterval(refreshDash, 1200);
 
     const vg = $id("valveGrid");
     vg && vg.addEventListener("click", async (e) => {
@@ -954,5 +1050,10 @@
         refreshDash();
       } catch {}
     });
+  });
+
+  window.addEventListener("app:dashUpdated", (e) => {
+    dash = e?.detail || getDash() || dash;
+    render();
   });
 })();

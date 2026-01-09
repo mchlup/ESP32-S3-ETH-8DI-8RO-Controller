@@ -11,6 +11,7 @@
 
   const state = {
     status: null,
+    dash: null,
     config: null,
     bleStatus: null,
     bleConfig: null,
@@ -18,20 +19,47 @@
     rules: null,
     rulesStatus: null,
     files: null,
+    lastConfigHash: "",
+    pendingConfig: null,
     ui: {
       lock: { controlUntil: 0, systemUntil: 0 },
       timers: { autoApply: null },
-      dirty: { cfgJson: false },
+      dirty: { cfgJson: false, form: false },
+      connOk: true,
     },
   };
 
   // ---------- utils ----------
-  const toast = (msg, kind="") => {
-    const el = $("#toast");
-    el.textContent = msg;
-    el.className = "toast show" + (kind ? " " + kind : "");
-    clearTimeout(toast._t);
-    toast._t = setTimeout(() => el.classList.remove("show"), 2200);
+  const toast = (msg, kind = "good", opts = {}) => {
+    const host = $("#toasts");
+    if (!host) return;
+    const el = document.createElement("div");
+    el.className = `toast ${kind || ""}`;
+    el.setAttribute("role", "status");
+    el.innerHTML = `
+      <div class="toastMsg">${escapeHtml(msg)}</div>
+      ${opts.actionLabel ? `<button class="toastBtn" type="button">${escapeHtml(opts.actionLabel)}</button>` : ""}
+      <button class="toastClose" type="button" aria-label="Zavřít">×</button>
+    `;
+    host.appendChild(el);
+
+    const remove = () => {
+      if (!el.isConnected) return;
+      el.classList.add("hide");
+      setTimeout(() => el.remove(), 220);
+    };
+
+    const btn = el.querySelector(".toastBtn");
+    if (btn && typeof opts.onAction === "function") {
+      btn.addEventListener("click", () => {
+        opts.onAction();
+        remove();
+      });
+    }
+    el.querySelector(".toastClose")?.addEventListener("click", remove);
+
+    const timeout = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : 3800;
+    if (timeout > 0) setTimeout(remove, timeout);
   };
 
   const fmtMs = (ms) => {
@@ -103,50 +131,67 @@
     }catch(_){ }
   };
 
-  const showPage = (name, ctab = "") => {
-    const sub = String(ctab || "");
+  const showPage = (name) => {
+    const page = String(name || "dash").trim() || "dash";
 
     // pages
-    $$(".page").forEach(p => p.classList.toggle("active", p.id === `page-${name}`));
+    $$(".page").forEach(p => p.classList.toggle("active", p.id === `page-${page}`));
 
-    // sidebar highlight: exact match if exists, otherwise fallback to base item for the page
-    let matched = false;
-    $$(".navItem").forEach(b => {
-      const p = String(b.dataset.page || "");
-      const t = String(b.dataset.ctab || "");
-      const ok = (p === name && t === sub);
-      if (ok) matched = true;
-      b.classList.toggle("active", ok);
-    });
-    if (!matched) {
-      $$(".navItem").forEach(b => {
-        const p = String(b.dataset.page || "");
-        const t = String(b.dataset.ctab || "");
-        if (p === name && t === "") b.classList.add("active");
-      });
-    }
-
-    // config tabs should be deep-linkable
-    if (name === "config" && sub) setCfgTab(sub);
+    // sidebar highlight
+    $$(".navItem").forEach(b => b.classList.toggle("active", String(b.dataset.page || "") === page));
 
     // header title
     const h1 = $(".h1");
     if (h1) {
-      if (name === "dash") {
-        h1.textContent = "Řídicí panel";
-      } else if (name === "config") {
-        const tab = sub || $("#page-config .tab.active")?.dataset?.ctab || "";
-        const label = $(tab ? `#page-config .tab[data-ctab='${tab}']` : "#page-config .tab")?.textContent?.trim();
-        h1.textContent = label ? `Konfigurace – ${label}` : "Konfigurace";
-      } else {
+      if (page === "dash") h1.textContent = "Řídicí panel";
+      else {
         const activeNav = $(".navItem.active");
         const label = activeNav?.textContent?.trim();
         h1.textContent = label || "Heat Controller";
       }
     }
 
-    const h = sub ? `#${name}/${sub}` : `#${name}`;
+    // schema placement (dashboard vs standalone)
+    const schemaCard = $("#cardSchema");
+    const schemaHost = $("#schemaStandalone");
+    const dashHost = $("#page-dash .dashLayout");
+    if (schemaCard && schemaHost && dashHost) {
+      if (page === "schema") {
+        if (schemaCard.parentElement !== schemaHost) schemaHost.appendChild(schemaCard);
+      } else if (page === "dash") {
+        if (schemaCard.parentElement !== dashHost) dashHost.prepend(schemaCard);
+      }
+    }
+
+    const h = `#${page}`;
     if (location.hash !== h) history.replaceState(null, "", h);
+  };
+
+  const mountLegacySections = () => {
+    const move = (id, hostId) => {
+      const el = document.getElementById(id);
+      const host = document.getElementById(hostId);
+      if (!el || !host) return;
+      el.classList.remove("tabPage");
+      el.classList.add("pageSection");
+      host.appendChild(el);
+    };
+
+    move("cfg-ekviterm", "mount-ekviterm");
+    move("cfg-tuv", "mount-tuv");
+    move("cfg-recirc", "mount-recirc");
+    move("cfg-aku_heater", "mount-aku_heater");
+    move("cfg-iofun", "mount-iofunc");
+    move("cfg-tempscfg", "mount-temps");
+
+    const systemHost = document.getElementById("mount-system");
+    ["cfg-io", "cfg-modes", "cfg-time", "cfg-sched", "cfg-buzzer", "cfg-valvecal", "cfg-opentherm", "cfg-json"].forEach((id) => {
+      move(id, "mount-system");
+    });
+
+    const akuRow = document.getElementById("eqAkuSupportRow");
+    const akuGrid = document.getElementById("akuParamGrid");
+    if (akuRow && akuGrid) akuGrid.appendChild(akuRow);
   };
 
   // ---------- render helpers ----------
@@ -551,7 +596,6 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     cfg.akuHeater.maxOnMs = Number.isFinite(Number(cfg.akuHeater.maxOnMs)) ? Number(cfg.akuHeater.maxOnMs) : 2 * 60 * 60 * 1000;
     cfg.akuHeater.minOffMs = Number.isFinite(Number(cfg.akuHeater.minOffMs)) ? Number(cfg.akuHeater.minOffMs) : 10 * 60 * 1000;
     cfg.akuHeater.windows = Array.isArray(cfg.akuHeater.windows) ? cfg.akuHeater.windows : [];
-
     // ---------- Dallas header thermometers (GPIO0..3) ----------
     // Independent from 8 terminal DI inputs; used for DS18B20 on pin header.
     cfg.dallasNames = Array.isArray(cfg.dallasNames) ? cfg.dallasNames : ["","","",""];
@@ -611,6 +655,75 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
 
     return cfg;
 };
+
+  const describeTempRole = (cfg, roleKey) => {
+    const role = (cfg?.thermometers?.roles && typeof cfg.thermometers.roles === "object")
+      ? (cfg.thermometers.roles[roleKey] || {})
+      : {};
+    const source = String(role?.source || "none");
+    if (source === "dallas") {
+      const gpio = Number(role?.gpio ?? 0);
+      const rom = String(role?.rom || "").trim();
+      const nm = String(cfg?.dallasNames?.[gpio] || "").trim() || `Dallas GPIO${gpio}`;
+      return { source, label: `${nm}`, detail: rom ? `ROM ${rom.toUpperCase()}` : "auto" };
+    }
+    if (source === "mqtt") {
+      const idx = Number(role?.mqttIdx || role?.preset || 0);
+      const list = Array.isArray(cfg?.thermometers?.mqtt) ? cfg.thermometers.mqtt : [];
+      const preset = list[idx - 1] || {};
+      const name = String(preset.name || "").trim();
+      const topic = String(role.topic || preset.topic || "").trim();
+      const jsonKey = String(role.jsonKey || preset.jsonKey || "tempC").trim();
+      return { source, label: name || "MQTT teploměr", detail: topic ? `${topic}${jsonKey ? ` • ${jsonKey}` : ""}` : "nenastaveno" };
+    }
+    if (source === "ble") {
+      const id = String(role?.bleId || role?.id || "meteo.tempC").trim();
+      return { source, label: "BLE teploměr", detail: id || "—" };
+    }
+    if (source && source.startsWith("temp")) {
+      return { source, label: "Legacy TEMP", detail: source.toUpperCase() };
+    }
+    return { source: "none", label: "Nepřiřazeno", detail: "—" };
+  };
+
+  const getRoleMap = () => {
+    const cfg = ensureConfigShape();
+    const inputs = {};
+    const outputs = {};
+
+    (cfg.iofunc?.inputs || []).forEach((it, idx) => {
+      const role = String(it?.role || "none");
+      if (role === "none" || inputs[role]) return;
+      const name = String(cfg.inputNames?.[idx] || "").trim() || `Vstup ${idx + 1}`;
+      inputs[role] = { index: idx + 1, name, label: `${idx + 1} – ${name}` };
+    });
+
+    (cfg.iofunc?.outputs || []).forEach((it, idx) => {
+      const role = String(it?.role || "none");
+      if (role === "none" || outputs[role]) return;
+      const name = String(cfg.relayNames?.[idx] || "").trim() || `Relé ${idx + 1}`;
+      const params = (it && typeof it.params === "object") ? it.params : {};
+      outputs[role] = {
+        index: idx + 1,
+        name,
+        label: `${idx + 1} – ${name}`,
+        peer: Number(params.peerRel ?? params.partnerRelay ?? 0) || 0,
+      };
+    });
+
+    const mixValve = outputs.valve_3way_mix || outputs.valve_3way_2rel || null;
+    if (mixValve) outputs.valve_3way_mix = mixValve;
+    const tuzValve = outputs.valve_3way_tuv || outputs.valve_3way_dhw || null;
+    if (tuzValve) outputs.valve_3way_tuv = tuzValve;
+
+    const temps = {};
+    ["outdoor","flow","return","dhw","tankTop","tankMid","tankBottom"].forEach((role) => {
+      temps[role] = describeTempRole(cfg, role);
+    });
+
+    return { inputs, outputs, temps, cfg };
+  };
+
   // expose for feature-specific modules
   window.App = window.App || {};
   window.App.ensureConfigShape = ensureConfigShape;
@@ -619,7 +732,11 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
   // --- external module hooks (equitherm.js, iofunc.js, ...) ---
   window.App.getConfig = () => state.config;
   window.App.getStatus = () => state.status;
+  window.App.getDash = () => state.dash;
+  window.App.getRoleMap = getRoleMap;
   window.App.setConfig = (cfg) => { state.config = cfg; ensureConfigShape(); };
+  window.App.setDirty = (value = true) => { if (state.ui?.dirty) state.ui.dirty.form = !!value; };
+  window.App.isDirty = () => !!state.ui?.dirty?.form;
   // Save config to firmware and (by default) reload config+status so UI stays consistent across tabs.
   window.App.saveConfig = async (cfg, opts={}) => {
     if (cfg && typeof cfg === "object") state.config = cfg;
@@ -627,7 +744,10 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     const r = await apiPostJson("/api/config", state.config);
 
     // successful save => editor is no longer dirty
-    if (state.ui?.dirty) state.ui.dirty.cfgJson = false;
+    if (state.ui?.dirty) {
+      state.ui.dirty.cfgJson = false;
+      state.ui.dirty.form = false;
+    }
 
     const reload = (opts && typeof opts === "object" && opts.reload === false) ? false : true;
     if (reload && typeof window.App.reloadCore === "function") {
@@ -1443,6 +1563,17 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
   // ---------- status load / app init ----------
   const loadStatus = async () => {
     state.status = await apiGet("/api/status").catch(()=>null);
+    if (!state.status) {
+      if (state.ui?.connOk) {
+        state.ui.connOk = false;
+        toast("Ztráta spojení se zařízením.", "warn");
+      }
+      return;
+    }
+    if (!state.ui.connOk) {
+      state.ui.connOk = true;
+      toast("Spojení obnoveno.", "good");
+    }
     renderTop();
     renderIO();
 
@@ -1473,8 +1604,7 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     // Keep config JSON editor synced, but NEVER clobber user's unsaved edits.
     // (Polling runs often; without this guard the editor is unusable.)
     const cfgEd = $("#cfgJson");
-    const jsonTabActive = $("#cfg-json")?.classList?.contains("active");
-    if (jsonTabActive && cfgEd && state.config && document.activeElement !== cfgEd && !state.ui?.dirty?.cfgJson) {
+    if (cfgEd && state.config && document.activeElement !== cfgEd && !state.ui?.dirty?.cfgJson) {
       const next = prettyJson(state.config);
       if (cfgEd.value !== next) cfgEd.value = next;
     }
@@ -1482,11 +1612,22 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     if (typeof window.App?.onStatusLoaded === "function") {
       try { window.App.onStatusLoaded(state.status); } catch(e) {}
     }
+
+    try {
+      window.dispatchEvent(new CustomEvent("app:statusUpdated", { detail: state.status }));
+    } catch (_) {}
   };
 
-  const loadConfig = async () => {
-    const cfg = await apiGet("/api/config").catch(()=>null);
-    state.config = (typeof cfg === "string") ? safeJson(cfg) : cfg;
+  const loadDash = async () => {
+    state.dash = await apiGet("/api/dash").catch(() => null);
+    if (!state.dash) return;
+    try {
+      window.dispatchEvent(new CustomEvent("app:dashUpdated", { detail: state.dash }));
+    } catch (_) {}
+  };
+
+  const applyConfig = (cfg) => {
+    state.config = cfg;
     ensureConfigShape();
     fillModeSelect();
     renderInputsTable();
@@ -1510,13 +1651,48 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     $("#mqttHaPrefix").value = m.haPrefix || "";
 
     if (typeof window.App?.onConfigLoaded === "function") {
-      try { window.App.onConfigLoaded(state.config); } catch(e) {}
+      try { window.App.onConfigLoaded(state.config); } catch (e) {}
     }
+
+    try {
+      window.dispatchEvent(new CustomEvent("app:configUpdated", { detail: state.config }));
+    } catch (_) {}
+  };
+
+  const loadConfig = async (opts = {}) => {
+    const cfgRaw = await apiGet("/api/config").catch(() => null);
+    const cfg = (typeof cfgRaw === "string") ? safeJson(cfgRaw) : cfgRaw;
+    if (!cfg) return;
+    const hash = JSON.stringify(cfg);
+    const changed = hash !== state.lastConfigHash;
+
+    if (changed && state.ui?.dirty?.form && !opts.force) {
+      state.pendingConfig = cfg;
+      toast("Konfigurace se změnila v zařízení – klikni pro reload.", "warn", {
+        actionLabel: "Obnovit",
+        onAction: () => {
+          if (state.pendingConfig) {
+            state.ui.dirty.form = false;
+            state.lastConfigHash = JSON.stringify(state.pendingConfig);
+            applyConfig(state.pendingConfig);
+            state.pendingConfig = null;
+          } else {
+            loadConfig({ force: true });
+          }
+        },
+      });
+      return;
+    }
+
+    state.pendingConfig = null;
+    state.lastConfigHash = hash;
+    applyConfig(cfg);
   };
 
   const loadAll = async () => {
     await loadConfig();
     await loadStatus();
+    await loadDash();
     await loadBle();
     await loadRules();
     await loadFiles();
@@ -1525,14 +1701,15 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
   // Expose reload helpers (modules can call, and App.saveConfig uses reloadCore by default)
   window.App.reloadConfig = loadConfig;
   window.App.reloadStatus = loadStatus;
-  window.App.reloadCore = async () => { await loadConfig(); await loadStatus(); };
+  window.App.reloadDash = loadDash;
+  window.App.reloadCore = async () => { await loadConfig(); await loadStatus(); await loadDash(); };
   window.App.reloadAll = loadAll;
   window.App.showPage = showPage;
 
   // ---------- DOM events ----------
   const wireEvents = () => {
     // nav
-    $$(".navItem").forEach(b => b.addEventListener("click", () => showPage(String(b.dataset.page||"dash"), String(b.dataset.ctab||""))));
+    $$(".navItem").forEach(b => b.addEventListener("click", () => showPage(String(b.dataset.page||"dash"))));
 
     // theme
     const themeKey = "heatui_theme";
@@ -1547,12 +1724,14 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
       applyTheme(next);
     });
 
-    // config tabs (keep URL hash + sidebar consistent)
-    $$(".tab").forEach(b => b.addEventListener("click", () => {
-      const tab = String(b.dataset.ctab || "");
-      if (!tab) return;
-      showPage("config", tab);
-    }));
+    // dirty guard (any config input change)
+    document.addEventListener("input", (e) => {
+      if (!(e.target instanceof HTMLElement)) return;
+      if (!e.target.matches("input,select,textarea")) return;
+      const page = e.target.closest(".page");
+      if (!page || page.id === "page-dash") return;
+      if (state.ui?.dirty) state.ui.dirty.form = true;
+    });
 
     
     // rules tabs
@@ -1727,15 +1906,11 @@ $("#btnAutoRecompute").addEventListener("click", async () => {
 
   // ---------- start ----------
   const init = async () => {
+    mountLegacySections();
     wireEvents();
     const startRaw = (location.hash || "").replace("#","") || "dash";
-    const parts = startRaw.split("/");
-    const page = String(parts[0] || "dash").trim() || "dash";
-    const sub  = String(parts[1] || "").trim();
-
-    // default config tab
-    if (page === "config" && !sub) setCfgTab("io");
-    showPage(page, sub);
+    const page = String(startRaw || "dash").trim() || "dash";
+    showPage(page);
     try{
       await loadAll();
       toast("Připraveno");
@@ -1744,8 +1919,14 @@ $("#btnAutoRecompute").addEventListener("click", async () => {
     }
     // polling (non aggressive)
     setInterval(() => loadStatus().catch(()=>{}), 1200);
+    setInterval(() => loadDash().catch(()=>{}), 1500);
+    setInterval(() => loadConfig().catch(()=>{}), 15000);
     setInterval(() => loadBle().catch(()=>{}), 2500);
   };
 
   window.addEventListener("load", init);
+  window.addEventListener("hashchange", () => {
+    const page = (location.hash || "#dash").replace("#", "");
+    showPage(page);
+  });
 })();
