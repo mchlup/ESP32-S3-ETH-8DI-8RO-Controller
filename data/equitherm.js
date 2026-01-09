@@ -115,6 +115,91 @@
   let lastDash = null;
   let lastStatus = null;
 
+  const roleOnlyEls = [
+    el.outdoorSource, el.outdoorDallas, el.outdoorMqttPreset, el.outdoorTopic, el.outdoorJsonKey, el.outdoorBle,
+    el.flowSource, el.flowDallas, el.flowMqttPreset, el.flowTopic, el.flowJsonKey, el.flowBle,
+    el.valveMaster,
+    el.akuTopSource, el.akuTopDallas, el.akuTopMqttPreset, el.akuTopTopic, el.akuTopJsonKey, el.akuTopBle,
+    el.akuMidSource, el.akuMidDallas, el.akuMidMqttPreset, el.akuMidTopic, el.akuMidJsonKey, el.akuMidBle,
+    el.akuBottomSource, el.akuBottomDallas, el.akuBottomMqttPreset, el.akuBottomTopic, el.akuBottomJsonKey, el.akuBottomBle,
+  ].filter(Boolean);
+
+  const setRoleOnly = () => {
+    roleOnlyEls.forEach((node) => {
+      node.disabled = true;
+      node.classList.add("readOnly");
+    });
+  };
+
+  const applyTempRole = (role, target) => {
+    target.source = String(role?.source || "none");
+    target.gpio = Number(role?.gpio ?? 0);
+    target.rom = String(role?.rom || "");
+    target.topic = String(role?.topic || "");
+    target.jsonKey = String(role?.jsonKey || "");
+    target.mqttIdx = Number(role?.mqttIdx || role?.preset || 0);
+    target.bleId = String(role?.bleId || role?.id || "");
+  };
+
+  const syncRolesToEquitherm = (cfg) => {
+    const map = App.getRoleMap?.();
+    if (!map) return;
+    const roles = cfg?.thermometers?.roles || {};
+    cfg.equitherm = cfg.equitherm || {};
+    const e = cfg.equitherm;
+    e.outdoor = e.outdoor || {};
+    e.flow = e.flow || {};
+    e.boilerIn = e.boilerIn || {};
+    e.akuTop = e.akuTop || {};
+    e.akuMid = e.akuMid || {};
+    e.akuBottom = e.akuBottom || {};
+
+    applyTempRole(roles.outdoor || {}, e.outdoor);
+    applyTempRole(roles.flow || {}, e.flow);
+    applyTempRole(roles.flow || {}, e.boilerIn);
+    applyTempRole(roles.tankTop || {}, e.akuTop);
+    applyTempRole(roles.tankMid || {}, e.akuMid);
+    applyTempRole(roles.tankBottom || {}, e.akuBottom);
+
+    e.valve = e.valve || {};
+    if (map.outputs?.valve_3way_mix) {
+      e.valve.master = map.outputs.valve_3way_mix.index;
+      if (map.outputs.valve_3way_mix.peer) {
+        e.valve.peerRel = map.outputs.valve_3way_mix.peer;
+      }
+    } else {
+      e.valve.master = 0;
+    }
+  };
+
+  const renderRoleList = () => {
+    const list = document.getElementById("eqRoleList");
+    const akuList = document.getElementById("akuRoleList");
+    const map = App.getRoleMap?.();
+    if (!map) return;
+    const fmtTemp = (role) => {
+      if (!role || role.source === "none") return "Nepřiřazeno";
+      return `${role.label} (${role.detail})`;
+    };
+    const fmtOut = (role) => role ? `${role.label}` : "Nepřiřazeno";
+
+    if (list) {
+      list.innerHTML = `
+        <li><span>Venkovní teplota</span><strong>${fmtTemp(map.temps?.outdoor)}</strong></li>
+        <li><span>Teplota boiler_in</span><strong>${fmtTemp(map.temps?.flow)}</strong></li>
+        <li><span>Směšovací ventil</span><strong>${fmtOut(map.outputs?.valve_3way_mix)}</strong></li>
+        <li><span>Noční režim (vstup)</span><strong>${fmtOut(map.inputs?.night_mode)}</strong></li>
+      `;
+    }
+    if (akuList) {
+      akuList.innerHTML = `
+        <li><span>AKU top</span><strong>${fmtTemp(map.temps?.tankTop)}</strong></li>
+        <li><span>AKU mid</span><strong>${fmtTemp(map.temps?.tankMid)}</strong></li>
+        <li><span>AKU bottom</span><strong>${fmtTemp(map.temps?.tankBottom)}</strong></li>
+      `;
+    }
+  };
+
   function fmtTemp(v) {
     if (typeof v !== "number" || !isFinite(v)) return "--";
     return `${v.toFixed(1)}°C`;
@@ -584,6 +669,7 @@
 
   function loadFromConfig(cfg) {
     App.ensureConfigShape(cfg);
+    syncRolesToEquitherm(cfg);
     const e = cfg.equitherm || {};
     el.enabled.checked = !!e.enabled;
 
@@ -759,6 +845,8 @@
     el.nightTflow2.value = (typeof night.tflow2 === "number") ? night.tflow2 : 25;
 
     updateSourceRows();
+    renderRoleList();
+    setRoleOnly();
   }
 
   function saveToConfig(cfg) {
@@ -924,6 +1012,8 @@
     e.refs.night.tflow1 = readNumber(el.nightTflow1.value, e.refs.night.tflow1 ?? 50);
     e.refs.night.tout2  = readNumber(el.nightTout2.value, e.refs.night.tout2 ?? 15);
     e.refs.night.tflow2 = readNumber(el.nightTflow2.value, e.refs.night.tflow2 ?? 25);
+
+    syncRolesToEquitherm(cfg);
   }
 
   function updateValveOptions(dash, cfg, keep) {

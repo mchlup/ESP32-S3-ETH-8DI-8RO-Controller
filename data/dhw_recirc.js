@@ -27,6 +27,57 @@
 
   if (!window.App || !el.btnSave) return;
 
+  const roleOnlyEls = [
+    el.demandInput, el.pumpRelay, el.returnSource, el.returnDallas, el.returnMqttPreset,
+    el.returnTopic, el.returnJsonKey, el.returnBle,
+  ].filter(Boolean);
+
+  const setRoleOnly = () => {
+    roleOnlyEls.forEach((node) => {
+      node.disabled = true;
+      node.classList.add("readOnly");
+    });
+  };
+
+  const applyTempRole = (role, target) => {
+    target.source = String(role?.source || "none");
+    target.gpio = Number(role?.gpio ?? 0);
+    target.rom = String(role?.rom || "");
+    target.topic = String(role?.topic || "");
+    target.jsonKey = String(role?.jsonKey || "");
+    target.mqttIdx = Number(role?.mqttIdx || role?.preset || 0);
+    target.bleId = String(role?.bleId || role?.id || "");
+  };
+
+  const syncRolesToRecirc = (cfg) => {
+    const map = App.getRoleMap?.();
+    if (!map) return;
+    cfg.dhwRecirc = cfg.dhwRecirc || {};
+    if (map.inputs?.recirc_demand) cfg.dhwRecirc.demandInput = map.inputs.recirc_demand.index;
+    else cfg.dhwRecirc.demandInput = 0;
+    if (map.outputs?.dhw_recirc_pump) cfg.dhwRecirc.pumpRelay = map.outputs.dhw_recirc_pump.index;
+    else cfg.dhwRecirc.pumpRelay = 0;
+    cfg.dhwRecirc.tempReturnSource = cfg.dhwRecirc.tempReturnSource || {};
+    const roles = cfg?.thermometers?.roles || {};
+    applyTempRole(roles.return || {}, cfg.dhwRecirc.tempReturnSource);
+  };
+
+  const renderRoleList = () => {
+    const list = document.getElementById("recircRoleList");
+    const map = App.getRoleMap?.();
+    if (!list || !map) return;
+    const fmt = (role) => (role ? role.label : "Nepřiřazeno");
+    const fmtTemp = (role) => {
+      if (!role || role.source === "none") return "Nepřiřazeno";
+      return `${role.label} (${role.detail})`;
+    };
+    list.innerHTML = `
+      <li><span>Požadavek cirkulace</span><strong>${fmt(map.inputs?.recirc_demand)}</strong></li>
+      <li><span>Čerpadlo TUV</span><strong>${fmt(map.outputs?.dhw_recirc_pump)}</strong></li>
+      <li><span>Návratová teplota</span><strong>${fmtTemp(map.temps?.return)}</strong></li>
+    `;
+  };
+
   const INPUT_COUNT = 8;
   const RELAY_COUNT = 8;
 
@@ -195,6 +246,7 @@
 
   function loadFromConfig(cfg) {
     App.ensureConfigShape(cfg);
+    syncRolesToRecirc(cfg);
     const r = cfg.dhwRecirc || {};
     el.enabled.checked = !!r.enabled;
     el.mode.value = r.mode || "on_demand";
@@ -216,6 +268,8 @@
     el.returnBle.value = src.bleId || src.id || "meteo.tempC";
     updateSourceRows();
     renderWindows(cfg);
+    renderRoleList();
+    setRoleOnly();
   }
 
   function saveToConfig(cfg) {
@@ -265,6 +319,7 @@
       win.push({ start, end, days });
     });
     cfg.dhwRecirc.windows = win;
+    syncRolesToRecirc(cfg);
   }
 
   async function refreshDash(cfg, keepSelections) {

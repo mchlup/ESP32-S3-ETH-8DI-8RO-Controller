@@ -19,6 +19,38 @@
   if (!window.App || !el.btnSave) return;
 
   const RELAY_COUNT = 8;
+  const roleOnlyEls = [el.relay].filter(Boolean);
+  const setRoleOnly = () => {
+    roleOnlyEls.forEach((node) => {
+      node.disabled = true;
+      node.classList.add("readOnly");
+    });
+  };
+
+  const syncRolesToAkuHeater = (cfg) => {
+    const map = App.getRoleMap?.();
+    if (!map) return;
+    cfg.akuHeater = cfg.akuHeater || {};
+    if (map.outputs?.heater_aku) cfg.akuHeater.relay = map.outputs.heater_aku.index;
+    else cfg.akuHeater.relay = 0;
+  };
+
+  const renderRoleList = () => {
+    const list = document.getElementById("akuHeaterRoleList");
+    const map = App.getRoleMap?.();
+    if (!list || !map) return;
+    const fmt = (role) => (role ? role.label : "Nepřiřazeno");
+    const fmtTemp = (role) => {
+      if (!role || role.source === "none") return "Nepřiřazeno";
+      return `${role.label} (${role.detail})`;
+    };
+    list.innerHTML = `
+      <li><span>Relé dohřevu</span><strong>${fmt(map.outputs?.heater_aku)}</strong></li>
+      <li><span>AKU top</span><strong>${fmtTemp(map.temps?.tankTop)}</strong></li>
+      <li><span>AKU mid</span><strong>${fmtTemp(map.temps?.tankMid)}</strong></li>
+      <li><span>AKU bottom</span><strong>${fmtTemp(map.temps?.tankBottom)}</strong></li>
+    `;
+  };
 
   function setSelectOptions(selectEl, options, keepValue) {
     if (!selectEl) return;
@@ -84,6 +116,7 @@
 
   function loadFromConfig(cfg) {
     App.ensureConfigShape(cfg);
+    syncRolesToAkuHeater(cfg);
     const h = cfg.akuHeater || {};
     el.enabled.checked = !!h.enabled;
     el.relay.value = String(h.relay || 0);
@@ -94,6 +127,8 @@
     el.maxOnMin.value = Math.round((h.maxOnMs ?? 2 * 60 * 60 * 1000) / 60000);
     el.minOffMin.value = Math.round((h.minOffMs ?? 10 * 60 * 1000) / 60000);
     renderWindows(cfg);
+    renderRoleList();
+    setRoleOnly();
   }
 
   function saveToConfig(cfg) {
@@ -121,6 +156,7 @@
     });
     h.windows = win;
     cfg.akuHeater = h;
+    syncRolesToAkuHeater(cfg);
   }
 
   function bindEvents() {

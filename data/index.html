@@ -20,40 +20,70 @@
       </div>
 
       <nav class="nav" aria-label="Navigace">
-        <button class="navItem active" data-page="dash">
-          <span class="ico">⌁</span><span>Přehled</span>
-        </button>
-        <button class="navItem" data-page="config">
-          <span class="ico">⚙</span><span>Konfigurace</span>
-        </button>
-        <button class="navItem" data-page="config" data-ctab="ekviterm">
-          <span class="ico">📈</span><span>Ekviterm</span>
-        </button>
-        <button class="navItem" data-page="config" data-ctab="tuv">
-          <span class="ico">♨</span><span>Ohřev TUV</span>
-        </button>
-        <button class="navItem" data-page="config" data-ctab="recirc">
-          <span class="ico">⟳</span><span>Cirkulace TUV</span>
-        </button>
-        <button class="navItem" data-page="config" data-ctab="aku_heater">
-          <span class="ico">♨</span><span>AKU heater</span>
-        </button>
-        <button class="navItem" data-page="mqtt">
-          <span class="ico">⇄</span><span>MQTT / HA</span>
-        </button>
-        <button class="navItem" data-page="ble">
-          <span class="ico">⌂</span><span>BLE</span>
-        </button>
-        <button class="navItem" data-page="rules">
-          <span class="ico">⟰</span><span>Rule engine</span>
-        </button>
-        <button class="navItem" data-page="files">
-          <span class="ico">⧉</span><span>LittleFS</span>
-        </button>
-        <button class="navItem" data-page="system">
-          <span class="ico">⟲</span><span>Systém</span>
-        </button>
-        <button class="navItem" data-page="ota"><span class="ico">⤒</span><span>OTA update</span></button>
+        <div class="navGroup">
+          <div class="navGroupTitle">Přehled</div>
+          <button class="navItem active" data-page="dash">
+            <span class="ico">⌁</span><span>Dashboard</span>
+          </button>
+          <button class="navItem" data-page="schema">
+            <span class="ico">🗺</span><span>Schéma</span>
+          </button>
+        </div>
+
+        <div class="navGroup">
+          <div class="navGroupTitle">Funkce</div>
+          <button class="navItem" data-page="ekviterm">
+            <span class="ico">📈</span><span>Ekviterm</span>
+          </button>
+          <button class="navItem" data-page="tuv">
+            <span class="ico">♨</span><span>Ohřev TUV</span>
+          </button>
+          <button class="navItem" data-page="recirc">
+            <span class="ico">⟳</span><span>Cirkulace TUV</span>
+          </button>
+          <button class="navItem" data-page="aku">
+            <span class="ico">⛁</span><span>Podpora AKU</span>
+          </button>
+          <button class="navItem" data-page="aku_heater">
+            <span class="ico">♨</span><span>AKU heater</span>
+          </button>
+        </div>
+
+        <div class="navGroup">
+          <div class="navGroupTitle">Základy</div>
+          <button class="navItem" data-page="iofunc">
+            <span class="ico">⎈</span><span>Funkce I/O</span>
+          </button>
+          <button class="navItem" data-page="temps">
+            <span class="ico">🌡</span><span>Teploměry</span>
+          </button>
+        </div>
+
+        <div class="navGroup">
+          <div class="navGroupTitle">Integrace</div>
+          <button class="navItem" data-page="mqtt">
+            <span class="ico">⇄</span><span>MQTT / HA</span>
+          </button>
+          <button class="navItem" data-page="ble">
+            <span class="ico">⌂</span><span>BLE</span>
+          </button>
+          <button class="navItem" data-page="rules">
+            <span class="ico">⟰</span><span>Rule engine</span>
+          </button>
+        </div>
+
+        <div class="navGroup">
+          <div class="navGroupTitle">Správa</div>
+          <button class="navItem" data-page="files">
+            <span class="ico">⧉</span><span>LittleFS</span>
+          </button>
+          <button class="navItem" data-page="system">
+            <span class="ico">⟲</span><span>Systém</span>
+          </button>
+          <button class="navItem" data-page="ota">
+            <span class="ico">⤒</span><span>OTA update</span>
+          </button>
+        </div>
       </nav>
 
       <div class="sideFooter">
@@ -81,7 +111,7 @@
 
         <div class="dashLayout">
 
-          <div class="card" id="cardSchema" style="display:none">
+          <div class="card" id="cardSchema">
             <div class="cardHead">
               <div>
                 <div class="cardTitle">Schéma systému</div>
@@ -99,7 +129,7 @@
             </div>
             </div>
           </div>
-          <div class="card" id="cardEquitherm" style="display:none">
+          <div class="card" id="cardEquitherm">
                       <div class="cardHead">
                         <div>
                           <div class="cardTitle">Ekviterm</div>
@@ -109,7 +139,7 @@
                       <div class="ioGrid" id="eqDashGrid"></div>
                     </div>
 
-          <div class="card" id="cardAku" style="display:none">
+          <div class="card" id="cardAku">
                       <div class="cardHead">
                         <div>
                           <div class="cardTitle">AKU nádrž</div>
@@ -119,7 +149,7 @@
                       <div id="akuDashGrid"></div>
                     </div>
 
-          <div class="card" id="cardValveMix" style="display:none">
+          <div class="card" id="cardValveMix">
                       <div class="cardHead">
                         <div>
                           <div class="cardTitle">Ventily V2/V3</div>
@@ -129,7 +159,7 @@
                       <div class="ioGrid" id="valveMixGrid"></div>
                     </div>
 
-          <div class="card" id="cardRecirc" style="display:none">
+          <div class="card" id="cardRecirc">
                       <div class="cardHead">
                         <div>
                           <div class="cardTitle">Cirkulace TUV</div>
@@ -139,7 +169,7 @@
                       <div class="ioGrid" id="recircDashGrid"></div>
                     </div>
 
-          <div class="card" id="cardAkuHeater" style="display:none">
+          <div class="card" id="cardAkuHeater">
                       <div class="cardHead">
                         <div>
                           <div class="cardTitle">AKU heater</div>
@@ -149,7 +179,7 @@
                       <div class="ioGrid" id="akuHeaterDashGrid"></div>
                     </div>
 
-          <div class="card" id="cardReasons" style="display:none">
+          <div class="card" id="cardReasons">
                       <div class="cardHead">
                         <div>
                           <div class="cardTitle">Řídicí důvody</div>
@@ -159,7 +189,7 @@
                       <div class="ioGrid" id="reasonsDashGrid"></div>
                     </div>
 
-          <div class="card" id="cardTuv" style="display:none">
+          <div class="card" id="cardTuv">
                       <div class="cardHead">
                         <div>
                           <div class="cardTitle">Ohřev TUV</div>
@@ -240,7 +270,7 @@
                     <div class="ioGrid" id="inputGrid"></div>
                   </div>
 
-          <div class="card" id="cardValves" style="display:none">
+          <div class="card" id="cardValves">
                   <div class="cardHead">
                     <div>
                       <div class="cardTitle">Trojcestné ventily</div>
@@ -250,7 +280,7 @@
                   <div class="ioGrid" id="valveGrid"></div>
                 </div>
 
-          <div class="card" id="cardTemps" style="display:none">
+          <div class="card" id="cardTemps">
                   <div class="cardHead">
                     <div>
                       <div class="cardTitle">Teploty</div>
@@ -262,7 +292,265 @@
         </div>
       </section>
 
-      <section class="page" id="page-config">
+      <section class="page" id="page-schema">
+        <div class="pageIntro">
+          <div>
+            <div class="h2">Schéma topného systému</div>
+            <div class="muted">Dynamické schéma je stejné jako na Dashboardu, pouze ve větším náhledu.</div>
+          </div>
+        </div>
+        <div id="schemaStandalone" class="schemaStandalone"></div>
+      </section>
+
+      <section class="page" id="page-ekviterm">
+        <div class="pageIntro">
+          <div>
+            <div class="h2">Ekviterm</div>
+            <div class="muted">Řízení teploty topné vody podle venkovní teploty a požadavků systému.</div>
+          </div>
+        </div>
+        <div class="grid2">
+          <div class="card helpCard">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Nápověda</div>
+                <div class="muted">Co ekviterm dělá a jaké role vyžaduje.</div>
+              </div>
+            </div>
+            <div class="pad">
+              <ul class="helpList">
+                <li>Ekviterm počítá cílovou teplotu vody podle venkovní teploty.</li>
+                <li>Vyžaduje role teploměrů: <b>outdoor</b> a <b>flow</b> (boiler_in).</li>
+                <li>Pokud používáš AKU podporu, využívá role <b>tankTop/mid/bottom</b>.</li>
+                <li>Směšovací ventil je určen rolí výstupu <b>valve_3way_mix</b>.</li>
+              </ul>
+              <div class="btnRow">
+                <a class="btn ghost" href="#temps">Upravit v Teploměry</a>
+                <a class="btn ghost" href="#iofunc">Upravit ve Funkce I/O</a>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Použité přiřazení</div>
+                <div class="muted">Role → konkrétní senzory a výstupy</div>
+              </div>
+            </div>
+            <div class="pad">
+              <ul class="roleList" id="eqRoleList"></ul>
+            </div>
+          </div>
+        </div>
+        <div id="mount-ekviterm"></div>
+      </section>
+
+      <section class="page" id="page-aku">
+        <div class="pageIntro">
+          <div>
+            <div class="h2">Podpora AKU</div>
+            <div class="muted">Logika využití akumulační nádrže v rámci ekvitermu.</div>
+          </div>
+        </div>
+        <div class="grid2">
+          <div class="card helpCard">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Nápověda</div>
+                <div class="muted">Jak funguje podpora AKU a jaké role se používají.</div>
+              </div>
+            </div>
+            <div class="pad">
+              <ul class="helpList">
+                <li>Funkce využívá teplotní role <b>tankTop/mid/bottom</b>.</li>
+                <li>Chování při nedostatku tepla z AKU nastavíš v parametrech níže.</li>
+              </ul>
+              <div class="btnRow">
+                <a class="btn ghost" href="#temps">Upravit v Teploměry</a>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Použité přiřazení</div>
+                <div class="muted">Role → konkrétní senzory</div>
+              </div>
+            </div>
+            <div class="pad">
+              <ul class="roleList" id="akuRoleList"></ul>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="cardHead">
+            <div>
+              <div class="cardTitle">Parametry AKU podpory</div>
+              <div class="muted">Nastavení prahů a chování při využití akumulace.</div>
+            </div>
+          </div>
+          <div class="pad">
+            <div class="eqCurveGrid" id="akuParamGrid"></div>
+          </div>
+        </div>
+        <div id="mount-aku"></div>
+      </section>
+
+      <section class="page" id="page-tuv">
+        <div class="pageIntro">
+          <div>
+            <div class="h2">Ohřev TUV</div>
+            <div class="muted">Režim pro dohřev bojleru, přepínání ventilů a řízení bypassu.</div>
+          </div>
+        </div>
+        <div class="grid2">
+          <div class="card helpCard">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Nápověda</div>
+                <div class="muted">Role potřebné pro funkci TUV.</div>
+              </div>
+            </div>
+            <div class="pad">
+              <ul class="helpList">
+                <li>Aktivace režimu je řízena vstupem s rolí <b>dhw_enable</b>.</li>
+                <li>Požadavek na kotel jde přes výstup <b>boiler_enable_dhw</b>.</li>
+                <li>Přepínací ventil TUV používá roli <b>valve_3way_tuv</b>.</li>
+              </ul>
+              <div class="btnRow">
+                <a class="btn ghost" href="#iofunc">Upravit ve Funkce I/O</a>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Použité přiřazení</div>
+                <div class="muted">Role → konkrétní vstupy/výstupy</div>
+              </div>
+            </div>
+            <div class="pad">
+              <ul class="roleList" id="tuvRoleList"></ul>
+            </div>
+          </div>
+        </div>
+        <div id="mount-tuv"></div>
+      </section>
+
+      <section class="page" id="page-recirc">
+        <div class="pageIntro">
+          <div>
+            <div class="h2">Cirkulace TUV</div>
+            <div class="muted">Režimy on-demand a časová okna pro recirkulační pumpu.</div>
+          </div>
+        </div>
+        <div class="grid2">
+          <div class="card helpCard">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Nápověda</div>
+                <div class="muted">Role potřebné pro cirkulaci.</div>
+              </div>
+            </div>
+            <div class="pad">
+              <ul class="helpList">
+                <li>Požadavek cirkulace používá roli vstupu <b>recirc_demand</b>.</li>
+                <li>Čerpadlo cirkulace je výstup s rolí <b>dhw_recirc_pump</b>.</li>
+                <li>Stop teplotu porovnává role teploměru <b>return</b>.</li>
+              </ul>
+              <div class="btnRow">
+                <a class="btn ghost" href="#iofunc">Upravit ve Funkce I/O</a>
+                <a class="btn ghost" href="#temps">Upravit v Teploměry</a>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Použité přiřazení</div>
+                <div class="muted">Role → konkrétní vstupy/výstupy</div>
+              </div>
+            </div>
+            <div class="pad">
+              <ul class="roleList" id="recircRoleList"></ul>
+            </div>
+          </div>
+        </div>
+        <div id="mount-recirc"></div>
+      </section>
+
+      <section class="page" id="page-aku_heater">
+        <div class="pageIntro">
+          <div>
+            <div class="h2">AKU heater</div>
+            <div class="muted">Elektrický dohřev akumulace.</div>
+          </div>
+        </div>
+        <div class="grid2">
+          <div class="card helpCard">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Nápověda</div>
+                <div class="muted">Role potřebné pro dohřev.</div>
+              </div>
+            </div>
+            <div class="pad">
+              <ul class="helpList">
+                <li>Relé dohřevu je role <b>heater_aku</b>.</li>
+                <li>Teploty AKU vycházejí z rolí <b>tankTop/mid/bottom</b>.</li>
+              </ul>
+              <div class="btnRow">
+                <a class="btn ghost" href="#iofunc">Upravit ve Funkce I/O</a>
+                <a class="btn ghost" href="#temps">Upravit v Teploměry</a>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Použité přiřazení</div>
+                <div class="muted">Role → konkrétní vstupy/výstupy</div>
+              </div>
+            </div>
+            <div class="pad">
+              <ul class="roleList" id="akuHeaterRoleList"></ul>
+            </div>
+          </div>
+        </div>
+        <div id="mount-aku_heater"></div>
+      </section>
+
+      <section class="page" id="page-iofunc">
+        <div class="pageIntro">
+          <div>
+            <div class="h2">Funkce I/O</div>
+            <div class="muted">Jediné místo, kde nastavíš role vstupů a výstupů.</div>
+          </div>
+        </div>
+        <div id="mount-iofunc"></div>
+      </section>
+
+      <section class="page" id="page-temps">
+        <div class="pageIntro">
+          <div>
+            <div class="h2">Teploměry</div>
+            <div class="muted">Jediné místo, kde nastavíš význam teplotních rolí.</div>
+          </div>
+        </div>
+        <div id="mount-temps"></div>
+      </section>
+
+      <section class="page" id="page-system">
+        <div class="pageIntro">
+          <div>
+            <div class="h2">Systém</div>
+            <div class="muted">Režimy, čas, plánování a systémové nástroje.</div>
+          </div>
+        </div>
+        <div id="mount-system"></div>
+      </section>
+
+      <section class="page" id="page-config" style="display:none">
         <div class="tabs">
           <button class="tab active" data-ctab="io">Vstupy & relé</button>
           <button class="tab" data-ctab="modes">Režimy</button>
@@ -543,7 +831,7 @@
           <div class="ioValue"><span class="hint">Ekviterm řídí ventil pouze v režimu <b>Řízení = AUTO</b>. V MANUAL jen počítá cílovou teplotu.</span></div>
         </div>
 
-        <div class="ioRow">
+        <div class="ioRow role-hidden">
           <div class="ioLabel">Venkovní teplota</div>
           <div class="ioValue">
             <select id="eqOutdoorSource">
@@ -584,7 +872,7 @@
           </div>
         </div>
 
-        <div class="ioRow">
+        <div class="ioRow role-hidden">
           <div class="ioLabel">Teplota vstupu do kotle (boiler_in)</div>
           <div class="ioValue">
             <select id="eqFlowSource">
@@ -626,7 +914,7 @@
           </div>
         </div>
 
-        <div class="ioRow">
+        <div class="ioRow role-hidden">
           <div class="ioLabel">3c ventil</div>
           <div class="ioValue">
             <select id="eqValveMaster"></select>
@@ -634,7 +922,7 @@
           </div>
         </div>
 
-        <div class="ioRow">
+        <div class="ioRow role-hidden">
           <div class="ioLabel">AKU top</div>
           <div class="ioValue">
             <select id="eqAkuTopSource"></select>
@@ -657,7 +945,7 @@
           </div>
         </div>
 
-        <div class="ioRow">
+        <div class="ioRow role-hidden">
           <div class="ioLabel">AKU mid</div>
           <div class="ioValue">
             <select id="eqAkuMidSource"></select>
@@ -680,7 +968,7 @@
           </div>
         </div>
 
-        <div class="ioRow">
+        <div class="ioRow role-hidden">
           <div class="ioLabel">AKU bottom</div>
           <div class="ioValue">
             <select id="eqAkuBottomSource"></select>
@@ -786,7 +1074,7 @@
           </div>
         </div>
 
-        <div class="ioRow">
+        <div class="ioRow" id="eqAkuSupportRow">
           <div class="ioLabel">AKU podpora</div>
           <div class="ioValue">
             <div class="row2">
@@ -914,7 +1202,7 @@
           </div>
         </div>
 
-        <div class="ioRow">
+        <div class="ioRow role-hidden">
           <div class="ioLabel">Požadavek (vstup)</div>
           <div class="ioValue">
             <select id="tuvDemandInput"></select>
@@ -922,7 +1210,7 @@
           </div>
         </div>
 
-        <div class="ioRow">
+        <div class="ioRow role-hidden">
           <div class="ioLabel">Výstup požadavku</div>
           <div class="ioValue">
             <select id="tuvRequestRelay"></select>
@@ -940,7 +1228,7 @@
           </div>
         </div>
 
-        <div class="ioRow">
+        <div class="ioRow role-hidden">
           <div class="ioLabel">V3 bypass (odpojení AKU)</div>
           <div class="ioValue">
             <select id="tuvValveMaster"></select>
@@ -1022,13 +1310,13 @@
             </select>
           </div>
         </div>
-        <div class="ioRow">
+        <div class="ioRow role-hidden">
           <div class="ioLabel">Požadavek (vstup)</div>
           <div class="ioValue">
             <select id="recircDemandInput"></select>
           </div>
         </div>
-        <div class="ioRow">
+        <div class="ioRow role-hidden">
           <div class="ioLabel">Výstup pumpy</div>
           <div class="ioValue">
             <select id="recircPumpRelay"></select>
@@ -1044,7 +1332,7 @@
             </div>
           </div>
         </div>
-        <div class="ioRow">
+        <div class="ioRow role-hidden">
           <div class="ioLabel">Návratové čidlo</div>
           <div class="ioValue">
             <select id="recircReturnSource"></select>
@@ -1114,7 +1402,7 @@
               <label>Aktivní</label>
               <label class="switch"><input id="akuHeaterEnabled" type="checkbox"><span class="slider"></span></label>
             </div>
-            <div class="field">
+            <div class="field role-hidden">
               <label>Relé (výstup)</label>
               <select id="akuHeaterRelay"></select>
             </div>
@@ -1674,9 +1962,9 @@
   </div>
 </section>
 
-      <div class="toast" id="toast" role="status" aria-live="polite"></div>
     </main>
   </div>
+  <div id="toasts" class="toasts" aria-live="polite" aria-atomic="true"></div>
 
   <!-- Days picker modal -->
   <div class="modal hidden" id="modalDays" aria-hidden="true">

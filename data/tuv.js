@@ -20,6 +20,39 @@
 
   if (!window.App || !el.btnSave) return;
 
+  const roleOnlyEls = [el.demandInput, el.requestRelay, el.valveMaster].filter(Boolean);
+  const setRoleOnly = () => {
+    roleOnlyEls.forEach((node) => {
+      node.disabled = true;
+      node.classList.add("readOnly");
+    });
+  };
+
+  const syncRolesToTuv = (cfg) => {
+    const map = App.getRoleMap?.();
+    if (!map) return;
+    cfg.tuv = cfg.tuv || {};
+    if (map.inputs?.dhw_enable) cfg.tuv.demandInput = map.inputs.dhw_enable.index;
+    else cfg.tuv.demandInput = 0;
+    if (map.outputs?.boiler_enable_dhw) cfg.tuv.requestRelay = map.outputs.boiler_enable_dhw.index;
+    else cfg.tuv.requestRelay = 0;
+    if (map.outputs?.valve_3way_tuv) cfg.tuv.valveMaster = map.outputs.valve_3way_tuv.index;
+    else cfg.tuv.valveMaster = 0;
+    cfg.tuv.relay = cfg.tuv.requestRelay;
+  };
+
+  const renderRoleList = () => {
+    const list = document.getElementById("tuvRoleList");
+    const map = App.getRoleMap?.();
+    if (!list || !map) return;
+    const fmt = (role) => (role ? role.label : "Nepřiřazeno");
+    list.innerHTML = `
+      <li><span>Aktivace TUV (vstup)</span><strong>${fmt(map.inputs?.dhw_enable)}</strong></li>
+      <li><span>Požadavek kotle (výstup)</span><strong>${fmt(map.outputs?.boiler_enable_dhw)}</strong></li>
+      <li><span>Ventil TUV</span><strong>${fmt(map.outputs?.valve_3way_tuv)}</strong></li>
+    `;
+  };
+
   const clampPct = (v) => {
     const n = Number(v);
     if (!Number.isFinite(n)) return 0;
@@ -115,6 +148,7 @@
 
   function loadFromConfig(cfg) {
     App.ensureConfigShape(cfg);
+    syncRolesToTuv(cfg);
     const t = cfg.tuv || {};
     el.enabled.checked = !!t.enabled;
     el.demandInput.value = String(t.demandInput || 0);
@@ -128,6 +162,8 @@
     el.chPct.value = clampPct(bv.chPct ?? 100);
     el.restoreEqValve.checked = (typeof t.restoreEqValveAfter === "boolean") ? t.restoreEqValveAfter : true;
     updateEnableHint(cfg);
+    renderRoleList();
+    setRoleOnly();
   }
 
   function findInputRoleIndex(cfg, role) {
@@ -166,6 +202,7 @@
     cfg.tuv.bypassValve.bypassPct = clampPct(el.bypassPct.value);
     cfg.tuv.bypassValve.chPct = clampPct(el.chPct.value);
     cfg.tuv.bypassValve.invert = !!el.bypassInvert.checked;
+    syncRolesToTuv(cfg);
   }
 
   function updateStatusBox(status, cfg) {

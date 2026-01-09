@@ -62,7 +62,15 @@ a{color:inherit}
 .brandTitle{font-weight: 760; letter-spacing:.2px}
 .brandSub{font-size: 12px; color: var(--muted); margin-top:2px}
 
-.nav{display:flex; flex-direction:column; gap:8px; margin-top: 10px}
+.nav{display:flex; flex-direction:column; gap:12px; margin-top: 10px}
+.navGroup{display:flex; flex-direction:column; gap:6px}
+.navGroupTitle{
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .12em;
+  color: var(--muted);
+  padding: 8px 12px 2px;
+}
 .navItem{
   display:flex; gap:10px; align-items:center;
   width:100%;
@@ -117,6 +125,97 @@ a{color:inherit}
   background: rgba(255,255,255,.02);
   font-size: 12px;
   color: var(--muted);
+}
+
+.pageIntro{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:16px;
+  margin: 6px 4px 16px;
+}
+.h2{font-size: 18px; font-weight: 750}
+
+.schemaStandalone{
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 12px;
+  background: var(--panel);
+}
+
+.helpCard .helpList,
+.roleList{
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 8px;
+}
+.helpList li{
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.roleList li{
+  display:flex;
+  justify-content:space-between;
+  gap:12px;
+  border-bottom: 1px dashed var(--line);
+  padding-bottom: 6px;
+}
+.roleList li:last-child{border-bottom:0}
+.roleList span{color: var(--muted); font-size: 12px}
+.roleList strong{font-weight: 600}
+
+.role-hidden{display:none !important;}
+.readOnly{opacity:.6;}
+
+.toasts{
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+  z-index: 50;
+}
+.toast{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow);
+  min-width: 260px;
+  max-width: 360px;
+  animation: toast-in .2s ease-out;
+}
+.toast.good{border-color: rgba(78,229,154,.5)}
+.toast.warn{border-color: rgba(255,211,107,.5)}
+.toast.bad{border-color: rgba(255,107,125,.5)}
+.toastMsg{flex:1; font-size: 13px}
+.toastBtn{
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 6px 8px;
+  cursor:pointer;
+}
+.toastClose{
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-size: 18px;
+  cursor:pointer;
+}
+.toast.hide{opacity:0; transform: translateY(4px); transition: .2s ease;}
+
+@keyframes toast-in{
+  from{opacity:0; transform: translateY(6px);}
+  to{opacity:1; transform: translateY(0);}
 }
 
 .page{display:none}
