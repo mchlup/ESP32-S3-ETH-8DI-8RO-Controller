@@ -1,11 +1,19 @@
 /* Valve calibration module (v2) */
 (() => {
-  const App = window.App;
-  if (!App) return;
+  let initialized = false;
 
-  const $ = App.$;
-  const $$ = App.$$;
-  const toast = App.toast;
+  const init = () => {
+    if (initialized) return;
+    initialized = true;
+    const App = window.App;
+    if (!App) {
+      initialized = false;
+      return;
+    }
+
+    const $ = App.$;
+    const $$ = App.$$;
+    const toast = App.toast;
   const apiPostJson = App.apiPostJson;
 
   const RELAY_COUNT = 8;
@@ -333,20 +341,23 @@
     setInterval(tick, 200);
   };
 
-  const prev = App.onConfigLoaded;
-  App.onConfigLoaded = (cfg) => {
-    try { prev && prev(cfg); } catch (_) {}
-    render();
-  };
+    const prev = App.onConfigLoaded;
+    App.onConfigLoaded = (cfg) => {
+      try { prev && prev(cfg); } catch (_) {}
+      render();
+    };
 
-  window.addEventListener("DOMContentLoaded", () => {
     bind();
     if (App.getConfig?.()) render();
-  });
 
-  // Přepnutí záložky – udržuj synchronizaci parametrů s "Funkce I/O".
-  window.addEventListener("app:cfgTabChanged", (ev) => {
-    const tab = ev?.detail?.tab;
-    if (tab === "valvecal") render();
+    // Přepnutí záložky – udržuj synchronizaci parametrů s "Funkce I/O".
+    window.addEventListener("app:cfgTabChanged", (ev) => {
+      const tab = ev?.detail?.tab;
+      if (tab === "valvecal") render();
+    });
+  };
+
+  window.addEventListener("app:pageMounted", (ev) => {
+    if (ev?.detail?.id === "system") init();
   });
 })();

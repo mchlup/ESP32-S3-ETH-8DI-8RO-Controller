@@ -1,0 +1,767 @@
+<section class="page" id="page-ekviterm">
+        <div class="summaryBar">
+          <div class="summaryMain">
+            <div class="summaryTitle">
+              <span class="summaryIcon">📈</span>
+              <div>
+                <div class="h2">Ekviterm</div>
+                <div class="muted">Řízení teploty topné vody podle venkovní teploty.</div>
+              </div>
+            </div>
+            <span class="chip" id="chip-ekviterm">—</span>
+          </div>
+          <div class="summaryActions">
+            <div class="summaryToggle" data-mount="eqEnabled"></div>
+            <span class="dirty" id="dirty-ekviterm" hidden>Neuloženo</span>
+            <div data-mount="btnSaveEquitherm"></div>
+            <button class="btn ghost" id="btnReloadEquitherm" type="button">Obnovit</button>
+          </div>
+        </div>
+        <div class="grid2">
+          <details class="helpDrawer">
+            <summary>Nápověda</summary>
+            <div class="helpBody">
+              <ul class="helpList">
+                <li>Ekviterm počítá cílovou teplotu vody podle venkovní teploty.</li>
+                <li>Vyžaduje role teploměrů: <b>outdoor</b> a <b>flow</b> (boiler_in).</li>
+                <li>Pokud používáš AKU podporu, využívá role <b>tankTop/mid/bottom</b>.</li>
+                <li>Směšovací ventil je určen rolí výstupu <b>valve_3way_mix</b>.</li>
+              </ul>
+              <div class="btnRow">
+                <a class="btn ghost" href="#temps">Upravit v Teploměry</a>
+                <a class="btn ghost" href="#iofunc">Upravit ve Funkce I/O</a>
+              </div>
+            </div>
+          </details>
+          <div class="card">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Použité přiřazení</div>
+                <div class="muted">Role → konkrétní senzory a výstupy</div>
+              </div>
+            </div>
+            <div class="pad">
+              <ul class="roleList" id="eqRoleList"></ul>
+            </div>
+          </div>
+        </div>
+        <details class="accordion" open>
+          <summary>Základní parametry</summary>
+          <div class="pad" id="mount-ekviterm">
+<div class="tabPage" id="cfg-ekviterm">
+  <div class="grid2">
+    <div class="card">
+      <div class="cardHead">
+        <div>
+          <div class="cardTitle">Ekviterm</div>
+          <div class="cardSub">Dynamická volba teploměrů DS18B20 / MQTT / BLE + řízení 3c ventilu (AUTO)</div>
+        </div>
+        <button class="btn" id="btnSaveEquitherm">Uložit</button>
+      </div>
+
+      <div class="ioGrid">
+        <div class="ioRow">
+          <div class="ioLabel">Povolit</div>
+          <div class="ioValue"><label class="switch"><input id="eqEnabled" type="checkbox"><span class="slider"></span></label></div>
+        </div>
+
+        <div class="ioRow">
+          <div class="ioLabel">Poznámka</div>
+          <div class="ioValue"><span class="hint">Ekviterm řídí ventil pouze v režimu <b>Řízení = AUTO</b>. V MANUAL jen počítá cílovou teplotu.</span></div>
+        </div>
+
+        <div class="ioRow role-hidden">
+          <div class="ioLabel">Venkovní teplota</div>
+          <div class="ioValue">
+            <select id="eqOutdoorSource">
+              <option value="dallas">DS18B20 (Dallas)</option>
+              <option value="temp1">Vstup TEMP1 (legacy)</option>
+              <option value="temp2">Vstup TEMP2 (legacy)</option>
+              <option value="temp3">Vstup TEMP3 (legacy)</option>
+              <option value="temp4">Vstup TEMP4 (legacy)</option>
+              <option value="temp5">Vstup TEMP5 (legacy)</option>
+              <option value="temp6">Vstup TEMP6 (legacy)</option>
+              <option value="temp7">Vstup TEMP7 (legacy)</option>
+              <option value="temp8">Vstup TEMP8 (legacy)</option>
+              <option value="mqtt">MQTT</option>
+              <option value="ble">BLE teploměr</option>
+              <option value="none">Nepoužít</option>
+              </select>
+              <div class="mt8">
+                <button class="btn ghost mini" id="btnEqUseRoleOutdoor" type="button">Použít přiřazení z „Teploměry“</button>
+              </div>
+            <div class="mt8" id="eqOutdoorDallasRow">
+              <select id="eqOutdoorDallas"></select>
+            </div>
+            <div class="mt8" id="eqOutdoorMqttRow">
+  <div class="row2">
+    <div style="grid-column:1/-1">
+      <label class="mini">Přednastavený teploměr (z "Teploměry")</label>
+      <select id="eqOutdoorMqttPreset"></select>
+    </div>
+    <div><label class="mini">Topic</label><input id="eqOutdoorTopic" type="text" placeholder="např. meteo/state"></div>
+    <div><label class="mini">JSON klíč (volitelné)</label><input id="eqOutdoorJsonKey" type="text" placeholder="např. tempC"></div>
+  </div>
+  <div class="mini mt4">Pokud payload není číslo, nastav JSON klíč (např. <code>tempC</code>). Bez klíče se zkusí autodetekce <code>tempC/temperature/temp</code>.</div>
+</div>
+            <div class="mt8" id="eqOutdoorBleRow">
+              <select id="eqOutdoorBle"></select>
+              <div class="mini mt4">Vyžaduje povolené BLE a dostupná data (např. meteostanice).</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ioRow role-hidden">
+          <div class="ioLabel">Teplota vstupu do kotle (boiler_in)</div>
+          <div class="ioValue">
+            <select id="eqFlowSource">
+              <option value="dallas">DS18B20 (Dallas)</option>
+              <option value="temp1">Vstup TEMP1 (legacy)</option>
+              <option value="temp2">Vstup TEMP2 (legacy)</option>
+              <option value="temp3">Vstup TEMP3 (legacy)</option>
+              <option value="temp4">Vstup TEMP4 (legacy)</option>
+              <option value="temp5">Vstup TEMP5 (legacy)</option>
+              <option value="temp6">Vstup TEMP6 (legacy)</option>
+              <option value="temp7">Vstup TEMP7 (legacy)</option>
+              <option value="temp8">Vstup TEMP8 (legacy)</option>
+              <option value="mqtt">MQTT</option>
+              <option value="ble">BLE teploměr</option>
+              <option value="none">Nepoužít</option>
+            </select>
+            <div class="mt8">
+              <button class="btn ghost mini" id="btnEqUseRoleFlow" type="button">Použít přiřazení z „Teploměry“</button>
+            </div>
+            <div class="mt8" id="eqFlowDallasRow">
+              <select id="eqFlowDallas"></select>
+              <div class="hint mt4">Pro řízení ventilu je potřeba mít nastavený feedback senzor (boiler_in).</div>
+            </div>
+            <div class="mt8" id="eqFlowMqttRow">
+  <div class="row2">
+    <div style="grid-column:1/-1">
+      <label class="mini">Přednastavený teploměr (z "Teploměry")</label>
+      <select id="eqFlowMqttPreset"></select>
+    </div>
+    <div><label class="mini">Topic</label><input id="eqFlowTopic" type="text" placeholder="např. boiler/flow"></div>
+    <div><label class="mini">JSON klíč (volitelné)</label><input id="eqFlowJsonKey" type="text" placeholder="např. tempC"></div>
+  </div>
+  <div class="mini mt4">Pokud payload není číslo, nastav JSON klíč (např. <code>tempC</code>). Bez klíče se zkusí autodetekce <code>tempC/temperature/temp</code>.</div>
+</div>
+            <div class="mt8" id="eqFlowBleRow">
+              <select id="eqFlowBle"></select>
+              <div class="mini mt4">Vyžaduje povolené BLE a dostupná data (např. meteostanice).</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ioRow role-hidden">
+          <div class="ioLabel">3c ventil</div>
+          <div class="ioValue">
+            <select id="eqValveMaster"></select>
+            <div class="hint mt4">Vyber master relé ventilu nakonfigurovaného v <b>Funkce I/O</b> jako „3c ventil (2 relé)“.</div>
+          </div>
+        </div>
+
+        <div class="ioRow role-hidden">
+          <div class="ioLabel">AKU top</div>
+          <div class="ioValue">
+            <select id="eqAkuTopSource"></select>
+            <div class="mt8" id="eqAkuTopDallasRow">
+              <select id="eqAkuTopDallas"></select>
+            </div>
+            <div class="mt8" id="eqAkuTopMqttRow">
+              <div class="row2">
+                <div style="grid-column:1/-1">
+                  <label class="mini">Přednastavený teploměr (z "Teploměry")</label>
+                  <select id="eqAkuTopMqttPreset"></select>
+                </div>
+                <div><label class="mini">Topic</label><input id="eqAkuTopTopic" type="text" placeholder="např. aku/top"></div>
+                <div><label class="mini">JSON klíč (volitelné)</label><input id="eqAkuTopJsonKey" type="text" placeholder="např. tempC"></div>
+              </div>
+            </div>
+            <div class="mt8" id="eqAkuTopBleRow">
+              <select id="eqAkuTopBle"></select>
+            </div>
+          </div>
+        </div>
+
+        <div class="ioRow role-hidden">
+          <div class="ioLabel">AKU mid</div>
+          <div class="ioValue">
+            <select id="eqAkuMidSource"></select>
+            <div class="mt8" id="eqAkuMidDallasRow">
+              <select id="eqAkuMidDallas"></select>
+            </div>
+            <div class="mt8" id="eqAkuMidMqttRow">
+              <div class="row2">
+                <div style="grid-column:1/-1">
+                  <label class="mini">Přednastavený teploměr (z "Teploměry")</label>
+                  <select id="eqAkuMidMqttPreset"></select>
+                </div>
+                <div><label class="mini">Topic</label><input id="eqAkuMidTopic" type="text" placeholder="např. aku/mid"></div>
+                <div><label class="mini">JSON klíč (volitelné)</label><input id="eqAkuMidJsonKey" type="text" placeholder="např. tempC"></div>
+              </div>
+            </div>
+            <div class="mt8" id="eqAkuMidBleRow">
+              <select id="eqAkuMidBle"></select>
+            </div>
+          </div>
+        </div>
+
+        <div class="ioRow role-hidden">
+          <div class="ioLabel">AKU bottom</div>
+          <div class="ioValue">
+            <select id="eqAkuBottomSource"></select>
+            <div class="mt8" id="eqAkuBottomDallasRow">
+              <select id="eqAkuBottomDallas"></select>
+            </div>
+            <div class="mt8" id="eqAkuBottomMqttRow">
+              <div class="row2">
+                <div style="grid-column:1/-1">
+                  <label class="mini">Přednastavený teploměr (z "Teploměry")</label>
+                  <select id="eqAkuBottomMqttPreset"></select>
+                </div>
+                <div><label class="mini">Topic</label><input id="eqAkuBottomTopic" type="text" placeholder="např. aku/bottom"></div>
+                <div><label class="mini">JSON klíč (volitelné)</label><input id="eqAkuBottomJsonKey" type="text" placeholder="např. tempC"></div>
+              </div>
+            </div>
+            <div class="mt8" id="eqAkuBottomBleRow">
+              <select id="eqAkuBottomBle"></select>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="cardHead">
+        <div>
+          <div class="cardTitle">Křivka a řízení</div>
+          <div class="cardSub">Výpočet cílové teploty otopné vody + plynulé korekce polohy</div>
+        </div>
+      </div>
+
+      <div class="mt8">
+        <canvas id="eqCurveCanvas" width="520" height="260" style="width:100%;max-width:720px;border:1px solid rgba(255,255,255,0.12);border-radius:12px;"></canvas>
+        <div class="mini mt4">Graf: ekvitermní křivka (den/noc) + aktuální bod (Tout → Target).</div>
+      </div>
+
+      <!-- Controls grid: max 2 sloupce (auto-fit), aby se nerozbilo na širokých displejích v 2-sloupcovém layoutu -->
+      <div class="eqCurveGrid">
+
+        <div class="ioRow">
+          <div class="ioLabel">Limity T<sub>flow</sub></div>
+          <div class="ioValue">
+            <div class="row2">
+              <div><label class="mini">Min °C</label><input id="eqMinFlow" type="number" step="0.1"></div>
+              <div><label class="mini">Max °C</label><input id="eqMaxFlow" type="number" step="0.1"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ioRow">
+          <div class="ioLabel">Denní křivka</div>
+          <div class="ioValue">
+            <div class="row2">
+              <div><label class="mini">Sklon</label><input id="eqSlopeDay" type="number" step="0.01"></div>
+              <div><label class="mini">Posun</label><input id="eqShiftDay" type="number" step="0.1"></div>
+            </div>
+            <div class="hint mt4">Vzorec: <code>Tflow = (20 - Tout) * slope + 20 + shift</code></div>
+          </div>
+        </div>
+
+        <div class="ioRow">
+          <div class="ioLabel">Noční křivka</div>
+          <div class="ioValue">
+            <div class="row2">
+              <div><label class="mini">Sklon</label><input id="eqSlopeNight" type="number" step="0.01"></div>
+              <div><label class="mini">Posun</label><input id="eqShiftNight" type="number" step="0.1"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ioRow">
+          <div class="ioLabel">Řízení ventilu</div>
+          <div class="ioValue">
+            <div class="row3">
+              <div><label class="mini">Deadband °C</label><input id="eqDeadbandC" type="number" step="0.1"></div>
+              <div><label class="mini">Krok %</label><input id="eqStepPct" type="number" step="1"></div>
+              <div><label class="mini">Perioda s</label><input id="eqPeriodS" type="number" step="1"></div>
+            </div>
+            <div class="row2 mt8">
+              <div><label class="mini">Min %</label><input id="eqMinPct" type="number" step="1"></div>
+              <div class="muted small">Max % nastavte níže (den/noc)</div>
+            </div>
+            <div class="row2 mt8">
+              <div><label class="mini">Offset křivky °C</label><input id="eqCurveOffsetC" type="number" step="0.1"></div>
+              <div><label class="mini">Max boiler_in °C</label><input id="eqMaxBoilerInC" type="number" step="0.1"></div>
+            </div>
+            <div class="row2 mt8">
+              <div>
+                <label class="mini">Detekce no-flow</label>
+                <label class="switch"><input id="eqNoFlowDetectEnabled" type="checkbox"><span class="slider"></span></label>
+              </div>
+              <div><label class="mini">No-flow timeout (s)</label><input id="eqNoFlowTimeoutS" type="number" step="1"></div>
+            </div>
+            <div class="row2 mt8">
+              <div><label class="mini">Max % (den)</label><input id="eqMaxPctDay" type="number" step="1"></div>
+              <div><label class="mini">Max % (noc)</label><input id="eqMaxPctNight" type="number" step="1"></div>
+            </div>
+            <div class="row2 mt8">
+              <div><label class="mini">No-flow test (s)</label><input id="eqNoFlowTestPeriodS" type="number" step="1"></div>
+            </div>
+          </div>
+        </div>
+
+        
+            <div class="row3 mt8">
+              <div><label class="mini">Min AKU top °C (den)</label><input id="eqAkuMinTopCDay" type="number" step="0.1"></div>
+              <div><label class="mini">Min Δ k target °C (den)</label><input id="eqAkuMinDeltaToTargetCDay" type="number" step="0.1"></div>
+              <div><label class="mini">Min Δ k boiler_in °C (den)</label><input id="eqAkuMinDeltaToBoilerInCDay" type="number" step="0.1"></div>
+            </div>
+            <div class="row3 mt8">
+              <div><label class="mini">Min AKU top °C (noc)</label><input id="eqAkuMinTopCNight" type="number" step="0.1"></div>
+              <div><label class="mini">Min Δ k target °C (noc)</label><input id="eqAkuMinDeltaToTargetCNight" type="number" step="0.1"></div>
+              <div><label class="mini">Min Δ k boiler_in °C (noc)</label><input id="eqAkuMinDeltaToBoilerInCNight" type="number" step="0.1"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ioRow">
+          <div class="ioLabel">Fallback venek</div>
+          <div class="ioValue">
+            <div class="row2">
+              <div><label class="mini">Fallback °C</label><input id="eqFallbackOutdoorC" type="number" step="0.1"></div>
+              <div><label class="mini">Max age (min)</label><input id="eqOutdoorMaxAgeMin" type="number" step="1"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ioRow">
+          <div class="ioLabel">Profil & noc</div>
+          <div class="ioValue">
+            <div class="row3">
+              <div>
+                <label class="mini">Profil</label>
+                <select id="eqSystemProfile">
+                  <option value="comfort">Comfort</option>
+                  <option value="standard">Standard</option>
+                  <option value="eco">Eco</option>
+                </select>
+              </div>
+              <div>
+                <label class="mini">Zdroj nočního režimu</label>
+                <select id="eqNightModeSource">
+                  <option value="heat_call">Heat call</option>
+                  <option value="input">Vstup</option>
+                  <option value="schedule">Plán</option>
+                  <option value="manual">Manuálně</option>
+                </select>
+              </div>
+              <div>
+                <label class="mini">Manuální noc</label>
+                <label class="switch"><input id="eqNightModeManual" type="checkbox"><span class="slider"></span></label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ioRow">
+          <div class="ioLabel">Stav</div>
+          <div class="ioValue">
+            <pre id="eqStatusBox" class="mono small"></pre>
+          </div>
+        </div>
+
+        <details class="mt12">
+          <summary>Pokročilé (legacy refs)</summary>
+          <div class="ioGrid mt8">
+            <div class="ioRow">
+              <div class="ioLabel">Day refs</div>
+              <div class="ioValue">
+                <div class="row4">
+                  <div><label class="mini">Tout1</label><input id="eqHeatTout1" type="number" step="0.1"></div>
+                  <div><label class="mini">Tflow1</label><input id="eqHeatTflow1" type="number" step="0.1"></div>
+                  <div><label class="mini">Tout2</label><input id="eqHeatTout2" type="number" step="0.1"></div>
+                  <div><label class="mini">Tflow2</label><input id="eqHeatTflow2" type="number" step="0.1"></div>
+                </div>
+              </div>
+            </div>
+            <div class="ioRow">
+              <div class="ioLabel">Night refs</div>
+              <div class="ioValue">
+                <div class="row4">
+                  <div><label class="mini">Tout1</label><input id="eqNightTout1" type="number" step="0.1"></div>
+                  <div><label class="mini">Tflow1</label><input id="eqNightTflow1" type="number" step="0.1"></div>
+                  <div><label class="mini">Tout2</label><input id="eqNightTout2" type="number" step="0.1"></div>
+                  <div><label class="mini">Tflow2</label><input id="eqNightTflow2" type="number" step="0.1"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </details>
+
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+          <div class="cardSub">Dynamická volba teploměrů DS18B20 / MQTT / BLE + řízení 3c ventilu (AUTO)</div>
+        </div>
+        <button class="btn" id="btnSaveEquitherm">Uložit</button>
+      </div>
+
+      <div class="ioGrid">
+        <div class="ioRow">
+          <div class="ioLabel">Povolit</div>
+          <div class="ioValue"><label class="switch"><input id="eqEnabled" type="checkbox"><span class="slider"></span></label></div>
+        </div>
+
+        <div class="ioRow">
+          <div class="ioLabel">Poznámka</div>
+          <div class="ioValue"><span class="hint">Ekviterm řídí ventil pouze v režimu <b>Řízení = AUTO</b>. V MANUAL jen počítá cílovou teplotu.</span></div>
+        </div>
+
+        <div class="ioRow role-hidden">
+          <div class="ioLabel">Venkovní teplota</div>
+          <div class="ioValue">
+            <select id="eqOutdoorSource">
+              <option value="dallas">DS18B20 (Dallas)</option>
+              <option value="temp1">Vstup TEMP1 (legacy)</option>
+              <option value="temp2">Vstup TEMP2 (legacy)</option>
+              <option value="temp3">Vstup TEMP3 (legacy)</option>
+              <option value="temp4">Vstup TEMP4 (legacy)</option>
+              <option value="temp5">Vstup TEMP5 (legacy)</option>
+              <option value="temp6">Vstup TEMP6 (legacy)</option>
+              <option value="temp7">Vstup TEMP7 (legacy)</option>
+              <option value="temp8">Vstup TEMP8 (legacy)</option>
+              <option value="mqtt">MQTT</option>
+              <option value="ble">BLE teploměr</option>
+              <option value="none">Nepoužít</option>
+              </select>
+              <div class="mt8">
+                <button class="btn ghost mini" id="btnEqUseRoleOutdoor" type="button">Použít přiřazení z „Teploměry“</button>
+              </div>
+            <div class="mt8" id="eqOutdoorDallasRow">
+              <select id="eqOutdoorDallas"></select>
+            </div>
+            <div class="mt8" id="eqOutdoorMqttRow">
+  <div class="row2">
+    <div style="grid-column:1/-1">
+      <label class="mini">Přednastavený teploměr (z "Teploměry")</label>
+      <select id="eqOutdoorMqttPreset"></select>
+    </div>
+    <div><label class="mini">Topic</label><input id="eqOutdoorTopic" type="text" placeholder="např. meteo/state"></div>
+    <div><label class="mini">JSON klíč (volitelné)</label><input id="eqOutdoorJsonKey" type="text" placeholder="např. tempC"></div>
+  </div>
+  <div class="mini mt4">Pokud payload není číslo, nastav JSON klíč (např. <code>tempC</code>). Bez klíče se zkusí autodetekce <code>tempC/temperature/temp</code>.</div>
+</div>
+            <div class="mt8" id="eqOutdoorBleRow">
+              <select id="eqOutdoorBle"></select>
+              <div class="mini mt4">Vyžaduje povolené BLE a dostupná data (např. meteostanice).</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ioRow role-hidden">
+          <div class="ioLabel">Teplota vstupu do kotle (boiler_in)</div>
+          <div class="ioValue">
+            <select id="eqFlowSource">
+              <option value="dallas">DS18B20 (Dallas)</option>
+              <option value="temp1">Vstup TEMP1 (legacy)</option>
+              <option value="temp2">Vstup TEMP2 (legacy)</option>
+              <option value="temp3">Vstup TEMP3 (legacy)</option>
+              <option value="temp4">Vstup TEMP4 (legacy)</option>
+              <option value="temp5">Vstup TEMP5 (legacy)</option>
+              <option value="temp6">Vstup TEMP6 (legacy)</option>
+              <option value="temp7">Vstup TEMP7 (legacy)</option>
+              <option value="temp8">Vstup TEMP8 (legacy)</option>
+              <option value="mqtt">MQTT</option>
+              <option value="ble">BLE teploměr</option>
+              <option value="none">Nepoužít</option>
+            </select>
+            <div class="mt8">
+              <button class="btn ghost mini" id="btnEqUseRoleFlow" type="button">Použít přiřazení z „Teploměry“</button>
+            </div>
+            <div class="mt8" id="eqFlowDallasRow">
+              <select id="eqFlowDallas"></select>
+              <div class="hint mt4">Pro řízení ventilu je potřeba mít nastavený feedback senzor (boiler_in).</div>
+            </div>
+            <div class="mt8" id="eqFlowMqttRow">
+  <div class="row2">
+    <div style="grid-column:1/-1">
+      <label class="mini">Přednastavený teploměr (z "Teploměry")</label>
+      <select id="eqFlowMqttPreset"></select>
+    </div>
+    <div><label class="mini">Topic</label><input id="eqFlowTopic" type="text" placeholder="např. boiler/flow"></div>
+    <div><label class="mini">JSON klíč (volitelné)</label><input id="eqFlowJsonKey" type="text" placeholder="např. tempC"></div>
+  </div>
+  <div class="mini mt4">Pokud payload není číslo, nastav JSON klíč (např. <code>tempC</code>). Bez klíče se zkusí autodetekce <code>tempC/temperature/temp</code>.</div>
+</div>
+            <div class="mt8" id="eqFlowBleRow">
+              <select id="eqFlowBle"></select>
+              <div class="mini mt4">Vyžaduje povolené BLE a dostupná data (např. meteostanice).</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ioRow role-hidden">
+          <div class="ioLabel">3c ventil</div>
+          <div class="ioValue">
+            <select id="eqValveMaster"></select>
+            <div class="hint mt4">Vyber master relé ventilu nakonfigurovaného v <b>Funkce I/O</b> jako „3c ventil (2 relé)“.</div>
+          </div>
+        </div>
+
+        <div class="ioRow role-hidden">
+          <div class="ioLabel">AKU top</div>
+          <div class="ioValue">
+            <select id="eqAkuTopSource"></select>
+            <div class="mt8" id="eqAkuTopDallasRow">
+              <select id="eqAkuTopDallas"></select>
+            </div>
+            <div class="mt8" id="eqAkuTopMqttRow">
+              <div class="row2">
+                <div style="grid-column:1/-1">
+                  <label class="mini">Přednastavený teploměr (z "Teploměry")</label>
+                  <select id="eqAkuTopMqttPreset"></select>
+                </div>
+                <div><label class="mini">Topic</label><input id="eqAkuTopTopic" type="text" placeholder="např. aku/top"></div>
+                <div><label class="mini">JSON klíč (volitelné)</label><input id="eqAkuTopJsonKey" type="text" placeholder="např. tempC"></div>
+              </div>
+            </div>
+            <div class="mt8" id="eqAkuTopBleRow">
+              <select id="eqAkuTopBle"></select>
+            </div>
+          </div>
+        </div>
+
+        <div class="ioRow role-hidden">
+          <div class="ioLabel">AKU mid</div>
+          <div class="ioValue">
+            <select id="eqAkuMidSource"></select>
+            <div class="mt8" id="eqAkuMidDallasRow">
+              <select id="eqAkuMidDallas"></select>
+            </div>
+            <div class="mt8" id="eqAkuMidMqttRow">
+              <div class="row2">
+                <div style="grid-column:1/-1">
+                  <label class="mini">Přednastavený teploměr (z "Teploměry")</label>
+                  <select id="eqAkuMidMqttPreset"></select>
+                </div>
+                <div><label class="mini">Topic</label><input id="eqAkuMidTopic" type="text" placeholder="např. aku/mid"></div>
+                <div><label class="mini">JSON klíč (volitelné)</label><input id="eqAkuMidJsonKey" type="text" placeholder="např. tempC"></div>
+              </div>
+            </div>
+            <div class="mt8" id="eqAkuMidBleRow">
+              <select id="eqAkuMidBle"></select>
+            </div>
+          </div>
+        </div>
+
+        <div class="ioRow role-hidden">
+          <div class="ioLabel">AKU bottom</div>
+          <div class="ioValue">
+            <select id="eqAkuBottomSource"></select>
+            <div class="mt8" id="eqAkuBottomDallasRow">
+              <select id="eqAkuBottomDallas"></select>
+            </div>
+            <div class="mt8" id="eqAkuBottomMqttRow">
+              <div class="row2">
+                <div style="grid-column:1/-1">
+                  <label class="mini">Přednastavený teploměr (z "Teploměry")</label>
+                  <select id="eqAkuBottomMqttPreset"></select>
+                </div>
+                <div><label class="mini">Topic</label><input id="eqAkuBottomTopic" type="text" placeholder="např. aku/bottom"></div>
+                <div><label class="mini">JSON klíč (volitelné)</label><input id="eqAkuBottomJsonKey" type="text" placeholder="např. tempC"></div>
+              </div>
+            </div>
+            <div class="mt8" id="eqAkuBottomBleRow">
+              <select id="eqAkuBottomBle"></select>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="cardHead">
+        <div>
+          <div class="cardTitle">Křivka a řízení</div>
+          <div class="cardSub">Výpočet cílové teploty otopné vody + plynulé korekce polohy</div>
+        </div>
+      </div>
+
+      <div class="mt8">
+        <canvas id="eqCurveCanvas" width="520" height="260" style="width:100%;max-width:720px;border:1px solid rgba(255,255,255,0.12);border-radius:12px;"></canvas>
+        <div class="mini mt4">Graf: ekvitermní křivka (den/noc) + aktuální bod (Tout → Target).</div>
+      </div>
+
+      <!-- Controls grid: max 2 sloupce (auto-fit), aby se nerozbilo na širokých displejích v 2-sloupcovém layoutu -->
+      <div class="eqCurveGrid">
+
+        <div class="ioRow">
+          <div class="ioLabel">Limity T<sub>flow</sub></div>
+          <div class="ioValue">
+            <div class="row2">
+              <div><label class="mini">Min °C</label><input id="eqMinFlow" type="number" step="0.1"></div>
+              <div><label class="mini">Max °C</label><input id="eqMaxFlow" type="number" step="0.1"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ioRow">
+          <div class="ioLabel">Denní křivka</div>
+          <div class="ioValue">
+            <div class="row2">
+              <div><label class="mini">Sklon</label><input id="eqSlopeDay" type="number" step="0.01"></div>
+              <div><label class="mini">Posun</label><input id="eqShiftDay" type="number" step="0.1"></div>
+            </div>
+            <div class="hint mt4">Vzorec: <code>Tflow = (20 - Tout) * slope + 20 + shift</code></div>
+          </div>
+        </div>
+
+        <div class="ioRow">
+          <div class="ioLabel">Noční křivka</div>
+          <div class="ioValue">
+            <div class="row2">
+              <div><label class="mini">Sklon</label><input id="eqSlopeNight" type="number" step="0.01"></div>
+              <div><label class="mini">Posun</label><input id="eqShiftNight" type="number" step="0.1"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ioRow">
+          <div class="ioLabel">Řízení ventilu</div>
+          <div class="ioValue">
+            <div class="row3">
+              <div><label class="mini">Deadband °C</label><input id="eqDeadbandC" type="number" step="0.1"></div>
+              <div><label class="mini">Krok %</label><input id="eqStepPct" type="number" step="1"></div>
+              <div><label class="mini">Perioda s</label><input id="eqPeriodS" type="number" step="1"></div>
+            </div>
+            <div class="row2 mt8">
+              <div><label class="mini">Min %</label><input id="eqMinPct" type="number" step="1"></div>
+              <div class="muted small">Max % nastavte níže (den/noc)</div>
+            </div>
+            <div class="row2 mt8">
+              <div><label class="mini">Offset křivky °C</label><input id="eqCurveOffsetC" type="number" step="0.1"></div>
+              <div><label class="mini">Max boiler_in °C</label><input id="eqMaxBoilerInC" type="number" step="0.1"></div>
+            </div>
+            <div class="row2 mt8">
+              <div>
+                <label class="mini">Detekce no-flow</label>
+                <label class="switch"><input id="eqNoFlowDetectEnabled" type="checkbox"><span class="slider"></span></label>
+              </div>
+              <div><label class="mini">No-flow timeout (s)</label><input id="eqNoFlowTimeoutS" type="number" step="1"></div>
+            </div>
+            <div class="row2 mt8">
+              <div><label class="mini">Max % (den)</label><input id="eqMaxPctDay" type="number" step="1"></div>
+              <div><label class="mini">Max % (noc)</label><input id="eqMaxPctNight" type="number" step="1"></div>
+            </div>
+            <div class="row2 mt8">
+              <div><label class="mini">No-flow test (s)</label><input id="eqNoFlowTestPeriodS" type="number" step="1"></div>
+            </div>
+          </div>
+        </div>
+
+        
+            <div class="row3 mt8">
+              <div><label class="mini">Min AKU top °C (den)</label><input id="eqAkuMinTopCDay" type="number" step="0.1"></div>
+              <div><label class="mini">Min Δ k target °C (den)</label><input id="eqAkuMinDeltaToTargetCDay" type="number" step="0.1"></div>
+              <div><label class="mini">Min Δ k boiler_in °C (den)</label><input id="eqAkuMinDeltaToBoilerInCDay" type="number" step="0.1"></div>
+            </div>
+            <div class="row3 mt8">
+              <div><label class="mini">Min AKU top °C (noc)</label><input id="eqAkuMinTopCNight" type="number" step="0.1"></div>
+              <div><label class="mini">Min Δ k target °C (noc)</label><input id="eqAkuMinDeltaToTargetCNight" type="number" step="0.1"></div>
+              <div><label class="mini">Min Δ k boiler_in °C (noc)</label><input id="eqAkuMinDeltaToBoilerInCNight" type="number" step="0.1"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ioRow">
+          <div class="ioLabel">Fallback venek</div>
+          <div class="ioValue">
+            <div class="row2">
+              <div><label class="mini">Fallback °C</label><input id="eqFallbackOutdoorC" type="number" step="0.1"></div>
+              <div><label class="mini">Max age (min)</label><input id="eqOutdoorMaxAgeMin" type="number" step="1"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ioRow">
+          <div class="ioLabel">Profil & noc</div>
+          <div class="ioValue">
+            <div class="row3">
+              <div>
+                <label class="mini">Profil</label>
+                <select id="eqSystemProfile">
+                  <option value="comfort">Comfort</option>
+                  <option value="standard">Standard</option>
+                  <option value="eco">Eco</option>
+                </select>
+              </div>
+              <div>
+                <label class="mini">Zdroj nočního režimu</label>
+                <select id="eqNightModeSource">
+                  <option value="heat_call">Heat call</option>
+                  <option value="input">Vstup</option>
+                  <option value="schedule">Plán</option>
+                  <option value="manual">Manuálně</option>
+                </select>
+              </div>
+              <div>
+                <label class="mini">Manuální noc</label>
+                <label class="switch"><input id="eqNightModeManual" type="checkbox"><span class="slider"></span></label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ioRow">
+          <div class="ioLabel">Stav</div>
+          <div class="ioValue">
+            <pre id="eqStatusBox" class="mono small"></pre>
+          </div>
+        </div>
+
+        <details class="mt12">
+          <summary>Pokročilé (legacy refs)</summary>
+          <div class="ioGrid mt8">
+            <div class="ioRow">
+              <div class="ioLabel">Day refs</div>
+              <div class="ioValue">
+                <div class="row4">
+                  <div><label class="mini">Tout1</label><input id="eqHeatTout1" type="number" step="0.1"></div>
+                  <div><label class="mini">Tflow1</label><input id="eqHeatTflow1" type="number" step="0.1"></div>
+                  <div><label class="mini">Tout2</label><input id="eqHeatTout2" type="number" step="0.1"></div>
+                  <div><label class="mini">Tflow2</label><input id="eqHeatTflow2" type="number" step="0.1"></div>
+                </div>
+              </div>
+            </div>
+            <div class="ioRow">
+              <div class="ioLabel">Night refs</div>
+              <div class="ioValue">
+                <div class="row4">
+                  <div><label class="mini">Tout1</label><input id="eqNightTout1" type="number" step="0.1"></div>
+                  <div><label class="mini">Tflow1</label><input id="eqNightTflow1" type="number" step="0.1"></div>
+                  <div><label class="mini">Tout2</label><input id="eqNightTout2" type="number" step="0.1"></div>
+                  <div><label class="mini">Tflow2</label><input id="eqNightTflow2" type="number" step="0.1"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </details>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+  </div>
+        </details>
+        <details class="accordion">
+          <summary>Pokročilé</summary>
+          <div class="pad muted">Další pokročilé volby se zobrazí podle konfigurace systému.</div>
+        </details>
+      </section>

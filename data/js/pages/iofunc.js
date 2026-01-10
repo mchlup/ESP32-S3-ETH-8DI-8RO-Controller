@@ -1,13 +1,21 @@
 /* I/O function mapping UI module (v3) */
 (() => {
-  const App = window.App;
-  if (!App) return;
+  let initialized = false;
 
-  const $ = App.$;
-  const $$ = App.$$;
-  const toast = App.toast;
-  const INPUT_COUNT = 8;
-  const RELAY_COUNT = 8;
+  const init = () => {
+    if (initialized) return;
+    initialized = true;
+    const App = window.App;
+    if (!App) {
+      initialized = false;
+      return;
+    }
+
+    const $ = App.$;
+    const $$ = App.$$;
+    const toast = App.toast;
+    const INPUT_COUNT = 8;
+    const RELAY_COUNT = 8;
 
   const escapeHtml = (s) =>
     String(s ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -545,10 +553,8 @@
     renderTables();
   };
 
-  window.addEventListener("DOMContentLoaded", () => {
     bind();
     if (App.getConfig?.()) renderTables();
-  });
 
   // Při přepnutí záložky Konfigurace chceme vždy renderovat z aktuálního cfg,
   // aby se parametry 3c ventilů synchronizovaly i s "Kalibrace ventilů".
@@ -558,5 +564,11 @@
   });
 
   // expose for debugging
-  window.IOFunc = { render, renderTables };
+    window.IOFunc = { render, renderTables };
+  };
+
+  const unmount = () => {};
+
+  window.Pages = window.Pages || {};
+  window.Pages.iofunc = { id: "iofunc", mount: init, unmount };
 })();

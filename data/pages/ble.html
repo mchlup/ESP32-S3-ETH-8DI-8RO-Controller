@@ -1,0 +1,105 @@
+<section class="page" id="page-ble">
+        <div class="grid2">
+          <div class="card">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">BLE konfigurace</div>
+                <div class="muted">Zapnutí, zabezpečení, meteo klient</div>
+              </div>
+              <button class="btn" id="btnSaveBle">Uložit</button>
+            </div>
+
+            <div class="form">
+              <label class="check"><input type="checkbox" id="bleEnabled"> <span>BLE enabled</span></label>
+              <div class="row">
+                <div class="field">
+                  <label>Device name</label>
+                  <input id="bleDeviceName" placeholder="ESP-HeatControl" />
+                </div>
+                <div class="field">
+                  <label>Advertise</label>
+                  <select id="bleAdvertise">
+                    <option value="true">true</option>
+                    <option value="false">false</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="row">
+                <div class="field">
+                  <label>Security mode</label>
+                  <select id="bleSecurityMode">
+                    <option value="0">0 (none)</option>
+                    <option value="1">1 (passkey)</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label>Passkey</label>
+                  <input id="blePasskey" type="number" min="0" max="999999" placeholder="123456" />
+                </div>
+              </div>
+
+              <label class="check"><input type="checkbox" id="bleAllowlist"> <span>Allowlist enforced</span></label>
+
+              <hr class="sep" />
+
+              <label class="check"><input type="checkbox" id="meteoEnabled"> <span>Meteo enabled</span></label>
+
+              <div class="row">
+                <div class="field">
+                  <label>Meteo MAC</label>
+                  <input id="meteoMac" placeholder="AA:BB:CC:DD:EE:FF" />
+                </div>
+                <div class="field">
+                  <label>Scan (ms)</label>
+                  <input id="meteoScanMs" type="number" min="1000" step="1000" placeholder="20000" />
+                </div>
+              </div>
+
+              <div class="row">
+                <div class="field">
+                  <label>Reconnect (ms)</label>
+                  <input id="meteoReconnectMs" type="number" min="1000" step="1000" placeholder="30000" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card" id="blePairCard">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Párování & Allowlist</div>
+                <div class="muted">Okno pro přidání zařízení do allowlistu</div>
+              </div>
+            </div>
+
+            <div class="form">
+              <div class="row">
+                <div class="field">
+                  <label>Pairing (sekundy)</label>
+                  <input id="pairSeconds" type="number" min="10" max="600" value="120" />
+                </div>
+                <div class="field">
+                  <label>Role (hint)</label>
+                  <input id="pairRole" placeholder="např. meteo" />
+                </div>
+                <div class="field">
+                  <label>Akce</label>
+                  <div class="btnRow">
+                    <button class="btn" id="btnStartPair">Start</button>
+                    <button class="btn ghost" id="btnStopPair">Stop</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="kv">
+                <div class="k">Stav</div><div class="v" id="bleState">—</div>
+                <div class="k">Párování</div><div class="v" id="blePairState">—</div>
+                <div class="k">Meteo</div><div class="v" id="bleMeteoState">—</div>
+              </div>
+
+              <div class="table" id="tblBlePaired"></div>
+            </div>
+          </div>
+        </div>
+      </section>

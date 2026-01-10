@@ -2,11 +2,20 @@
    Independent from terminal inputs (Funkce I/O).
 */
 (() => {
-  const App = window.App;
-  if (!App) return;
+  let initialized = false;
+  let diagTimer = null;
 
-  const $id = (id)=>document.getElementById(id);
-  const GPIO_COUNT = 4; // GPIO0..3
+  const init = () => {
+    if (initialized) return;
+    initialized = true;
+    const App = window.App;
+    if (!App) {
+      initialized = false;
+      return;
+    }
+
+    const $id = (id)=>document.getElementById(id);
+    const GPIO_COUNT = 4; // GPIO0..3
 
   const isFiniteNum = (v)=> (typeof v === "number" && Number.isFinite(v));
   const fmt = (v)=> isFiniteNum(v) ? `${v.toFixed(1)} °C` : "—";
@@ -763,12 +772,16 @@
     render();
   };
 
-  window.addEventListener("DOMContentLoaded", ()=>{
     bind();
     render();
     refreshTempsAndDiag();
-    setInterval(refreshTempsAndDiag, 1500);
-  });
+    diagTimer = setInterval(refreshTempsAndDiag, 1500);
 
-  window.TempsTab = { render };
+    window.TempsTab = { render };
+  };
+
+  const unmount = () => {};
+
+  window.Pages = window.Pages || {};
+  window.Pages.temps = { id: "temps", mount: init, unmount };
 })();

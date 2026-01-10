@@ -416,10 +416,24 @@
     scheduleRender();
   };
 
-  window.addEventListener("DOMContentLoaded", () => {
+  let dashTimer = null;
+  const maybeInit = () => {
+    if (!document.getElementById("schemaWrap")) return;
     ensureSvgHost();
     scheduleRender();
     refreshDash();
-    setInterval(refreshDash, 1200);
+    if (!dashTimer) dashTimer = setInterval(refreshDash, 1200);
+  };
+
+  window.addEventListener("app:pageMounted", (ev) => {
+    const id = ev?.detail?.id || "";
+    if (id === "dashboard" || id === "schema") maybeInit();
+  });
+  window.addEventListener("app:pageUnmounted", (ev) => {
+    const id = ev?.detail?.id || "";
+    if ((id === "dashboard" || id === "schema") && dashTimer) {
+      clearInterval(dashTimer);
+      dashTimer = null;
+    }
   });
 })();

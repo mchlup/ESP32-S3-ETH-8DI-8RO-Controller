@@ -1,0 +1,230 @@
+<section class="page" id="page-recirc">
+        <div class="summaryBar">
+          <div class="summaryMain">
+            <div class="summaryTitle">
+              <span class="summaryIcon">⟳</span>
+              <div>
+                <div class="h2">Cirkulace TUV</div>
+                <div class="muted">Režimy on-demand a časová okna pro recirkulační pumpu.</div>
+              </div>
+            </div>
+            <span class="chip" id="chip-recirc">—</span>
+          </div>
+          <div class="summaryActions">
+            <div class="summaryToggle" data-mount="recircEnabled"></div>
+            <span class="dirty" id="dirty-recirc" hidden>Neuloženo</span>
+            <div data-mount="btnSaveRecirc"></div>
+            <button class="btn ghost" id="btnReloadRecirc" type="button">Obnovit</button>
+          </div>
+        </div>
+        <div class="grid2">
+          <details class="helpDrawer">
+            <summary>Nápověda</summary>
+            <div class="helpBody">
+              <ul class="helpList">
+                <li>Požadavek cirkulace používá roli vstupu <b>recirc_demand</b>.</li>
+                <li>Čerpadlo cirkulace je výstup s rolí <b>dhw_recirc_pump</b>.</li>
+                <li>Stop teplotu porovnává role teploměru <b>return</b>.</li>
+              </ul>
+              <div class="btnRow">
+                <a class="btn ghost" href="#iofunc">Upravit ve Funkce I/O</a>
+                <a class="btn ghost" href="#temps">Upravit v Teploměry</a>
+              </div>
+            </div>
+          </details>
+          <div class="card">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Použité přiřazení</div>
+                <div class="muted">Role → konkrétní vstupy/výstupy</div>
+              </div>
+            </div>
+            <div class="pad">
+              <ul class="roleList" id="recircRoleList"></ul>
+            </div>
+          </div>
+        </div>
+        <details class="accordion" open>
+          <summary>Základní parametry</summary>
+          <div class="pad" id="mount-recirc">
+<div class="tabPage" id="cfg-recirc">
+  <div class="grid2">
+    <div class="card">
+      <div class="cardHead">
+        <div>
+          <div class="cardTitle">Smart cirkulace TUV</div>
+          <div class="cardSub">Režimy on-demand, časová okna, auto-stop dle teploty návratu</div>
+        </div>
+        <button class="btn" id="btnSaveRecirc">Uložit</button>
+      </div>
+
+      <div class="ioGrid">
+        <div class="ioRow">
+          <div class="ioLabel">Povolit</div>
+          <div class="ioValue">
+            <label class="switch"><input id="recircEnabled" type="checkbox"><span class="slider"></span></label>
+          </div>
+        </div>
+        <div class="ioRow">
+          <div class="ioLabel">Režim</div>
+          <div class="ioValue">
+            <select id="recircMode">
+              <option value="on_demand">On-demand</option>
+              <option value="time_windows">Časová okna</option>
+              <option value="hybrid">Hybrid</option>
+            </select>
+          </div>
+        </div>
+        <div class="ioRow role-hidden">
+          <div class="ioLabel">Požadavek (vstup)</div>
+          <div class="ioValue">
+            <select id="recircDemandInput"></select>
+          </div>
+        </div>
+        <div class="ioRow role-hidden">
+          <div class="ioLabel">Výstup pumpy</div>
+          <div class="ioValue">
+            <select id="recircPumpRelay"></select>
+          </div>
+        </div>
+        <div class="ioRow">
+          <div class="ioLabel">Časy</div>
+          <div class="ioValue">
+            <div class="row3">
+              <div><label class="mini">On-demand běh (s)</label><input id="recircOnDemandRunS" type="number" step="1"></div>
+              <div><label class="mini">Min OFF (s)</label><input id="recircMinOffS" type="number" step="1"></div>
+              <div><label class="mini">Min ON (s)</label><input id="recircMinOnS" type="number" step="1"></div>
+            </div>
+          </div>
+        </div>
+        <div class="ioRow role-hidden">
+          <div class="ioLabel">Návratové čidlo</div>
+          <div class="ioValue">
+            <select id="recircReturnSource"></select>
+            <div class="mt8" id="recircReturnDallasRow">
+              <select id="recircReturnDallas"></select>
+            </div>
+            <div class="mt8" id="recircReturnMqttRow">
+              <div class="row2">
+                <div style="grid-column:1/-1">
+                  <label class="mini">Přednastavený teploměr (z "Teploměry")</label>
+                  <select id="recircReturnMqttPreset"></select>
+                </div>
+                <div><label class="mini">Topic</label><input id="recircReturnTopic" type="text" placeholder="např. recirc/return"></div>
+                <div><label class="mini">JSON klíč (volitelné)</label><input id="recircReturnJsonKey" type="text" placeholder="např. tempC"></div>
+              </div>
+            </div>
+            <div class="mt8" id="recircReturnBleRow">
+              <select id="recircReturnBle"></select>
+            </div>
+          </div>
+        </div>
+        <div class="ioRow">
+          <div class="ioLabel">Stop teplota</div>
+          <div class="ioValue">
+            <input id="recircStopTempC" type="number" step="0.1">
+          </div>
+        </div>
+        <div class="ioRow">
+          <div class="ioLabel">Časová okna</div>
+          <div class="ioValue">
+            <div id="recircWindows"></div>
+            <button class="btn ghost mini" id="recircAddWindow" type="button">Přidat okno</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+          <div class="cardSub">Režimy on-demand, časová okna, auto-stop dle teploty návratu</div>
+        </div>
+        <button class="btn" id="btnSaveRecirc">Uložit</button>
+      </div>
+
+      <div class="ioGrid">
+        <div class="ioRow">
+          <div class="ioLabel">Povolit</div>
+          <div class="ioValue">
+            <label class="switch"><input id="recircEnabled" type="checkbox"><span class="slider"></span></label>
+          </div>
+        </div>
+        <div class="ioRow">
+          <div class="ioLabel">Režim</div>
+          <div class="ioValue">
+            <select id="recircMode">
+              <option value="on_demand">On-demand</option>
+              <option value="time_windows">Časová okna</option>
+              <option value="hybrid">Hybrid</option>
+            </select>
+          </div>
+        </div>
+        <div class="ioRow role-hidden">
+          <div class="ioLabel">Požadavek (vstup)</div>
+          <div class="ioValue">
+            <select id="recircDemandInput"></select>
+          </div>
+        </div>
+        <div class="ioRow role-hidden">
+          <div class="ioLabel">Výstup pumpy</div>
+          <div class="ioValue">
+            <select id="recircPumpRelay"></select>
+          </div>
+        </div>
+        <div class="ioRow">
+          <div class="ioLabel">Časy</div>
+          <div class="ioValue">
+            <div class="row3">
+              <div><label class="mini">On-demand běh (s)</label><input id="recircOnDemandRunS" type="number" step="1"></div>
+              <div><label class="mini">Min OFF (s)</label><input id="recircMinOffS" type="number" step="1"></div>
+              <div><label class="mini">Min ON (s)</label><input id="recircMinOnS" type="number" step="1"></div>
+            </div>
+          </div>
+        </div>
+        <div class="ioRow role-hidden">
+          <div class="ioLabel">Návratové čidlo</div>
+          <div class="ioValue">
+            <select id="recircReturnSource"></select>
+            <div class="mt8" id="recircReturnDallasRow">
+              <select id="recircReturnDallas"></select>
+            </div>
+            <div class="mt8" id="recircReturnMqttRow">
+              <div class="row2">
+                <div style="grid-column:1/-1">
+                  <label class="mini">Přednastavený teploměr (z "Teploměry")</label>
+                  <select id="recircReturnMqttPreset"></select>
+                </div>
+                <div><label class="mini">Topic</label><input id="recircReturnTopic" type="text" placeholder="např. recirc/return"></div>
+                <div><label class="mini">JSON klíč (volitelné)</label><input id="recircReturnJsonKey" type="text" placeholder="např. tempC"></div>
+              </div>
+            </div>
+            <div class="mt8" id="recircReturnBleRow">
+              <select id="recircReturnBle"></select>
+            </div>
+          </div>
+        </div>
+        <div class="ioRow">
+          <div class="ioLabel">Stop teplota</div>
+          <div class="ioValue">
+            <input id="recircStopTempC" type="number" step="0.1">
+          </div>
+        </div>
+        <div class="ioRow">
+          <div class="ioLabel">Časová okna</div>
+          <div class="ioValue">
+            <div id="recircWindows"></div>
+            <button class="btn ghost mini" id="recircAddWindow" type="button">Přidat okno</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+  </div>
+        </details>
+        <details class="accordion">
+          <summary>Pokročilé</summary>
+          <div class="pad muted">Pokročilé volby cirkulace nejsou aktivní.</div>
+        </details>
+      </section>

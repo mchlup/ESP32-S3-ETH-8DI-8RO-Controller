@@ -136,7 +136,7 @@
   const showPage = (name) => {
     const page = String(name || "dashboard").trim() || "dashboard";
 
-    // pages
+    // pages (only if already present)
     $$(".page").forEach(p => p.classList.toggle("active", p.id === `page-${page}`));
 
     // sidebar highlight
@@ -153,21 +153,6 @@
         h1.textContent = label || "Heat Controller";
       }
     }
-
-    // schema placement (dashboard vs standalone)
-    const schemaCard = $("#cardSchema");
-    const schemaHost = $("#schemaStandalone");
-    const dashHost = $("#page-dashboard .dashGrid");
-    if (schemaCard && schemaHost && dashHost) {
-      if (page === "schema") {
-        if (schemaCard.parentElement !== schemaHost) schemaHost.appendChild(schemaCard);
-      } else if (page === "dashboard") {
-        if (schemaCard.parentElement !== dashHost) dashHost.prepend(schemaCard);
-      }
-    }
-
-    const h = `#${page}`;
-    if (location.hash !== h) history.replaceState(null, "", h);
   };
 
   const mountLegacySections = () => {
@@ -223,6 +208,7 @@
 
   const fillModeSelect = () => {
     const sel = $("#selSystemMode");
+    if (!sel) return;
     sel.innerHTML = "";
     MODE_IDS.forEach((id, idx) => {
       const opt = document.createElement("option");
@@ -701,6 +687,7 @@ const renderIO = () => {
     }
 
     const rg = $("#relayGrid");
+    if (!rg) return;
     rg.innerHTML = "";
     for (let i=0;i<RELAY_COUNT;i++){
       // 3c ventil (2 relé) se neovládá jako jednoduché relé – je zobrazen jako widget v dashboardu
@@ -1154,6 +1141,7 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
   const renderInputsTable = () => {
     const cfg = ensureConfigShape();
     const host = $("#tblInputs");
+    if (!host) return;
     host.innerHTML = "";
     host.appendChild(makeTableHead(["#", "Název", "Active level"]));
     for (let i=0;i<INPUT_COUNT;i++){
@@ -1179,6 +1167,7 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
   const renderRelaysTable = () => {
     const cfg = ensureConfigShape();
     const host = $("#tblRelays");
+    if (!host) return;
     host.innerHTML = "";
     host.appendChild(makeTableHead(["#", "Název", "AUTO mapování", "Polarity"]));
     for (let r=0;r<RELAY_COUNT;r++){
@@ -1210,6 +1199,7 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
   const renderModes = () => {
     const cfg = ensureConfigShape();
     const host = $("#modesGrid");
+    if (!host) return;
     host.innerHTML = "";
 
     for (let mi=0; mi<MODE_IDS.length; mi++){
@@ -1443,9 +1433,11 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
   const loadRules = async () => {
     state.rules = await apiGet("/api/rules").catch(()=>null);
     state.rulesStatus = await apiGet("/api/rules/status").catch(()=>null);
-    $("#rulesJson").value = state.rules ? prettyJson(state.rules) : "{\n  \"enabled\": false,\n  \"rules\": []\n}";
-    $("#rulesStatus").textContent = state.rulesStatus ? prettyJson(state.rulesStatus) : "—";
-      renderRulesTable();
+    const rulesJson = $("#rulesJson");
+    const rulesStatus = $("#rulesStatus");
+    if (rulesJson) rulesJson.value = state.rules ? prettyJson(state.rules) : "{\n  \"enabled\": false,\n  \"rules\": []\n}";
+    if (rulesStatus) rulesStatus.textContent = state.rulesStatus ? prettyJson(state.rulesStatus) : "—";
+    renderRulesTable();
   };
 
   const saveRules = async () => {
@@ -1609,8 +1601,8 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     el.querySelector(".condTopic").value = String(cond.topic ?? "");
     el.querySelector(".condValue").value = String(cond.value ?? "");
 
-    el.querySelector(".condType").addEventListener("change", () => applyCondRowVisibility(el));
-    el.querySelector(".btnRemoveCond").addEventListener("click", (e) => { e.preventDefault(); el.remove(); });
+    el.querySelector(".condType")?.addEventListener("change", () => applyCondRowVisibility(el));
+    el.querySelector(".btnRemoveCond")?.addEventListener("click", (e) => { e.preventDefault(); el.remove(); });
 
     applyCondRowVisibility(el);
     return el;
@@ -1682,8 +1674,8 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     el.querySelector(".actMqttTopic").value = String(a.topic ?? "");
     el.querySelector(".actMqttPayload").value = String(a.payload ?? "");
 
-    el.querySelector(".actType").addEventListener("change", () => applyActionRowVisibility(el));
-    el.querySelector(".btnRemoveAct").addEventListener("click", (e) => { e.preventDefault(); el.remove(); });
+    el.querySelector(".actType")?.addEventListener("change", () => applyActionRowVisibility(el));
+    el.querySelector(".btnRemoveAct")?.addEventListener("click", (e) => { e.preventDefault(); el.remove(); });
 
     applyActionRowVisibility(el);
     return el;
@@ -1877,6 +1869,7 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
 
   // ---------- render: BLE ----------
   const renderBle = () => {
+    if (!$("#bleEnabled")) return;
     const cfg = state.bleConfig || {};
     const st = state.bleStatus || {};
     const paired = state.blePaired?.devices || [];
@@ -1927,6 +1920,7 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
   // ---------- render: files ----------
   const renderFiles = () => {
     const host = $("#tblFiles");
+    if (!host) return;
     host.innerHTML = "";
     host.appendChild(makeTableHead(["Soubor", "Velikost", "Akce"]));
 
@@ -1968,6 +1962,7 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     }
     renderTop();
     renderDashboard();
+    window.Core?.store?.setStatus?.(state.status);
 
     const st = state.status || {};
     // status box on mqtt page
@@ -2016,6 +2011,7 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     state.dash = await apiGet("/api/dash").catch(() => null);
     if (!state.dash) return;
     renderDashboard();
+    window.Core?.store?.setDash?.(state.dash);
     try {
       window.dispatchEvent(new CustomEvent("app:dashUpdated", { detail: state.dash }));
     } catch (_) {}
@@ -2024,6 +2020,7 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
   const applyConfig = (cfg) => {
     state.config = cfg;
     ensureConfigShape();
+    window.Core?.store?.setConfig?.(state.config);
     fillModeSelect();
     renderInputsTable();
     renderRelaysTable();
@@ -2037,14 +2034,22 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
 
     // mqtt fields
     const m = state.config.mqtt || {};
-    $("#mqttEnabled").checked = !!m.enabled;
-    $("#mqttHost").value = m.host || "";
-    $("#mqttPort").value = String(m.port ?? 1883);
-    $("#mqttUser").value = m.user || "";
-    $("#mqttPass").value = m.pass || "";
-    $("#mqttClientId").value = m.clientId || "";
-    $("#mqttBaseTopic").value = m.baseTopic || "";
-    $("#mqttHaPrefix").value = m.haPrefix || "";
+    const mqttEnabled = $("#mqttEnabled");
+    const mqttHost = $("#mqttHost");
+    const mqttPort = $("#mqttPort");
+    const mqttUser = $("#mqttUser");
+    const mqttPass = $("#mqttPass");
+    const mqttClientId = $("#mqttClientId");
+    const mqttBaseTopic = $("#mqttBaseTopic");
+    const mqttHaPrefix = $("#mqttHaPrefix");
+    if (mqttEnabled) mqttEnabled.checked = !!m.enabled;
+    if (mqttHost) mqttHost.value = m.host || "";
+    if (mqttPort) mqttPort.value = String(m.port ?? 1883);
+    if (mqttUser) mqttUser.value = m.user || "";
+    if (mqttPass) mqttPass.value = m.pass || "";
+    if (mqttClientId) mqttClientId.value = m.clientId || "";
+    if (mqttBaseTopic) mqttBaseTopic.value = m.baseTopic || "";
+    if (mqttHaPrefix) mqttHaPrefix.value = m.haPrefix || "";
 
     if (typeof window.App?.onConfigLoaded === "function") {
       try { window.App.onConfigLoaded(state.config); } catch (e) {}
@@ -2121,7 +2126,7 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     };
     const current = localStorage.getItem(themeKey) || "dark";
     applyTheme(current);
-    $("#btnTheme").addEventListener("click", () => {
+    $("#btnTheme")?.addEventListener("click", () => {
       const next = document.documentElement.classList.contains("light") ? "dark" : "light";
       localStorage.setItem(themeKey, next);
       applyTheme(next);
@@ -2197,7 +2202,7 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     });
 
     // mode relay toggles (config -> modes)
-    $("#modesGrid").addEventListener("click", (e) => {
+    $("#modesGrid")?.addEventListener("click", (e) => {
       const sw = e.target.closest(".sw[data-mode-rel]");
       if (!sw) return;
       const id = sw.dataset.modeRel;
@@ -2253,52 +2258,52 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
       }, 220);
     };
 
-    $("#selControlMode").addEventListener("change", () => { lockUI("control", 2500); scheduleAutoApply(); });
-    $("#selSystemMode").addEventListener("change", () => { lockUI("system", 2500); scheduleAutoApply(); });
-$("#btnAutoRecompute").addEventListener("click", async () => {
+    $("#selControlMode")?.addEventListener("change", () => { lockUI("control", 2500); scheduleAutoApply(); });
+    $("#selSystemMode")?.addEventListener("change", () => { lockUI("system", 2500); scheduleAutoApply(); });
+$("#btnAutoRecompute")?.addEventListener("click", async () => {
       try{ await autoRecompute(); toast("AUTO přepočteno"); await loadStatus(); }
       catch(err){ toast("Chyba: " + err.message, "bad"); }
     });
 
     // save config (forms)
-    $("#btnSaveInputs").addEventListener("click", () => saveInputsFromForm().catch(e=>toast(e.message,"bad")));
-    $("#btnSaveRelays").addEventListener("click", () => saveRelaysFromForm().catch(e=>toast(e.message,"bad")));
-    $("#btnSaveModes").addEventListener("click", () => saveModesFromForm().catch(e=>toast(e.message,"bad")));
+    $("#btnSaveInputs")?.addEventListener("click", () => saveInputsFromForm().catch(e=>toast(e.message,"bad")));
+    $("#btnSaveRelays")?.addEventListener("click", () => saveRelaysFromForm().catch(e=>toast(e.message,"bad")));
+    $("#btnSaveModes")?.addEventListener("click", () => saveModesFromForm().catch(e=>toast(e.message,"bad")));
 
     // cfg json
     $("#cfgJson")?.addEventListener("input", () => {
       if (state.ui?.dirty) state.ui.dirty.cfgJson = true;
     });
 
-    $("#btnFmtCfg").addEventListener("click", () => {
+    $("#btnFmtCfg")?.addEventListener("click", () => {
       const obj = safeJson($("#cfgJson").value);
       if (!obj) return toast("Neplatný JSON", "bad");
       $("#cfgJson").value = prettyJson(obj);
       if (state.ui?.dirty) state.ui.dirty.cfgJson = true;
     });
-    $("#btnSaveCfgJson").addEventListener("click", () => saveConfigJsonFromEditor().catch(e=>toast(e.message,"bad")));
+    $("#btnSaveCfgJson")?.addEventListener("click", () => saveConfigJsonFromEditor().catch(e=>toast(e.message,"bad")));
 
     // mqtt
-    $("#btnSaveMqtt").addEventListener("click", () => saveMqtt().catch(e=>toast(e.message,"bad")));
-    $("#btnMqttDiscovery").addEventListener("click", () => mqttDiscovery().catch(e=>toast(e.message,"bad")));
+    $("#btnSaveMqtt")?.addEventListener("click", () => saveMqtt().catch(e=>toast(e.message,"bad")));
+    $("#btnMqttDiscovery")?.addEventListener("click", () => mqttDiscovery().catch(e=>toast(e.message,"bad")));
 
     // ble
-    $("#btnSaveBle").addEventListener("click", () => saveBle().catch(e=>toast(e.message,"bad")));
-    $("#btnStartPair").addEventListener("click", () => startPair().catch(e=>toast(e.message,"bad")));
-    $("#btnStopPair").addEventListener("click", () => stopPair().catch(e=>toast(e.message,"bad")));
+    $("#btnSaveBle")?.addEventListener("click", () => saveBle().catch(e=>toast(e.message,"bad")));
+    $("#btnStartPair")?.addEventListener("click", () => startPair().catch(e=>toast(e.message,"bad")));
+    $("#btnStopPair")?.addEventListener("click", () => stopPair().catch(e=>toast(e.message,"bad")));
 
     // rules
-    $("#btnFmtRules").addEventListener("click", () => {
+    $("#btnFmtRules")?.addEventListener("click", () => {
       const obj = safeJson($("#rulesJson").value);
       if (!obj) return toast("Neplatný JSON", "bad");
       $("#rulesJson").value = prettyJson(obj);
     });
-    $("#btnSaveRules").addEventListener("click", () => saveRules().catch(e=>toast(e.message,"bad")));
-    $("#btnReloadRules").addEventListener("click", () => loadRules().catch(e=>toast(e.message,"bad")));
+    $("#btnSaveRules")?.addEventListener("click", () => saveRules().catch(e=>toast(e.message,"bad")));
+    $("#btnReloadRules")?.addEventListener("click", () => loadRules().catch(e=>toast(e.message,"bad")));
 
     // files
-    $("#btnRefreshFiles").addEventListener("click", () => loadFiles().catch(e=>toast(e.message,"bad")));
-    $("#uploadForm").addEventListener("submit", async (e) => {
+    $("#btnRefreshFiles")?.addEventListener("click", () => loadFiles().catch(e=>toast(e.message,"bad")));
+    $("#uploadForm")?.addEventListener("submit", async (e) => {
       e.preventDefault();
       const file = $("#filePick").files?.[0];
       if (!file) return toast("Vyber soubor", "bad");
@@ -2308,7 +2313,7 @@ $("#btnAutoRecompute").addEventListener("click", async () => {
     });
 
     // reboot
-    $("#btnReboot").addEventListener("click", async () => {
+    $("#btnReboot")?.addEventListener("click", async () => {
       if (!confirm("Opravdu restartovat zařízení?")) return;
       try{ await reboot(); }
       catch(err){ toast("Chyba: " + err.message, "bad"); }
@@ -2322,30 +2327,37 @@ $("#btnAutoRecompute").addEventListener("click", async () => {
   function escapeAttr(s){ return escapeHtml(s).replace(/\n/g, " "); }
 
   // ---------- start ----------
-  const init = async () => {
-    mountLegacySections();
+  const init = () => {
     mountSummaryControls();
     updateDirtyIndicators();
     wireEvents();
-    const startRaw = (location.hash || "").replace("#","") || "dashboard";
-    const page = String(startRaw || "dashboard").trim() || "dashboard";
-    showPage(page);
-    try{
-      await loadAll();
-      toast("Připraveno");
-    }catch(err){
-      toast("Načtení selhalo: " + err.message, "bad");
-    }
-    // polling (non aggressive)
-    setInterval(() => loadStatus().catch(()=>{}), 1200);
-    setInterval(() => loadDash().catch(()=>{}), 1500);
-    setInterval(() => loadConfig().catch(()=>{}), 15000);
-    setInterval(() => loadBle().catch(()=>{}), 2500);
   };
 
-  window.addEventListener("load", init);
-  window.addEventListener("hashchange", () => {
-    const page = (location.hash || "#dashboard").replace("#", "");
-    showPage(page);
-  });
+  window.Core = window.Core || {};
+  window.Core.legacy = {
+    init,
+    showPage,
+    setCfgTab,
+    mountSummaryControls,
+    loadAll,
+    loadStatus,
+    loadDash,
+    loadConfig,
+    loadBle,
+    loadRules,
+    loadFiles,
+    saveConfigJsonFromEditor,
+    saveMqtt,
+    saveBle,
+    saveRules,
+    updateDirtyIndicators,
+    renderDashboard,
+    renderIO,
+    renderTemps,
+    renderRules,
+    renderFiles,
+    renderTop,
+    renderStatus,
+    applyConfig,
+  };
 })();

@@ -1,8 +1,13 @@
 /* TUV (ohřev bojleru) – režim + přepínací ventily */
 (() => {
-  const $ = (id) => document.getElementById(id);
+  let initialized = false;
 
-  const el = {
+  const init = () => {
+    if (initialized) return;
+    initialized = true;
+    const $ = (id) => document.getElementById(id);
+
+    const el = {
     btnSave: $("btnSaveTuv"),
     enabled: $("tuvEnabled"),
     enableHint: $("tuvEnableHint"),
@@ -18,7 +23,10 @@
     statusBox: $("tuvStatusBox"),
   };
 
-  if (!window.App || !el.btnSave) return;
+    if (!window.App || !el.btnSave) {
+      initialized = false;
+      return;
+    }
 
   const roleOnlyEls = [el.demandInput, el.requestRelay, el.valveMaster].filter(Boolean);
   const setRoleOnly = () => {
@@ -281,7 +289,6 @@
     updateStatusBox(status, App.getConfig());
   };
 
-  window.addEventListener("DOMContentLoaded", () => {
     bindEvents();
     const cfg = App.getConfig();
     if (cfg) {
@@ -293,5 +300,10 @@
       refreshDash(cfg, true);
       updateStatusBox(App.getStatus(), cfg);
     }
-  });
+  };
+
+  const unmount = () => {};
+
+  window.Pages = window.Pages || {};
+  window.Pages.tuv = { id: "tuv", mount: init, unmount };
 })();

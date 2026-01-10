@@ -1,0 +1,82 @@
+<section class="page" id="page-aku">
+        <div class="summaryBar">
+          <div class="summaryMain">
+            <div class="summaryTitle">
+              <span class="summaryIcon">⛁</span>
+              <div>
+                <div class="h2">Podpora AKU</div>
+                <div class="muted">Logika využití akumulační nádrže v rámci ekvitermu.</div>
+              </div>
+            </div>
+            <span class="chip" id="chip-aku">—</span>
+          </div>
+          <div class="summaryActions">
+            <span class="dirty" id="dirty-aku" hidden>Neuloženo</span>
+            <button class="btn" id="btnSaveAku" type="button">Uložit</button>
+            <button class="btn ghost" id="btnReloadAku" type="button">Obnovit</button>
+          </div>
+        </div>
+        <div class="grid2">
+          <details class="helpDrawer">
+            <summary>Nápověda</summary>
+            <div class="helpBody">
+              <ul class="helpList">
+                <li>Funkce využívá teplotní role <b>tankTop/mid/bottom</b>.</li>
+                <li>Chování při nedostatku tepla z AKU nastavíš v parametrech níže.</li>
+              </ul>
+              <div class="btnRow">
+                <a class="btn ghost" href="#temps">Upravit v Teploměry</a>
+              </div>
+            </div>
+          </details>
+          <div class="card">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Použité přiřazení</div>
+                <div class="muted">Role → konkrétní senzory</div>
+              </div>
+            </div>
+            <div class="pad">
+              <ul class="roleList" id="akuRoleList"></ul>
+            </div>
+          </div>
+        </div>
+        <details class="accordion" open>
+          <summary>Základní parametry</summary>
+          <div class="pad">
+            <div class="card">
+              <div class="cardHead">
+                <div>
+                  <div class="cardTitle">Parametry AKU podpory</div>
+                  <div class="muted">Nastavení prahů a chování při využití akumulace.</div>
+                </div>
+              </div>
+              <div class="pad">
+                <div class="eqCurveGrid" id="akuParamGrid">
+<div class="ioRow" id="eqAkuSupportRow">
+          <div class="ioLabel">AKU podpora</div>
+          <div class="ioValue">
+            <div class="row2">
+              <div>
+                <label class="mini">Povolit</label>
+                <label class="switch"><input id="eqAkuSupportEnabled" type="checkbox"><span class="slider"></span></label>
+              </div>
+              <div>
+                <label class="mini">Chování když není výhodné</label>
+                <select id="eqAkuNoSupportBehavior">
+                  <option value="close">Zavřít V2</option>
+                  <option value="hold">Držet polohu</option>
+                </select>
+              </div>
+            </div>
+</div>
+              </div>
+            </div>
+            <div id="mount-aku"></div>
+          </div>
+        </details>
+        <details class="accordion">
+          <summary>Pokročilé</summary>
+          <div class="pad muted">Pokročilé parametry AKU podpory nejsou aktivní.</div>
+        </details>
+      </section>
