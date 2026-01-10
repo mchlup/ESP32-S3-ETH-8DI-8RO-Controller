@@ -1,14 +1,22 @@
 /* Schedules + TUV mapping module (v2) */
 (() => {
-  const App = window.App;
-  if (!App) return;
+  let initialized = false;
 
-  const $ = App.$;
-  const $$ = App.$$;
-  const toast = App.toast;
-  const apiPostJson = App.apiPostJson;
-  const apiGetJson = App.apiGetJson;
-  const schedHint = $("#schedInputHint");
+  const init = () => {
+    if (initialized) return;
+    initialized = true;
+    const App = window.App;
+    if (!App) {
+      initialized = false;
+      return;
+    }
+
+    const $ = App.$;
+    const $$ = App.$$;
+    const toast = App.toast;
+    const apiPostJson = App.apiPostJson;
+    const apiGetJson = App.apiGetJson;
+    const schedHint = $("#schedInputHint");
 
   const MODE_IDS = ["MODE1","MODE2","MODE3","MODE4","MODE5"];
   const BOOL_KINDS = new Set(["dhw_enable","night_mode"]);
@@ -615,8 +623,11 @@
     render();
   };
 
-  window.addEventListener("DOMContentLoaded", () => {
     bind();
     if (App.getConfig?.()) render();
+  };
+
+  window.addEventListener("app:pageMounted", (ev) => {
+    if (ev?.detail?.id === "system") init();
   });
 })();

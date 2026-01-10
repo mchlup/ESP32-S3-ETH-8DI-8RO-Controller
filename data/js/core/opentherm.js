@@ -2,18 +2,19 @@
   const $ = (id) => document.getElementById(id);
   const toast = (msg, type) => (window.App && App.toast) ? App.toast(msg, type) : alert(msg);
 
-  const els = {
+  let els = null;
+  let initialized = false;
+  const getEls = () => ({
     enabled: $("otEnabled"),
     mode: $("otMode"),
     inPin: $("otInPin"),
     outPin: $("otOutPin"),
     pollMs: $("otPollMs"),
     chEnable: $("otChEnable"),
-    manualSetpointC: $("otManualSetpointC"),
-    btnSave: $("btnSaveOpenThermCfg"),
-    btnRefresh: $("btnRefreshOpenThermStatus"),
-    statusBox: $("otStatusBox"),
-  };
+    manualSetpointC: $("otManualSetpoint"),
+    btnSave: $("btnSaveOpenTherm"),
+    statusBox: $("otStatus"),
+  });
 
   const ensureShape = (cfg) => {
     cfg = cfg || {};
@@ -67,6 +68,9 @@
   };
 
   const init = () => {
+    if (initialized) return;
+    initialized = true;
+    els = getEls();
     if (!els.enabled || !els.mode) return; // page not present
 
     // App hook
@@ -78,8 +82,10 @@
     }
 
     els.btnSave && els.btnSave.addEventListener("click", () => saveUiToConfig().catch(e => toast(e.message, "bad")));
-    els.btnRefresh && els.btnRefresh.addEventListener("click", () => refreshStatus().catch(e => toast(e.message, "bad")));
+    refreshStatus().catch(() => {});
   };
 
-  document.addEventListener("DOMContentLoaded", init);
+  window.addEventListener("app:pageMounted", (ev) => {
+    if (ev?.detail?.id === "system") init();
+  });
 })();

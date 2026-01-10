@@ -1,12 +1,20 @@
 /* Time/NTP config module (v1) */
 (() => {
-  const App = window.App;
-  if (!App) return;
+  let initialized = false;
 
-  const $ = App.$;
-  const toast = App.toast;
-  const apiPostJson = App.apiPostJson;
-  const apiGetJson = App.apiGetJson;
+  const init = () => {
+    if (initialized) return;
+    initialized = true;
+    const App = window.App;
+    if (!App) {
+      initialized = false;
+      return;
+    }
+
+    const $ = App.$;
+    const toast = App.toast;
+    const apiPostJson = App.apiPostJson;
+    const apiGetJson = App.apiGetJson;
 
   const ensure = (cfg) => {
     cfg.time = (cfg.time && typeof cfg.time === "object") ? cfg.time : {};
@@ -86,8 +94,11 @@
     render();
   };
 
-  window.addEventListener("DOMContentLoaded", () => {
     bind();
     if (App.getConfig?.()) render();
+  };
+
+  window.addEventListener("app:pageMounted", (ev) => {
+    if (ev?.detail?.id === "system") init();
   });
 })();

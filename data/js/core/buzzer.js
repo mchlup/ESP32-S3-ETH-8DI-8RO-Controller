@@ -1,5 +1,6 @@
 (() => {
   "use strict";
+  let initialized = false;
 
   const patterns = [
     "off",
@@ -104,7 +105,9 @@
     el("btnBeepStop")?.addEventListener("click",  () => window.Buzzer.stop().catch(()=>{}));
   };
 
-  window.addEventListener("load", () => {
+  const init = () => {
+    if (initialized) return;
+    initialized = true;
     // app.js musí být načtené jako první (window.App)
     if (!window.App || !window.App.apiGetJson) return;
     bind();
@@ -126,5 +129,9 @@
     // fallback: pokud se active třída přepíná jinak, hlídej změny
     const mo = new MutationObserver(() => refreshIfVisible());
     if (buzPage) mo.observe(buzPage, { attributes:true, attributeFilter:["class"] });
+  };
+
+  window.addEventListener("app:pageMounted", (ev) => {
+    if (ev?.detail?.id === "system") init();
   });
 })();

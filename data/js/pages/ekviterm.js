@@ -4,9 +4,15 @@
  * - Zobrazuje runtime stav z /api/status (equitherm)
  */
 (() => {
-  const $ = (id) => document.getElementById(id);
+  let initialized = false;
+  let refreshTimer = null;
 
-  const el = {
+  const init = () => {
+    if (initialized) return;
+    initialized = true;
+    const $ = (id) => document.getElementById(id);
+
+    const el = {
     btnSave: $("btnSaveEquitherm"),
     btnUseRoleOutdoor: $("btnEqUseRoleOutdoor"),
     btnUseRoleFlow: $("btnEqUseRoleFlow"),
@@ -110,7 +116,10 @@
     curveCanvas: $("eqCurveCanvas"),
   };
 
-  if (!window.App || !el.btnSave) return;
+    if (!window.App || !el.btnSave) {
+      initialized = false;
+      return;
+    }
 
   let lastDash = null;
   let lastStatus = null;
@@ -1290,9 +1299,14 @@
   };
 
   // Periodic refresh (options + valve list)
-  setInterval(() => {
-    const cfg = App.getConfig();
-    refreshDash(cfg, true);
-  }, 2500);
+    refreshTimer = setInterval(() => {
+      const cfg = App.getConfig();
+      refreshDash(cfg, true);
+    }, 2500);
+  };
 
+  const unmount = () => {};
+
+  window.Pages = window.Pages || {};
+  window.Pages.ekviterm = { id: "ekviterm", mount: init, unmount };
 })();

@@ -1,8 +1,13 @@
 /* Smart cirkulace TUV – konfigurace */
 (() => {
-  const $ = (id) => document.getElementById(id);
+  let initialized = false;
 
-  const el = {
+  const init = () => {
+    if (initialized) return;
+    initialized = true;
+    const $ = (id) => document.getElementById(id);
+
+    const el = {
     btnSave: $("btnSaveRecirc"),
     enabled: $("recircEnabled"),
     mode: $("recircMode"),
@@ -25,7 +30,10 @@
     addWindow: $("recircAddWindow"),
   };
 
-  if (!window.App || !el.btnSave) return;
+    if (!window.App || !el.btnSave) {
+      initialized = false;
+      return;
+    }
 
   const roleOnlyEls = [
     el.demandInput, el.pumpRelay, el.returnSource, el.returnDallas, el.returnMqttPreset,
@@ -378,7 +386,6 @@
     refreshDash(cfg, true);
   };
 
-  window.addEventListener("DOMContentLoaded", () => {
     bindEvents();
     const cfg = App.getConfig();
     if (cfg) {
@@ -388,5 +395,10 @@
       loadFromConfig(cfg);
       refreshDash(cfg, true);
     }
-  });
+  };
+
+  const unmount = () => {};
+
+  window.Pages = window.Pages || {};
+  window.Pages.recirc = { id: "recirc", mount: init, unmount };
 })();

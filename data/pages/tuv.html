@@ -1,0 +1,249 @@
+<section class="page" id="page-tuv">
+        <div class="summaryBar">
+          <div class="summaryMain">
+            <div class="summaryTitle">
+              <span class="summaryIcon">♨</span>
+              <div>
+                <div class="h2">Ohřev TUV</div>
+                <div class="muted">Režim pro dohřev bojleru, přepínání ventilů a řízení bypassu.</div>
+              </div>
+            </div>
+            <span class="chip" id="chip-tuv">—</span>
+          </div>
+          <div class="summaryActions">
+            <div class="summaryToggle" data-mount="tuvEnabled"></div>
+            <span class="dirty" id="dirty-tuv" hidden>Neuloženo</span>
+            <div data-mount="btnSaveTuv"></div>
+            <button class="btn ghost" id="btnReloadTuv" type="button">Obnovit</button>
+          </div>
+        </div>
+        <div class="grid2">
+          <details class="helpDrawer">
+            <summary>Nápověda</summary>
+            <div class="helpBody">
+              <ul class="helpList">
+                <li>Aktivace režimu je řízena vstupem s rolí <b>dhw_enable</b>.</li>
+                <li>Požadavek na kotel jde přes výstup <b>boiler_enable_dhw</b>.</li>
+                <li>Přepínací ventil TUV používá roli <b>valve_3way_tuv</b>.</li>
+              </ul>
+              <div class="btnRow">
+                <a class="btn ghost" href="#iofunc">Upravit ve Funkce I/O</a>
+              </div>
+            </div>
+          </details>
+          <div class="card">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Použité přiřazení</div>
+                <div class="muted">Role → konkrétní vstupy/výstupy</div>
+              </div>
+            </div>
+            <div class="pad">
+              <ul class="roleList" id="tuvRoleList"></ul>
+            </div>
+          </div>
+        </div>
+        <details class="accordion" open>
+          <summary>Základní parametry</summary>
+          <div class="pad" id="mount-tuv">
+<div class="tabPage" id="cfg-tuv">
+  <div class="grid2">
+    <div class="card">
+      <div class="cardHead">
+        <div>
+          <div class="cardTitle">Ohřev TUV</div>
+          <div class="cardSub">Režim pro dohřev bojleru: sepnutí výstupu + přepnutí ventilů</div>
+        </div>
+        <button class="btn" id="btnSaveTuv">Uložit</button>
+      </div>
+
+      <div class="ioGrid">
+        <div class="ioRow">
+          <div class="ioLabel">Povolit režim</div>
+          <div class="ioValue">
+            <label class="switch"><input id="tuvEnabled" type="checkbox"><span class="slider"></span></label>
+            <div class="hint mt4" id="tuvEnableHint"></div>
+          </div>
+        </div>
+
+        <div class="ioRow role-hidden">
+          <div class="ioLabel">Požadavek (vstup)</div>
+          <div class="ioValue">
+            <select id="tuvDemandInput"></select>
+            <div class="hint mt4">Při změně stavu vstupu se aktivuje režim ohřevu TUV.</div>
+          </div>
+        </div>
+
+        <div class="ioRow role-hidden">
+          <div class="ioLabel">Výstup požadavku</div>
+          <div class="ioValue">
+            <select id="tuvRequestRelay"></select>
+            <div class="hint mt4">Relé, které sepne požadavek na dohřev TUV (např. povolení kotle).</div>
+          </div>
+        </div>
+
+        <div class="ioRow">
+          <div class="ioLabel">Směšovací ventil (ekviterm)</div>
+          <div class="ioValue">
+            <div class="row2">
+              <div><label class="mini">Cílová poloha %</label><input id="tuvEqValveTargetPct" type="number" min="0" max="100" step="1"></div>
+            </div>
+            <div class="hint mt4">Použije se master ventil nastavený v ekvitermu. Výchozí poloha = 0 %.</div>
+          </div>
+        </div>
+
+        <div class="ioRow role-hidden">
+          <div class="ioLabel">V3 bypass (odpojení AKU)</div>
+          <div class="ioValue">
+            <select id="tuvValveMaster"></select>
+            <div class="row2 mt8">
+              <div><label class="mini">Bypass % (DHW)</label><input id="tuvBypassPct" type="number" min="0" max="100" step="1"></div>
+              <div><label class="mini">CH % (topení)</label><input id="tuvChPct" type="number" min="0" max="100" step="1"></div>
+            </div>
+            <div class="row2 mt8">
+              <label class="switch"><input id="tuvBypassEnabled" type="checkbox"><span class="slider"></span></label>
+              <label class="switch"><input id="tuvBypassInvert" type="checkbox"><span class="slider"></span></label>
+            </div>
+            <div class="row2 mt4">
+              <div class="mini">Použít bypass ventil</div>
+              <div class="mini">Invert (prohoď 0/100)</div>
+            </div>
+            <div class="hint mt4">Ventil uzavírá okruh přes AKU během DHW. Odpovídá SPDT (1 relé).</div>
+          </div>
+        </div>
+
+        <div class="ioRow">
+          <div class="ioLabel">Obnovit V2 po DHW</div>
+          <div class="ioValue">
+            <label class="switch"><input id="tuvRestoreEqValve" type="checkbox"><span class="slider"></span></label>
+            <div class="hint mt4">Po skončení DHW vrátí směšovací ventil na uloženou pozici.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="cardHead">
+        <div>
+          <div class="cardTitle">Stav a diagnostika</div>
+          <div class="muted">Rychlý přehled režimu a použitých ventilů</div>
+        </div>
+      </div>
+
+      <div class="ioGrid">
+        <div class="ioRow">
+          <div class="ioLabel">Stav režimu</div>
+          <div class="ioValue"><div id="tuvStatusBox" class="mono small"></div></div>
+        </div>
+        <div class="ioRow">
+          <div class="ioLabel">Poznámka</div>
+          <div class="ioValue">
+            <div class="hint">TUV režim má přednost před ekvitermem – při aktivaci nastaví ventily na požadované polohy.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+          <div class="cardSub">Režim pro dohřev bojleru: sepnutí výstupu + přepnutí ventilů</div>
+        </div>
+        <button class="btn" id="btnSaveTuv">Uložit</button>
+      </div>
+
+      <div class="ioGrid">
+        <div class="ioRow">
+          <div class="ioLabel">Povolit režim</div>
+          <div class="ioValue">
+            <label class="switch"><input id="tuvEnabled" type="checkbox"><span class="slider"></span></label>
+            <div class="hint mt4" id="tuvEnableHint"></div>
+          </div>
+        </div>
+
+        <div class="ioRow role-hidden">
+          <div class="ioLabel">Požadavek (vstup)</div>
+          <div class="ioValue">
+            <select id="tuvDemandInput"></select>
+            <div class="hint mt4">Při změně stavu vstupu se aktivuje režim ohřevu TUV.</div>
+          </div>
+        </div>
+
+        <div class="ioRow role-hidden">
+          <div class="ioLabel">Výstup požadavku</div>
+          <div class="ioValue">
+            <select id="tuvRequestRelay"></select>
+            <div class="hint mt4">Relé, které sepne požadavek na dohřev TUV (např. povolení kotle).</div>
+          </div>
+        </div>
+
+        <div class="ioRow">
+          <div class="ioLabel">Směšovací ventil (ekviterm)</div>
+          <div class="ioValue">
+            <div class="row2">
+              <div><label class="mini">Cílová poloha %</label><input id="tuvEqValveTargetPct" type="number" min="0" max="100" step="1"></div>
+            </div>
+            <div class="hint mt4">Použije se master ventil nastavený v ekvitermu. Výchozí poloha = 0 %.</div>
+          </div>
+        </div>
+
+        <div class="ioRow role-hidden">
+          <div class="ioLabel">V3 bypass (odpojení AKU)</div>
+          <div class="ioValue">
+            <select id="tuvValveMaster"></select>
+            <div class="row2 mt8">
+              <div><label class="mini">Bypass % (DHW)</label><input id="tuvBypassPct" type="number" min="0" max="100" step="1"></div>
+              <div><label class="mini">CH % (topení)</label><input id="tuvChPct" type="number" min="0" max="100" step="1"></div>
+            </div>
+            <div class="row2 mt8">
+              <label class="switch"><input id="tuvBypassEnabled" type="checkbox"><span class="slider"></span></label>
+              <label class="switch"><input id="tuvBypassInvert" type="checkbox"><span class="slider"></span></label>
+            </div>
+            <div class="row2 mt4">
+              <div class="mini">Použít bypass ventil</div>
+              <div class="mini">Invert (prohoď 0/100)</div>
+            </div>
+            <div class="hint mt4">Ventil uzavírá okruh přes AKU během DHW. Odpovídá SPDT (1 relé).</div>
+          </div>
+        </div>
+
+        <div class="ioRow">
+          <div class="ioLabel">Obnovit V2 po DHW</div>
+          <div class="ioValue">
+            <label class="switch"><input id="tuvRestoreEqValve" type="checkbox"><span class="slider"></span></label>
+            <div class="hint mt4">Po skončení DHW vrátí směšovací ventil na uloženou pozici.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="cardHead">
+        <div>
+          <div class="cardTitle">Stav a diagnostika</div>
+          <div class="muted">Rychlý přehled režimu a použitých ventilů</div>
+        </div>
+      </div>
+
+      <div class="ioGrid">
+        <div class="ioRow">
+          <div class="ioLabel">Stav režimu</div>
+          <div class="ioValue"><div id="tuvStatusBox" class="mono small"></div></div>
+        </div>
+        <div class="ioRow">
+          <div class="ioLabel">Poznámka</div>
+          <div class="ioValue">
+            <div class="hint">TUV režim má přednost před ekvitermem – při aktivaci nastaví ventily na požadované polohy.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+  </div>
+        </details>
+        <details class="accordion">
+          <summary>Pokročilé</summary>
+          <div class="pad muted">Pokročilé volby se zobrazí podle režimu systému.</div>
+        </details>
+      </section>
