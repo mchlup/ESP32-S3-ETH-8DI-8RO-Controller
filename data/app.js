@@ -75,6 +75,8 @@
     return `${s}s`;
   };
 
+  const isFiniteNum = (val) => Number.isFinite(val);
+
   const safeJson = (txt) => {
     try { return JSON.parse(txt); } catch { return null; }
   };
@@ -132,18 +134,19 @@
   };
 
   const showPage = (name) => {
-    const page = String(name || "dash").trim() || "dash";
+    const page = String(name || "dashboard").trim() || "dashboard";
 
     // pages
     $$(".page").forEach(p => p.classList.toggle("active", p.id === `page-${page}`));
 
     // sidebar highlight
     $$(".navItem").forEach(b => b.classList.toggle("active", String(b.dataset.page || "") === page));
+    $("#sidebar")?.classList.remove("open");
 
     // header title
     const h1 = $(".h1");
     if (h1) {
-      if (page === "dash") h1.textContent = "Řídicí panel";
+      if (page === "dashboard") h1.textContent = "Řídicí panel";
       else {
         const activeNav = $(".navItem.active");
         const label = activeNav?.textContent?.trim();
@@ -154,11 +157,11 @@
     // schema placement (dashboard vs standalone)
     const schemaCard = $("#cardSchema");
     const schemaHost = $("#schemaStandalone");
-    const dashHost = $("#page-dash .dashLayout");
+    const dashHost = $("#page-dashboard .dashGrid");
     if (schemaCard && schemaHost && dashHost) {
       if (page === "schema") {
         if (schemaCard.parentElement !== schemaHost) schemaHost.appendChild(schemaCard);
-      } else if (page === "dash") {
+      } else if (page === "dashboard") {
         if (schemaCard.parentElement !== dashHost) dashHost.prepend(schemaCard);
       }
     }
@@ -194,6 +197,19 @@
     if (akuRow && akuGrid) akuGrid.appendChild(akuRow);
   };
 
+  const mountSummaryControls = () => {
+    document.querySelectorAll("[data-mount]").forEach((holder) => {
+      const id = holder.dataset.mount;
+      const el = document.getElementById(id);
+      if (!el) return;
+      let node = el;
+      if (el.tagName === "INPUT" && el.type === "checkbox") {
+        node = el.closest("label") || el;
+      }
+      holder.appendChild(node);
+    });
+  };
+
   // ---------- render helpers ----------
   const relayName = (i) => (state.config?.relayNames?.[i] || `Relé ${i+1}`).toString();
   const inputName = (i) => (state.config?.inputNames?.[i] || `Vstup ${i+1}`).toString();
@@ -222,55 +238,64 @@
     const wifi = st.wifiConnected ?? st?.wifi?.connected ?? false;
     const mqtt = st.mqttConnected ?? st?.mqtt?.connected ?? false;
 
-    $("#chipWifi").textContent = "Wi‑Fi: " + (wifi ? "online" : "offline");
-    $("#chipMqtt").textContent = "MQTT: " + (mqtt ? "connected" : "disconnected");
+    if ($("#chipWifi")) $("#chipWifi").textContent = "Wi‑Fi: " + (wifi ? "online" : "offline");
+    if ($("#chipMqtt")) $("#chipMqtt").textContent = "MQTT: " + (mqtt ? "connected" : "disconnected");
 
-    $("#pillIp").textContent = "IP: " + (st.ip || "—");
-    $("#pillUptime").textContent = "uptime: " + fmtMs(st.uptimeMs ?? st.uptime ?? null);
+    if ($("#pillIp")) $("#pillIp").textContent = "IP: " + (st.ip || "—");
+    if ($("#pillUptime")) $("#pillUptime").textContent = "uptime: " + fmtMs(st.uptimeMs ?? st.uptime ?? null);
 
-    $("#brandSub").textContent = (st.ip ? `IP ${st.ip}` : "—");
+    if ($("#brandSub")) $("#brandSub").textContent = (st.ip ? `IP ${st.ip}` : "—");
     {
-    const sys = st.systemMode || st.mode || "—";
-    const ctrl = st.controlMode || "—";
-    const eq = st.equitherm || {};
-    const tuv = st.tuv || {};
-    let eqHint = "";
-    let tuvHint = "";
-    if (typeof eq.enabled !== "undefined") {
-      if (!eq.enabled) eqHint = " • Ekviterm: vypnuto";
-      else if (eq.active) eqHint = " • Ekviterm: aktivní";
-      else eqHint = ` • Ekviterm: čeká${eq.reason ? " ("+eq.reason+")" : ""}`;
+      const sys = st.systemMode || st.mode || "—";
+      const ctrl = st.controlMode || "—";
+      const eq = st.equitherm || {};
+      const tuv = st.tuv || {};
+      let eqHint = "";
+      let tuvHint = "";
+      if (typeof eq.enabled !== "undefined") {
+        if (!eq.enabled) eqHint = " • Ekviterm: vypnuto";
+        else if (eq.active) eqHint = " • Ekviterm: aktivní";
+        else eqHint = ` • Ekviterm: čeká${eq.reason ? " (" + eq.reason + ")" : ""}`;
+      }
+      if (typeof tuv.active !== "undefined") {
+        if (tuv.active) tuvHint = " • TUV: aktivní";
+        else if (tuv.scheduleEnabled) tuvHint = " • TUV: čeká";
+      } else if (typeof tuv.modeActive !== "undefined") {
+        if (tuv.modeActive) tuvHint = " • TUV: aktivní";
+        else if (tuv.scheduleEnabled) tuvHint = " • TUV: čeká";
+      }
+      if ($("#topHint")) $("#topHint").textContent = `System: ${sys} • Control: ${ctrl}${eqHint}${tuvHint}`;
     }
-    if (typeof tuv.active !== "undefined") {
-      if (tuv.active) tuvHint = " • TUV: aktivní";
-      else if (tuv.scheduleEnabled) tuvHint = " • TUV: čeká";
-    } else if (typeof tuv.modeActive !== "undefined") {
-      if (tuv.modeActive) tuvHint = " • TUV: aktivní";
-      else if (tuv.scheduleEnabled) tuvHint = " • TUV: čeká";
+
+    if ($("#statusNet")) {
+      $("#statusNet").textContent = `Síť: ${wifi ? "online" : "offline"}${st.ip ? ` • ${st.ip}` : ""}`;
     }
-    $("#topHint").textContent = `System: ${sys} • Control: ${ctrl}${eqHint}${tuvHint}`;
-  }
+    if ($("#statusMqtt")) $("#statusMqtt").textContent = `MQTT: ${mqtt ? "connected" : "disconnected"}`;
+    if ($("#statusUptime")) $("#statusUptime").textContent = `Uptime: ${fmtMs(st.uptimeMs ?? st.uptime ?? null)}`;
 
-    $("#kvSystemMode").textContent = st.systemMode || st.mode || "—";
-    $("#kvControlMode").textContent = st.controlMode || "—";
-    $("#kvRssi").textContent = (st?.wifi?.rssi != null) ? `${st.wifi.rssi} dBm` : "—";
+    if ($("#kvSystemMode")) $("#kvSystemMode").textContent = st.systemMode || st.mode || "—";
+    if ($("#kvControlMode")) $("#kvControlMode").textContent = st.controlMode || "—";
+    if ($("#kvRssi")) $("#kvRssi").textContent = (st?.wifi?.rssi != null) ? `${st.wifi.rssi} dBm` : "—";
 
-    // BLE + meteo optional fields (may be missing in older firmware)
     const cc = st.serverConnectedCount ?? 0;
-    $("#kvBle").textContent = (cc ? `připojeno (${cc})` : "ne");
-    $("#kvPairing").textContent = st.pairingWindow ? `ANO (${st.pairingRemainingSec ?? 0}s)` : "ne";
+    if ($("#kvBle")) $("#kvBle").textContent = (cc ? `připojeno (${cc})` : "ne");
+    if ($("#kvPairing")) $("#kvPairing").textContent = st.pairingWindow ? `ANO (${st.pairingRemainingSec ?? 0}s)` : "ne";
 
-    if (!st.meteoEnabled) $("#kvMeteo").textContent = "OFF";
-    else if (st.meteoConnected && st.meteoFix) {
-      const m = st.meteo || {};
-      $("#kvMeteo").textContent = `${m.tempC ?? "?"}°C / ${m.hum ?? "?"}%`;
-    } else if (st.meteoConnected) $("#kvMeteo").textContent = "connected (bez dat)";
-    else $("#kvMeteo").textContent = "ne";
+    if ($("#kvMeteo")) {
+      if (!st.meteoEnabled) $("#kvMeteo").textContent = "OFF";
+      else if (st.meteoConnected && st.meteoFix) {
+        const m = st.meteo || {};
+        $("#kvMeteo").textContent = `${m.tempC ?? "?"}°C / ${m.hum ?? "?"}%`;
+      } else if (st.meteoConnected) $("#kvMeteo").textContent = "connected (bez dat)";
+      else $("#kvMeteo").textContent = "ne";
+    }
 
     const cm = (st.controlMode || "").toLowerCase();
     const badge = $("#badgeControl");
-    badge.className = "badge " + (cm.includes("manual") ? "warn" : "ok");
-    badge.textContent = cm || "—";
+    if (badge) {
+      badge.className = "badge " + (cm.includes("manual") ? "warn" : "ok");
+      badge.textContent = cm || "—";
+    }
   };
 
   
@@ -300,6 +325,362 @@ const computeInputActive = (i) => {
   if (hasRaw && Array.isArray(st.inputs)) return !!st.inputs[i];
   return activeFromRaw;
 };
+
+const tryGetRoleTemp = (cfg, dash, role) => {
+  const src = String(role?.source || "none");
+  if (!dash) return { valid: false };
+  if (src === "dallas") {
+    const gpio = Number(role?.gpio ?? 0);
+    const rom = String(role?.rom || "").trim().toUpperCase();
+    const d = Array.isArray(dash.dallas) ? dash.dallas[gpio] : null;
+    const devs = Array.isArray(d?.devices) ? d.devices : [];
+    let best = null;
+    for (const dv of devs) {
+      const r = String(dv?.rom || "").trim().toUpperCase();
+      if (rom && r !== rom) continue;
+      if (dv && dv.valid && isFiniteNum(dv.tempC)) { best = dv; break; }
+    }
+    if (!best && !rom) {
+      for (const dv of devs) {
+        if (dv && dv.valid && isFiniteNum(dv.tempC)) { best = dv; break; }
+      }
+    }
+    if (best) return { valid: true, tempC: best.tempC };
+    return { valid: false };
+  }
+  if (src === "mqtt") {
+    const idx = Number(role?.mqttIdx || role?.preset || 0);
+    const mt = Array.isArray(dash.mqttTemps) ? dash.mqttTemps.find(x => Number(x.idx) === idx) : null;
+    const val = (mt && typeof mt.tempC === "number") ? mt.tempC : (mt ? mt.valueC : NaN);
+    if (mt && mt.valid && isFiniteNum(val)) return { valid: true, tempC: val, ageMs: mt.ageMs };
+    return { valid: false };
+  }
+  if (src === "ble") {
+    const id = String(role?.bleId || role?.id || "").trim();
+    const bt = Array.isArray(dash.bleTemps) ? dash.bleTemps.find(x => String(x.id || "") === id) : null;
+    const val = (bt && typeof bt.tempC === "number") ? bt.tempC : (bt ? bt.valueC : NaN);
+    if (bt && bt.valid && isFiniteNum(val)) return { valid: true, tempC: val, ageMs: bt.ageMs };
+    return { valid: false };
+  }
+  if (src && src.startsWith("temp")) {
+    const idx = parseInt(src.substring(4) || "0", 10) - 1;
+    if (idx >= 0 && idx < 8) {
+      const v = dash.temps?.[idx];
+      const ok = dash.tempsValid?.[idx];
+      if (ok && isFiniteNum(v)) return { valid: true, tempC: v };
+    }
+  }
+  return { valid: false };
+};
+
+  const renderDashboard = () => {
+    const tempHost = $("#tempTiles");
+    const featureHost = $("#featureTiles");
+    const actionHost = $("#quickActions");
+    if (!tempHost || !featureHost || !actionHost) return;
+
+    const cfg = ensureConfigShape();
+    const map = getRoleMap();
+    const dash = state.dash || {};
+    const st = state.status || {};
+    const buildTile = window.UI?.buildTile || ((opts) => {
+      const tile = document.createElement("div");
+      tile.className = `tile${opts.disabled ? " disabled" : ""}`;
+      tile.textContent = opts.title || "—";
+      return tile;
+    });
+
+    const tempRoles = [
+      { key: "outdoor", label: "Venkovní" },
+      { key: "flow", label: "Topná voda" },
+      { key: "return", label: "Zpátečka" },
+      { key: "dhw", label: "TUV" },
+      { key: "tankTop", label: "AKU top" },
+      { key: "tankMid", label: "AKU mid" },
+      { key: "tankBottom", label: "AKU bottom" },
+    ];
+
+    tempHost.innerHTML = "";
+    tempRoles.forEach(({ key, label }) => {
+      const roleCfg = cfg?.thermometers?.roles?.[key] || {};
+      const roleInfo = map.temps?.[key] || { source: "none", detail: "—" };
+      const hasRole = roleInfo.source !== "none";
+      if (!hasRole) {
+        tempHost.appendChild(buildTile({
+          title: label,
+          value: "nenastaveno",
+          meta: "",
+          chip: "missing",
+          disabled: true,
+        }));
+        return;
+      }
+      const t = tryGetRoleTemp(cfg, dash, roleCfg);
+      tempHost.appendChild(buildTile({
+        title: label,
+        value: t.valid ? `${t.tempC.toFixed(1)}°C` : "—",
+        meta: roleInfo.detail || "",
+        chip: t.valid ? "ok" : "warn",
+        secondary: t.valid ? "OK" : "Bez dat",
+      }));
+    });
+
+    const featureTiles = [];
+    const missingIssues = [];
+
+    const hasTemp = (roleKey) => (map.temps?.[roleKey]?.source || "none") !== "none";
+    const hasInput = (roleKey) => !!map.inputs?.[roleKey];
+    const hasOutput = (roleKey) => !!map.outputs?.[roleKey];
+    const getRelayState = (roleKey) => {
+      const out = map.outputs?.[roleKey];
+      if (!out) return null;
+      const idx = out.index - 1;
+      return Array.isArray(st.relays) ? !!st.relays[idx] : null;
+    };
+
+    const eqEnabled = !!cfg.equitherm?.enabled;
+    const eqMissing = [!hasTemp("outdoor") ? "outdoor" : null, !hasTemp("flow") ? "flow" : null, !hasOutput("valve_3way_mix") ? "valve_3way_mix" : null].filter(Boolean);
+    if (eqMissing.length) missingIssues.push("Ekviterm: chybí role");
+    const eqTempOk = hasTemp("outdoor") && hasTemp("flow") && tryGetRoleTemp(cfg, dash, cfg.thermometers.roles.outdoor).valid && tryGetRoleTemp(cfg, dash, cfg.thermometers.roles.flow).valid;
+    let eqState = "VYP";
+    let eqChip = "off";
+    let eqDetail = "vypnuto";
+    if (!eqEnabled) {
+      eqState = "VYP";
+      eqChip = "off";
+      eqDetail = "vypnuto";
+    } else if (eqMissing.length) {
+      eqState = "CHYBÍ ZDROJE";
+      eqChip = "missing";
+      eqDetail = "doplň role";
+    } else if (!eqTempOk) {
+      eqState = "ČEKÁ NA DATA";
+      eqChip = "warn";
+      eqDetail = "nevalidní teploty";
+    } else if (st.equitherm?.nightMode || st.nightMode) {
+      eqState = "NOC";
+      eqChip = "warn";
+      eqDetail = "noční režim";
+    } else if (st.equitherm?.active) {
+      eqState = "AKTIVNÍ";
+      eqChip = "ok";
+      const tgt = st.equitherm?.targetFlowC ?? st.equitherm?.targetTempC;
+      eqDetail = tgt != null ? `cílová Tflow: ${Number(tgt).toFixed(1)}°C` : "reguluje";
+    } else {
+      eqState = "STABILNÍ";
+      eqChip = "ok";
+      eqDetail = "v toleranci";
+    }
+
+    featureTiles.push({
+      id: "ekviterm",
+      title: "Ekviterm",
+      value: eqState,
+      meta: eqDetail,
+      chip: eqChip,
+      disabled: !eqEnabled || eqMissing.length,
+      ctaHref: eqMissing.length ? (eqMissing.includes("valve_3way_mix") ? "#iofunc" : "#temps") : null,
+    });
+
+    const tuvEnabled = !!cfg.tuv?.enabled;
+    const tuvMissing = [!hasInput("dhw_enable") ? "dhw_enable" : null, !hasOutput("boiler_enable_dhw") ? "boiler_enable_dhw" : null].filter(Boolean);
+    if (tuvMissing.length) missingIssues.push("TUV: chybí role");
+    const tuvDemandIdx = map.inputs?.dhw_enable?.index ?? 0;
+    const tuvDemand = tuvDemandIdx ? computeInputActive(tuvDemandIdx - 1) : false;
+    const tuvRelay = getRelayState("boiler_enable_dhw");
+    let tuvState = "VYP";
+    let tuvChip = "off";
+    let tuvDetail = "vypnuto";
+    if (!tuvEnabled) {
+      tuvState = "VYP";
+      tuvChip = "off";
+      tuvDetail = "vypnuto";
+    } else if (tuvMissing.length) {
+      tuvState = "CHYBÍ ROLE";
+      tuvChip = "missing";
+      tuvDetail = "doplň role";
+    } else if (tuvDemand && tuvRelay) {
+      tuvState = "AKTIVNÍ";
+      tuvChip = "ok";
+      tuvDetail = "kotel požadavek: ON";
+    } else if (tuvDemand) {
+      tuvState = "ČEKÁ";
+      tuvChip = "warn";
+      tuvDetail = "čeká na podmínky";
+    } else {
+      tuvState = "ČEKÁ";
+      tuvChip = "ok";
+      tuvDetail = "bez požadavku";
+    }
+
+    featureTiles.push({
+      id: "tuv",
+      title: "Ohřev TUV",
+      value: tuvState,
+      meta: tuvDetail,
+      chip: tuvChip,
+      disabled: !tuvEnabled || tuvMissing.length,
+      ctaHref: tuvMissing.length ? "#iofunc" : null,
+    });
+
+    const recEnabled = !!cfg.dhwRecirc?.enabled;
+    const recMissing = [!hasInput("recirc_demand") ? "recirc_demand" : null, !hasOutput("dhw_recirc_pump") ? "dhw_recirc_pump" : null].filter(Boolean);
+    if (recMissing.length) missingIssues.push("Recirkulace: chybí role");
+    const recRelay = getRelayState("dhw_recirc_pump");
+    let recState = "VYP";
+    let recChip = "off";
+    let recDetail = "vypnuto";
+    if (!recEnabled) {
+      recState = "VYP";
+      recChip = "off";
+      recDetail = "vypnuto";
+    } else if (recMissing.length) {
+      recState = "CHYBÍ ROLE";
+      recChip = "missing";
+      recDetail = "doplň role";
+    } else if (recRelay) {
+      recState = "BĚŽÍ";
+      recChip = "ok";
+      recDetail = "čerpadlo aktivní";
+    } else if (cfg.dhwRecirc?.mode === "schedule" || (cfg.dhwRecirc?.windows || []).length) {
+      recState = "PLÁN";
+      recChip = "ok";
+      recDetail = "časová okna";
+    } else {
+      recState = "PAUZA";
+      recChip = "warn";
+      recDetail = "čeká";
+    }
+
+    featureTiles.push({
+      id: "recirc",
+      title: "Cirkulace TUV",
+      value: recState,
+      meta: recDetail,
+      chip: recChip,
+      disabled: !recEnabled || recMissing.length,
+      ctaHref: recMissing.length ? "#iofunc" : null,
+    });
+
+    const akuEnabled = !!cfg.equitherm?.akuSupportEnabled;
+    const akuMissing = [!hasTemp("tankTop") ? "tankTop" : null].filter(Boolean);
+    if (akuMissing.length) missingIssues.push("AKU: chybí role");
+    const akuTop = hasTemp("tankTop") ? tryGetRoleTemp(cfg, dash, cfg.thermometers.roles.tankTop) : { valid: false };
+    const akuMid = hasTemp("tankMid") ? tryGetRoleTemp(cfg, dash, cfg.thermometers.roles.tankMid) : { valid: false };
+    let akuState = "VYP";
+    let akuChip = "off";
+    let akuDetail = "vypnuto";
+    if (!akuEnabled) {
+      akuState = "VYP";
+      akuChip = "off";
+      akuDetail = "vypnuto";
+    } else if (akuMissing.length) {
+      akuState = "CHYBÍ ROLE";
+      akuChip = "missing";
+      akuDetail = "doplň role";
+    } else if (!akuTop.valid) {
+      akuState = "ČEKÁ NA DATA";
+      akuChip = "warn";
+      akuDetail = "nevalidní teploty";
+    } else if (st.equitherm?.akuSupportActive) {
+      akuState = "AKTIVNÍ";
+      akuChip = "ok";
+      akuDetail = `Ttop: ${akuTop.tempC.toFixed(1)}°C${akuMid.valid ? ` / Tmid: ${akuMid.tempC.toFixed(1)}°C` : ""}`;
+    } else {
+      akuState = "STABILNÍ";
+      akuChip = "ok";
+      akuDetail = akuTop.valid ? `Ttop: ${akuTop.tempC.toFixed(1)}°C` : "v toleranci";
+    }
+
+    featureTiles.push({
+      id: "aku",
+      title: "Podpora AKU",
+      value: akuState,
+      meta: akuDetail,
+      chip: akuChip,
+      disabled: !akuEnabled || akuMissing.length,
+      ctaHref: akuMissing.length ? "#temps" : null,
+    });
+
+    const heaterEnabled = !!cfg.akuHeater?.enabled;
+    const heaterMissing = [!hasOutput("heater_aku") ? "heater_aku" : null, !hasTemp("tankMid") && !hasTemp("tankTop") ? "tankMid" : null].filter(Boolean);
+    if (heaterMissing.length) missingIssues.push("AKU heater: chybí role");
+    const heaterOn = getRelayState("heater_aku");
+    const heaterTemp = hasTemp("tankMid") ? tryGetRoleTemp(cfg, dash, cfg.thermometers.roles.tankMid) : tryGetRoleTemp(cfg, dash, cfg.thermometers.roles.tankTop);
+    let heaterState = "VYP";
+    let heaterChip = "off";
+    let heaterDetail = "vypnuto";
+    if (!heaterEnabled) {
+      heaterState = "VYP";
+      heaterChip = "off";
+      heaterDetail = "vypnuto";
+    } else if (heaterMissing.length) {
+      heaterState = "CHYBÍ ROLE";
+      heaterChip = "missing";
+      heaterDetail = "doplň role";
+    } else if (heaterOn) {
+      heaterState = "OHŘÍVÁ";
+      heaterChip = "ok";
+      const tgt = cfg.akuHeater?.targetTopC ?? cfg.akuHeater?.targetC;
+      heaterDetail = heaterTemp.valid && tgt ? `T: ${heaterTemp.tempC.toFixed(1)}°C → cíl ${tgt}°C` : "aktivní";
+    } else {
+      heaterState = "ČEKÁ";
+      heaterChip = "warn";
+      heaterDetail = "čeká na podmínky";
+    }
+
+    featureTiles.push({
+      id: "aku_heater",
+      title: "AKU heater",
+      value: heaterState,
+      meta: heaterDetail,
+      chip: heaterChip,
+      disabled: !heaterEnabled || heaterMissing.length,
+      ctaHref: heaterMissing.length ? "#iofunc" : null,
+    });
+
+    featureHost.innerHTML = "";
+    featureTiles.forEach((tile) => {
+      featureHost.appendChild(buildTile({
+        title: tile.title,
+        value: tile.value,
+        meta: tile.meta,
+        chip: tile.chip,
+        disabled: tile.disabled,
+        ctaHref: tile.ctaHref,
+        ctaLabel: tile.disabled ? "Opravit" : null,
+      }));
+      const chipEl = document.getElementById(`chip-${tile.id}`);
+      if (chipEl) {
+        chipEl.className = `chip ${tile.chip}`;
+        chipEl.textContent = tile.chip ? tile.chip.toUpperCase() : "—";
+      }
+    });
+
+    actionHost.innerHTML = "";
+    [
+      { label: "Upravit role I/O", href: "#iofunc" },
+      { label: "Upravit teploměry", href: "#temps" },
+      { label: "Otevřít Ekviterm", href: "#ekviterm" },
+      { label: "Otevřít TUV", href: "#tuv" },
+    ].forEach((act) => {
+      const link = document.createElement("a");
+      link.className = "actionBtn";
+      link.href = act.href;
+      link.textContent = act.label;
+      actionHost.appendChild(link);
+    });
+
+    const alarm = $("#statusAlarm");
+    if (alarm) {
+      if (missingIssues.length) {
+        alarm.hidden = false;
+        alarm.textContent = `Upozornění: ${missingIssues.join(" • ")}`;
+      } else {
+        alarm.hidden = true;
+      }
+    }
+  };
 
 const renderIO = () => {
     const cfg = ensureConfigShape();
@@ -735,7 +1116,17 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
   window.App.getDash = () => state.dash;
   window.App.getRoleMap = getRoleMap;
   window.App.setConfig = (cfg) => { state.config = cfg; ensureConfigShape(); };
-  window.App.setDirty = (value = true) => { if (state.ui?.dirty) state.ui.dirty.form = !!value; };
+  const updateDirtyIndicators = () => {
+    const dirty = !!state.ui?.dirty?.form;
+    $$("#dirty-ekviterm, #dirty-aku, #dirty-tuv, #dirty-recirc, #dirty-aku_heater").forEach((el) => {
+      el.hidden = !dirty;
+    });
+  };
+
+  window.App.setDirty = (value = true) => {
+    if (state.ui?.dirty) state.ui.dirty.form = !!value;
+    updateDirtyIndicators();
+  };
   window.App.isDirty = () => !!state.ui?.dirty?.form;
   // Save config to firmware and (by default) reload config+status so UI stays consistent across tabs.
   window.App.saveConfig = async (cfg, opts={}) => {
@@ -748,6 +1139,7 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
       state.ui.dirty.cfgJson = false;
       state.ui.dirty.form = false;
     }
+    updateDirtyIndicators();
 
     const reload = (opts && typeof opts === "object" && opts.reload === false) ? false : true;
     if (reload && typeof window.App.reloadCore === "function") {
@@ -1575,30 +1967,32 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
       toast("Spojení obnoveno.", "good");
     }
     renderTop();
-    renderIO();
+    renderDashboard();
 
     const st = state.status || {};
     // status box on mqtt page
-    $("#stWifi").textContent = (st.wifiConnected ?? st?.wifi?.connected) ? "online" : "offline";
-    $("#stMqtt").textContent = (st.mqttConnected ?? st?.mqtt?.connected) ? "connected" : "disconnected";
-    $("#stIp").textContent = st.ip || "—";
-    $("#stUptime").textContent = fmtMs(st.uptimeMs ?? null);
+    if ($("#stWifi")) $("#stWifi").textContent = (st.wifiConnected ?? st?.wifi?.connected) ? "online" : "offline";
+    if ($("#stMqtt")) $("#stMqtt").textContent = (st.mqttConnected ?? st?.mqtt?.connected) ? "connected" : "disconnected";
+    if ($("#stIp")) $("#stIp").textContent = st.ip || "—";
+    if ($("#stUptime")) $("#stUptime").textContent = fmtMs(st.uptimeMs ?? null);
 
     // control mode selectors
     const nowUi = Date.now();
     const cm = (st.controlMode || "auto").toLowerCase();
     const cmVal = cm.includes("manual") ? "manual" : "auto";
     const selCM = $("#selControlMode");
-    if (nowUi > (state.ui?.lock?.controlUntil || 0) && document.activeElement !== selCM) {
+    if (selCM && nowUi > (state.ui?.lock?.controlUntil || 0) && document.activeElement !== selCM) {
       selCM.value = cmVal;
     }
-    $("#kvControlMode").textContent = selCM.value;
+    if ($("#kvControlMode") && selCM) $("#kvControlMode").textContent = selCM.value;
 
     const sm = (st.systemMode || st.mode || MODE_IDS[0]).toUpperCase();
     const selSM = $("#selSystemMode");
-    selSM.disabled = (selCM.value === "auto");
-    if (nowUi > (state.ui?.lock?.systemUntil || 0) && document.activeElement !== selSM) {
-      selSM.value = MODE_IDS.includes(sm) ? sm : MODE_IDS[0];
+    if (selSM && selCM) {
+      selSM.disabled = (selCM.value === "auto");
+      if (nowUi > (state.ui?.lock?.systemUntil || 0) && document.activeElement !== selSM) {
+        selSM.value = MODE_IDS.includes(sm) ? sm : MODE_IDS[0];
+      }
     }
 
     // Keep config JSON editor synced, but NEVER clobber user's unsaved edits.
@@ -1621,6 +2015,7 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
   const loadDash = async () => {
     state.dash = await apiGet("/api/dash").catch(() => null);
     if (!state.dash) return;
+    renderDashboard();
     try {
       window.dispatchEvent(new CustomEvent("app:dashUpdated", { detail: state.dash }));
     } catch (_) {}
@@ -1633,6 +2028,7 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     renderInputsTable();
     renderRelaysTable();
     renderModes();
+    renderDashboard();
     // Populate JSON editor unless user is actively editing it.
     const cfgEd = $("#cfgJson");
     if (cfgEd && document.activeElement !== cfgEd && !state.ui?.dirty?.cfgJson) {
@@ -1657,6 +2053,7 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     try {
       window.dispatchEvent(new CustomEvent("app:configUpdated", { detail: state.config }));
     } catch (_) {}
+    updateDirtyIndicators();
   };
 
   const loadConfig = async (opts = {}) => {
@@ -1709,7 +2106,13 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
   // ---------- DOM events ----------
   const wireEvents = () => {
     // nav
-    $$(".navItem").forEach(b => b.addEventListener("click", () => showPage(String(b.dataset.page||"dash"))));
+    $$(".navItem").forEach(b => b.addEventListener("click", () => showPage(String(b.dataset.page||"dashboard"))));
+    $("#btnNav")?.addEventListener("click", () => {
+      $("#sidebar")?.classList.toggle("open");
+    });
+    $("#btnCollapse")?.addEventListener("click", () => {
+      $("#sidebar")?.classList.toggle("collapsed");
+    });
 
     // theme
     const themeKey = "heatui_theme";
@@ -1729,9 +2132,23 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
       if (!(e.target instanceof HTMLElement)) return;
       if (!e.target.matches("input,select,textarea")) return;
       const page = e.target.closest(".page");
-      if (!page || page.id === "page-dash") return;
-      if (state.ui?.dirty) state.ui.dirty.form = true;
+      if (!page || page.id === "page-dashboard") return;
+      window.App.setDirty(true);
     });
+
+    const reloadIfClean = () => {
+      if (window.App.isDirty()) {
+        toast("Nejprve ulož nebo zruš změny.", "warn");
+        return;
+      }
+      loadConfig({ force: true });
+    };
+    $("#btnReloadEquitherm")?.addEventListener("click", reloadIfClean);
+    $("#btnReloadAku")?.addEventListener("click", reloadIfClean);
+    $("#btnReloadTuv")?.addEventListener("click", reloadIfClean);
+    $("#btnReloadRecirc")?.addEventListener("click", reloadIfClean);
+    $("#btnReloadAkuHeater")?.addEventListener("click", reloadIfClean);
+    $("#btnSaveAku")?.addEventListener("click", () => $("#btnSaveEquitherm")?.click());
 
     
     // rules tabs
@@ -1766,8 +2183,8 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     $("#ruleModal")?.addEventListener("click", (e) => {
       if (e.target && e.target.dataset && e.target.dataset.close) closeRuleModal();
     });
-// relay toggles (dashboard)
-    $("#relayGrid").addEventListener("click", async (e) => {
+    // relay toggles (legacy dashboard)
+    $("#relayGrid")?.addEventListener("click", async (e) => {
       const sw = e.target.closest(".sw[data-relay]");
       if (!sw) return;
       const idx = Number(sw.dataset.relay);
@@ -1793,7 +2210,7 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     });
 
     // apply control/mode
-    $("#btnApplyMode").addEventListener("click", async () => {
+    $("#btnApplyMode")?.addEventListener("click", async () => {
       try{
         const cm = ($("#selControlMode").value || "auto").toLowerCase();
           await setControlMode(cm);
@@ -1907,9 +2324,11 @@ $("#btnAutoRecompute").addEventListener("click", async () => {
   // ---------- start ----------
   const init = async () => {
     mountLegacySections();
+    mountSummaryControls();
+    updateDirtyIndicators();
     wireEvents();
-    const startRaw = (location.hash || "").replace("#","") || "dash";
-    const page = String(startRaw || "dash").trim() || "dash";
+    const startRaw = (location.hash || "").replace("#","") || "dashboard";
+    const page = String(startRaw || "dashboard").trim() || "dashboard";
     showPage(page);
     try{
       await loadAll();
@@ -1926,7 +2345,7 @@ $("#btnAutoRecompute").addEventListener("click", async () => {
 
   window.addEventListener("load", init);
   window.addEventListener("hashchange", () => {
-    const page = (location.hash || "#dash").replace("#", "");
+    const page = (location.hash || "#dashboard").replace("#", "");
     showPage(page);
   });
 })();

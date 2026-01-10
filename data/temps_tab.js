@@ -116,6 +116,32 @@
     tankBottom: "Akumulační nádrž – spodní",
   };
 
+  const filterState = {
+    onlyAssigned: false,
+    query: "",
+  };
+
+  const applyRoleFilters = () => {
+    const q = filterState.query.trim().toLowerCase();
+    const host = $id("tblTempRolesCfg");
+    if (!host) return;
+    host.querySelectorAll(".trow").forEach((row) => {
+      if (row.classList.contains("head")) return;
+      const roleKey = (row.dataset.role || "").toLowerCase();
+      const label = (ROLE_LABELS[row.dataset.role] || "").toLowerCase();
+      const src = (row.dataset.source || "").toLowerCase();
+      if (filterState.onlyAssigned && (!src || src === "none")) {
+        row.style.display = "none";
+        return;
+      }
+      if (q && !roleKey.includes(q) && !label.includes(q) && !src.includes(q)) {
+        row.style.display = "none";
+        return;
+      }
+      row.style.display = "";
+    });
+  };
+
   function encodeRoleVal(cfg, role){
     const src = String(role?.source || "none");
     if (src === "dallas"){
@@ -266,6 +292,7 @@
       const row = document.createElement("div");
       row.className = "trow";
       row.dataset.role = key;
+      row.dataset.source = String(role.source || "none");
       row.innerHTML = `
         <div class="col1">${escapeHtml(ROLE_LABELS[key])}</div>
         <div class="col2"><select class="pfield roleSel" data-role="${escapeHtml(key)}"></select></div>
@@ -279,6 +306,7 @@
     }
 
     updateRoleTempCells(cfg, lastDash);
+    applyRoleFilters();
   }
 
   function tryGetRoleTemp(cfg, dash, role){
@@ -448,6 +476,8 @@
     cfg.thermometers.roles[key] = r;
     App.setConfig?.(cfg);
     updateRoleTempCells(cfg, lastDash);
+    row.dataset.source = String(r.source || "none");
+    applyRoleFilters();
   }
 
   async function refreshTempsAndDiag(){
@@ -693,6 +723,15 @@
         if (ev.target.matches("select.roleSel")) applyFromRoleRow(row);
       });
     }
+
+    const updateFilters = () => {
+      filterState.onlyAssigned = $id("tempsOnlyAssigned")?.checked ?? false;
+      filterState.query = $id("tempsSearch")?.value || "";
+      applyRoleFilters();
+    };
+    $id("tempsOnlyAssigned")?.addEventListener("change", updateFilters);
+    $id("tempsSearch")?.addEventListener("input", updateFilters);
+    updateFilters();
 
     const doSave = async ()=>{
       try{
