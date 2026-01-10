@@ -4,12 +4,14 @@
   if (!App) return;
 
   const $ = App.$;
+  const $$ = App.$$;
   const toast = App.toast;
   const INPUT_COUNT = 8;
   const RELAY_COUNT = 8;
 
   const escapeHtml = (s) =>
     String(s ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const escapeAttr = (s) => escapeHtml(s);
 
   const INPUT_ROLES = [
     { v: "none", t: "—" },
@@ -308,6 +310,44 @@
     return `<div class="muted">—</div>`;
   };
 
+  const filterState = {
+    onlyAssigned: false,
+    onlyInputs: false,
+    onlyOutputs: false,
+    query: "",
+  };
+
+  const applyFilters = () => {
+    const q = filterState.query.trim().toLowerCase();
+    const showInputs = filterState.onlyInputs && !filterState.onlyOutputs;
+    const showOutputs = filterState.onlyOutputs && !filterState.onlyInputs;
+    ["#tblInputFuncs", "#tblOutputFuncs"].forEach((sel) => {
+      $$(sel + " .row2").forEach((row) => {
+        if (row.classList.contains("head")) return;
+        const type = row.dataset.type || "";
+        if (showInputs && type !== "in") {
+          row.style.display = "none";
+          return;
+        }
+        if (showOutputs && type !== "out") {
+          row.style.display = "none";
+          return;
+        }
+        const role = (row.dataset.role || "").toLowerCase();
+        const name = (row.dataset.name || "").toLowerCase();
+        if (filterState.onlyAssigned && (!role || role === "none")) {
+          row.style.display = "none";
+          return;
+        }
+        if (q && !role.includes(q) && !name.includes(q)) {
+          row.style.display = "none";
+          return;
+        }
+        row.style.display = "";
+      });
+    });
+  };
+
   const renderTables = () => {
     const cfg = App.getConfig?.();
     if (!cfg) return;
@@ -326,7 +366,7 @@
       const role = String(it.role || "none");
       const params = it.params || {};
       inRows.push(`
-        <div class="row2" data-type="in" data-idx="${i}">
+        <div class="row2" data-type="in" data-idx="${i}" data-role="${escapeAttr(role)}" data-name="${escapeAttr(inputName(cfg, i))}">
           <div><b>${escapeHtml(inputName(cfg, i))}</b><div class="muted">DI${i+1}</div></div>
           <div>
             <select class="roleSel">${roleOptions(INPUT_ROLES, role)}</select>
@@ -353,7 +393,7 @@
       }
 
       outRows.push(`
-        <div class="row2" data-type="out" data-idx="${i}">
+        <div class="row2" data-type="out" data-idx="${i}" data-role="${escapeAttr(role)}" data-name="${escapeAttr(relayName(cfg, i))}">
           <div><b>${escapeHtml(relayName(cfg, i))}</b><div class="muted">DO${i+1}</div></div>
           <div>
             <select class="roleSel" ${isPeer ? "disabled" : ""}>${roleOptions(OUTPUT_ROLES, role, disabledSet)}</select>
@@ -363,6 +403,7 @@
       `);
     }
     outTbl.innerHTML = outRows.join("");
+    applyFilters();
 
   };
 
@@ -482,6 +523,19 @@
         toast?.("Chyba při ukládání.");
       }
     });
+
+    const updateFilters = () => {
+      filterState.onlyAssigned = $("#ioOnlyAssigned")?.checked ?? false;
+      filterState.onlyInputs = $("#ioOnlyInputs")?.checked ?? false;
+      filterState.onlyOutputs = $("#ioOnlyOutputs")?.checked ?? false;
+      filterState.query = $("#ioSearch")?.value || "";
+      applyFilters();
+    };
+    $("#ioOnlyAssigned")?.addEventListener("change", updateFilters);
+    $("#ioOnlyInputs")?.addEventListener("change", updateFilters);
+    $("#ioOnlyOutputs")?.addEventListener("change", updateFilters);
+    $("#ioSearch")?.addEventListener("input", updateFilters);
+    updateFilters();
   };
 
   // chain App hook (allow multiple modules)
