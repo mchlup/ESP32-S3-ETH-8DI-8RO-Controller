@@ -1,4 +1,8 @@
 (() => {
+  let initialized = false;
+  const init = () => {
+    if (initialized) return;
+
   const $ = (id) => document.getElementById(id);
   const toast = (msg, type) => (window.App && App.toast) ? App.toast(msg, type) : alert(msg);
 
@@ -80,6 +84,9 @@
     els.btnSave && els.btnSave.addEventListener("click", () => saveUiToConfig().catch(e => toast(e.message, "bad")));
     els.btnRefresh && els.btnRefresh.addEventListener("click", () => refreshStatus().catch(e => toast(e.message, "bad")));
   };
+    initialized = true;
+  };
 
-  document.addEventListener("DOMContentLoaded", init);
+  window.Modules = window.Modules || {};
+  window.Modules.opentherm = { init };
 })();

@@ -1,5 +1,9 @@
 /* AKU heater – konfigurace */
 (() => {
+  let initialized = false;
+  const init = () => {
+    if (initialized) return;
+
   const $ = (id) => document.getElementById(id);
 
   const el = {
@@ -197,14 +201,17 @@
     setSelectOptions(el.relay, relayOpts, false);
     loadFromConfig(cfg);
   };
+  const cfg = App.getConfig();
+  if (cfg) {
+    const relayOpts = buildRelayOptions(cfg);
+    setSelectOptions(el.relay, relayOpts, false);
+    loadFromConfig(cfg);
+  }
+    initialized = true;
+  };
 
-  window.addEventListener("DOMContentLoaded", () => {
-    bindEvents();
-    const cfg = App.getConfig();
-    if (cfg) {
-      const relayOpts = buildRelayOptions(cfg);
-      setSelectOptions(el.relay, relayOpts, false);
-      loadFromConfig(cfg);
-    }
-  });
+  const mount = () => init();
+
+  window.Pages = window.Pages || {};
+  window.Pages.aku_heater = { id: "aku_heater", mount, unmount() {} };
 })();

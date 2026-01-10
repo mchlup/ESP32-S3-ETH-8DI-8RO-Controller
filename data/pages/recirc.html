@@ -1,0 +1,53 @@
+<div class="summaryBar">
+          <div class="summaryMain">
+            <div class="summaryTitle">
+              <span class="summaryIcon">⟳</span>
+              <div>
+                <div class="h2">Cirkulace TUV</div>
+                <div class="muted">Režimy on-demand a časová okna pro recirkulační pumpu.</div>
+              </div>
+            </div>
+            <span class="chip" id="chip-recirc">—</span>
+          </div>
+          <div class="summaryActions">
+            <div class="summaryToggle" data-mount="recircEnabled"></div>
+            <span class="dirty" id="dirty-recirc" hidden>Neuloženo</span>
+            <div data-mount="btnSaveRecirc"></div>
+            <button class="btn ghost" id="btnReloadRecirc" type="button">Obnovit</button>
+          </div>
+        </div>
+        <div class="grid2">
+          <details class="helpDrawer">
+            <summary>Nápověda</summary>
+            <div class="helpBody">
+              <ul class="helpList">
+                <li>Požadavek cirkulace používá roli vstupu <b>recirc_demand</b>.</li>
+                <li>Čerpadlo cirkulace je výstup s rolí <b>dhw_recirc_pump</b>.</li>
+                <li>Stop teplotu porovnává role teploměru <b>return</b>.</li>
+              </ul>
+              <div class="btnRow">
+                <a class="btn ghost" href="#iofunc">Upravit ve Funkce I/O</a>
+                <a class="btn ghost" href="#temps">Upravit v Teploměry</a>
+              </div>
+            </div>
+          </details>
+          <div class="card">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Použité přiřazení</div>
+                <div class="muted">Role → konkrétní vstupy/výstupy</div>
+              </div>
+            </div>
+            <div class="pad">
+              <ul class="roleList" id="recircRoleList"></ul>
+            </div>
+          </div>
+        </div>
+        <details class="accordion" open>
+          <summary>Základní parametry</summary>
+          <div class="pad" id="mount-recirc"></div>
+        </details>
+        <details class="accordion">
+          <summary>Pokročilé</summary>
+          <div class="pad muted">Pokročilé volby cirkulace nejsou aktivní.</div>
+        </details>

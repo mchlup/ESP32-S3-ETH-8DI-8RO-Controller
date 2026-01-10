@@ -2,6 +2,11 @@
    Independent from terminal inputs (Funkce I/O).
 */
 (() => {
+  let initialized = false;
+  let intervalId = null;
+  const init = () => {
+    if (initialized) return;
+
   const App = window.App;
   if (!App) return;
 
@@ -762,13 +767,22 @@
     try { prev && prev(cfg); } catch(e){}
     render();
   };
-
-  window.addEventListener("DOMContentLoaded", ()=>{
-    bind();
-    render();
-    refreshTempsAndDiag();
-    setInterval(refreshTempsAndDiag, 1500);
-  });
+  render();
+  refreshTempsAndDiag();
+  if (!intervalId) intervalId = setInterval(refreshTempsAndDiag, 1500);
 
   window.TempsTab = { render };
+    initialized = true;
+  };
+
+  const mount = () => init();
+  const unmount = () => {
+    if (intervalId) {
+      clearInterval(intervalId);
+      intervalId = null;
+    }
+  };
+
+  window.Pages = window.Pages || {};
+  window.Pages.temps = { id: "temps", mount, unmount };
 })();

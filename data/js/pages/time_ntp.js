@@ -1,5 +1,10 @@
 /* Time/NTP config module (v1) */
 (() => {
+  let initialized = false;
+  let intervalId = null;
+  const init = () => {
+    if (initialized) return;
+
   const App = window.App;
   if (!App) return;
 
@@ -74,7 +79,7 @@
 
     $("#btnTryReadTime")?.addEventListener("click", tryReadTime);
 
-    setInterval(() => {
+    if (!intervalId) intervalId = setInterval(() => {
       const bt = $("#browserTime");
       if (bt) bt.textContent = new Date().toLocaleString();
     }, 1000);
@@ -85,9 +90,17 @@
     try { prev && prev(cfg); } catch(_) {}
     render();
   };
+  if (App.getConfig?.()) render();
+    initialized = true;
+  };
 
-  window.addEventListener("DOMContentLoaded", () => {
-    bind();
-    if (App.getConfig?.()) render();
-  });
+  const destroy = () => {
+    if (intervalId) {
+      clearInterval(intervalId);
+      intervalId = null;
+    }
+  };
+
+  window.Modules = window.Modules || {};
+  window.Modules.time_ntp = { init, destroy };
 })();

@@ -1,5 +1,9 @@
 /* TUV (ohřev bojleru) – režim + přepínací ventily */
 (() => {
+  let initialized = false;
+  const init = () => {
+    if (initialized) return;
+
   const $ = (id) => document.getElementById(id);
 
   const el = {
@@ -280,18 +284,21 @@
     if (typeof prevOnStatusLoaded === "function") prevOnStatusLoaded(status);
     updateStatusBox(status, App.getConfig());
   };
+  const cfg = App.getConfig();
+  if (cfg) {
+    const relayOpts = buildRelayOptions(cfg);
+    setSelectOptions(el.requestRelay, relayOpts, false);
+    const inputOpts = buildInputOptions(cfg);
+    setSelectOptions(el.demandInput, inputOpts, false);
+    loadFromConfig(cfg);
+    refreshDash(cfg, true);
+    updateStatusBox(App.getStatus(), cfg);
+  }
+    initialized = true;
+  };
 
-  window.addEventListener("DOMContentLoaded", () => {
-    bindEvents();
-    const cfg = App.getConfig();
-    if (cfg) {
-      const relayOpts = buildRelayOptions(cfg);
-      setSelectOptions(el.requestRelay, relayOpts, false);
-      const inputOpts = buildInputOptions(cfg);
-      setSelectOptions(el.demandInput, inputOpts, false);
-      loadFromConfig(cfg);
-      refreshDash(cfg, true);
-      updateStatusBox(App.getStatus(), cfg);
-    }
-  });
+  const mount = () => init();
+
+  window.Pages = window.Pages || {};
+  window.Pages.tuv = { id: "tuv", mount, unmount() {} };
 })();

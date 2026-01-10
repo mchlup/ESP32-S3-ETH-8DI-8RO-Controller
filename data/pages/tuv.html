@@ -1,0 +1,52 @@
+<div class="summaryBar">
+          <div class="summaryMain">
+            <div class="summaryTitle">
+              <span class="summaryIcon">♨</span>
+              <div>
+                <div class="h2">Ohřev TUV</div>
+                <div class="muted">Režim pro dohřev bojleru, přepínání ventilů a řízení bypassu.</div>
+              </div>
+            </div>
+            <span class="chip" id="chip-tuv">—</span>
+          </div>
+          <div class="summaryActions">
+            <div class="summaryToggle" data-mount="tuvEnabled"></div>
+            <span class="dirty" id="dirty-tuv" hidden>Neuloženo</span>
+            <div data-mount="btnSaveTuv"></div>
+            <button class="btn ghost" id="btnReloadTuv" type="button">Obnovit</button>
+          </div>
+        </div>
+        <div class="grid2">
+          <details class="helpDrawer">
+            <summary>Nápověda</summary>
+            <div class="helpBody">
+              <ul class="helpList">
+                <li>Aktivace režimu je řízena vstupem s rolí <b>dhw_enable</b>.</li>
+                <li>Požadavek na kotel jde přes výstup <b>boiler_enable_dhw</b>.</li>
+                <li>Přepínací ventil TUV používá roli <b>valve_3way_tuv</b>.</li>
+              </ul>
+              <div class="btnRow">
+                <a class="btn ghost" href="#iofunc">Upravit ve Funkce I/O</a>
+              </div>
+            </div>
+          </details>
+          <div class="card">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Použité přiřazení</div>
+                <div class="muted">Role → konkrétní vstupy/výstupy</div>
+              </div>
+            </div>
+            <div class="pad">
+              <ul class="roleList" id="tuvRoleList"></ul>
+            </div>
+          </div>
+        </div>
+        <details class="accordion" open>
+          <summary>Základní parametry</summary>
+          <div class="pad" id="mount-tuv"></div>
+        </details>
+        <details class="accordion">
+          <summary>Pokročilé</summary>
+          <div class="pad muted">Pokročilé volby se zobrazí podle režimu systému.</div>
+        </details>

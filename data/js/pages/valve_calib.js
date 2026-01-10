@@ -1,5 +1,10 @@
 /* Valve calibration module (v2) */
 (() => {
+  let initialized = false;
+  let intervalId = null;
+  const init = () => {
+    if (initialized) return;
+
   const App = window.App;
   if (!App) return;
 
@@ -330,7 +335,7 @@
       }
     });
 
-    setInterval(tick, 200);
+    if (!intervalId) intervalId = setInterval(tick, 200);
   };
 
   const prev = App.onConfigLoaded;
@@ -338,15 +343,23 @@
     try { prev && prev(cfg); } catch (_) {}
     render();
   };
-
-  window.addEventListener("DOMContentLoaded", () => {
-    bind();
-    if (App.getConfig?.()) render();
-  });
+  if (App.getConfig?.()) render();
 
   // Přepnutí záložky – udržuj synchronizaci parametrů s "Funkce I/O".
   window.addEventListener("app:cfgTabChanged", (ev) => {
     const tab = ev?.detail?.tab;
     if (tab === "valvecal") render();
   });
+    initialized = true;
+  };
+
+  const destroy = () => {
+    if (intervalId) {
+      clearInterval(intervalId);
+      intervalId = null;
+    }
+  };
+
+  window.Modules = window.Modules || {};
+  window.Modules.valve_calib = { init, destroy };
 })();

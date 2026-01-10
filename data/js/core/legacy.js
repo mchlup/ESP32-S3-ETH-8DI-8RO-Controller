@@ -170,14 +170,29 @@
     if (location.hash !== h) history.replaceState(null, "", h);
   };
 
-  const mountLegacySections = () => {
+  let legacyConfigLoaded = false;
+  let legacyTemplate = null;
+  const ensureLegacyConfig = async () => {
+    if (legacyConfigLoaded) return;
+    const html = await apiGet("/pages/config.html").catch(() => "");
+    if (html) {
+      legacyTemplate = document.createElement("template");
+      legacyTemplate.innerHTML = html;
+      legacyConfigLoaded = true;
+    }
+  };
+
+  const mountLegacySections = async () => {
+    await ensureLegacyConfig();
+    if (!legacyTemplate) return;
     const move = (id, hostId) => {
-      const el = document.getElementById(id);
+      const el = legacyTemplate.content.querySelector(`#${id}`);
       const host = document.getElementById(hostId);
-      if (!el || !host) return;
-      el.classList.remove("tabPage");
-      el.classList.add("pageSection");
-      host.appendChild(el);
+      if (!el || !host || host.querySelector(`#${id}`)) return;
+      const clone = el.cloneNode(true);
+      clone.classList.remove("tabPage");
+      clone.classList.add("pageSection");
+      host.appendChild(clone);
     };
 
     move("cfg-ekviterm", "mount-ekviterm");
@@ -223,6 +238,7 @@
 
   const fillModeSelect = () => {
     const sel = $("#selSystemMode");
+    if (!sel) return;
     sel.innerHTML = "";
     MODE_IDS.forEach((id, idx) => {
       const opt = document.createElement("option");
@@ -1111,11 +1127,15 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
 
 
   // --- external module hooks (equitherm.js, iofunc.js, ...) ---
-  window.App.getConfig = () => state.config;
-  window.App.getStatus = () => state.status;
-  window.App.getDash = () => state.dash;
+  window.App.getConfig = () => window.Core?.store?.getConfig?.() || state.config;
+  window.App.getStatus = () => window.Core?.store?.getStatus?.() || state.status;
+  window.App.getDash = () => window.Core?.store?.getDash?.() || state.dash;
   window.App.getRoleMap = getRoleMap;
-  window.App.setConfig = (cfg) => { state.config = cfg; ensureConfigShape(); };
+  window.App.setConfig = (cfg) => {
+    state.config = cfg;
+    ensureConfigShape();
+    window.Core?.store?.setConfig?.(state.config);
+  };
   const updateDirtyIndicators = () => {
     const dirty = !!state.ui?.dirty?.form;
     $$("#dirty-ekviterm, #dirty-aku, #dirty-tuv, #dirty-recirc, #dirty-aku_heater").forEach((el) => {
@@ -1149,11 +1169,13 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
   };
   window.App.onConfigLoaded = window.App.onConfigLoaded || null;
   window.App.onStatusLoaded = window.App.onStatusLoaded || null;
+  window.App.onDashLoaded = window.App.onDashLoaded || null;
 
 
   const renderInputsTable = () => {
     const cfg = ensureConfigShape();
     const host = $("#tblInputs");
+    if (!host) return;
     host.innerHTML = "";
     host.appendChild(makeTableHead(["#", "Název", "Active level"]));
     for (let i=0;i<INPUT_COUNT;i++){
@@ -1179,6 +1201,7 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
   const renderRelaysTable = () => {
     const cfg = ensureConfigShape();
     const host = $("#tblRelays");
+    if (!host) return;
     host.innerHTML = "";
     host.appendChild(makeTableHead(["#", "Název", "AUTO mapování", "Polarity"]));
     for (let r=0;r<RELAY_COUNT;r++){
@@ -1210,6 +1233,7 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
   const renderModes = () => {
     const cfg = ensureConfigShape();
     const host = $("#modesGrid");
+    if (!host) return;
     host.innerHTML = "";
 
     for (let mi=0; mi<MODE_IDS.length; mi++){
@@ -1443,9 +1467,15 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
   const loadRules = async () => {
     state.rules = await apiGet("/api/rules").catch(()=>null);
     state.rulesStatus = await apiGet("/api/rules/status").catch(()=>null);
-    $("#rulesJson").value = state.rules ? prettyJson(state.rules) : "{\n  \"enabled\": false,\n  \"rules\": []\n}";
-    $("#rulesStatus").textContent = state.rulesStatus ? prettyJson(state.rulesStatus) : "—";
-      renderRulesTable();
+    const rulesJson = $("#rulesJson");
+    if (rulesJson) {
+      rulesJson.value = state.rules ? prettyJson(state.rules) : "{\n  \"enabled\": false,\n  \"rules\": []\n}";
+    }
+    const rulesStatus = $("#rulesStatus");
+    if (rulesStatus) {
+      rulesStatus.textContent = state.rulesStatus ? prettyJson(state.rulesStatus) : "—";
+    }
+    renderRulesTable();
   };
 
   const saveRules = async () => {
@@ -1474,7 +1504,7 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
 
   const renderRulesTable = () => {
     const root = $("#rulesTable");
-    if (!root) return;
+    if (!root || !$("#rulesEnabled") || !$("#rulesDefaultOff")) return;
     const r = rulesEnsureShape();
     $("#rulesEnabled").checked = !!r.enabled;
     $("#rulesDefaultOff").checked = !!r.defaultOffControlled;
@@ -1880,8 +1910,9 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     const cfg = state.bleConfig || {};
     const st = state.bleStatus || {};
     const paired = state.blePaired?.devices || [];
-
-    $("#bleEnabled").checked = !!cfg.enabled;
+    const bleEnabled = $("#bleEnabled");
+    if (!bleEnabled) return;
+    bleEnabled.checked = !!cfg.enabled;
     const pairCard = $("#blePairCard");
     if (pairCard) pairCard.classList.toggle("hidden", !cfg.enabled);
     $("#bleDeviceName").value = cfg.deviceName || "";
@@ -1906,6 +1937,7 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     else $("#bleMeteoState").textContent = "ne";
 
     const host = $("#tblBlePaired");
+    if (!host) return;
     host.innerHTML = "";
     host.appendChild(makeTableHead(["MAC", "Name", "Role", "Added", "Akce"]));
     for (const d of paired){
@@ -1927,6 +1959,7 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
   // ---------- render: files ----------
   const renderFiles = () => {
     const host = $("#tblFiles");
+    if (!host) return;
     host.innerHTML = "";
     host.appendChild(makeTableHead(["Soubor", "Velikost", "Akce"]));
 
@@ -1968,6 +2001,7 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     }
     renderTop();
     renderDashboard();
+    window.Core?.store?.setStatus?.(state.status);
 
     const st = state.status || {};
     // status box on mqtt page
@@ -2016,6 +2050,7 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     state.dash = await apiGet("/api/dash").catch(() => null);
     if (!state.dash) return;
     renderDashboard();
+    window.Core?.store?.setDash?.(state.dash);
     try {
       window.dispatchEvent(new CustomEvent("app:dashUpdated", { detail: state.dash }));
     } catch (_) {}
@@ -2024,6 +2059,7 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
   const applyConfig = (cfg) => {
     state.config = cfg;
     ensureConfigShape();
+    window.Core?.store?.setConfig?.(state.config);
     fillModeSelect();
     renderInputsTable();
     renderRelaysTable();
@@ -2037,14 +2073,17 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
 
     // mqtt fields
     const m = state.config.mqtt || {};
-    $("#mqttEnabled").checked = !!m.enabled;
-    $("#mqttHost").value = m.host || "";
-    $("#mqttPort").value = String(m.port ?? 1883);
-    $("#mqttUser").value = m.user || "";
-    $("#mqttPass").value = m.pass || "";
-    $("#mqttClientId").value = m.clientId || "";
-    $("#mqttBaseTopic").value = m.baseTopic || "";
-    $("#mqttHaPrefix").value = m.haPrefix || "";
+    const mqttEnabled = $("#mqttEnabled");
+    if (mqttEnabled) {
+      mqttEnabled.checked = !!m.enabled;
+      $("#mqttHost").value = m.host || "";
+      $("#mqttPort").value = String(m.port ?? 1883);
+      $("#mqttUser").value = m.user || "";
+      $("#mqttPass").value = m.pass || "";
+      $("#mqttClientId").value = m.clientId || "";
+      $("#mqttBaseTopic").value = m.baseTopic || "";
+      $("#mqttHaPrefix").value = m.haPrefix || "";
+    }
 
     if (typeof window.App?.onConfigLoaded === "function") {
       try { window.App.onConfigLoaded(state.config); } catch (e) {}
@@ -2101,12 +2140,10 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
   window.App.reloadDash = loadDash;
   window.App.reloadCore = async () => { await loadConfig(); await loadStatus(); await loadDash(); };
   window.App.reloadAll = loadAll;
-  window.App.showPage = showPage;
 
   // ---------- DOM events ----------
   const wireEvents = () => {
     // nav
-    $$(".navItem").forEach(b => b.addEventListener("click", () => showPage(String(b.dataset.page||"dashboard"))));
     $("#btnNav")?.addEventListener("click", () => {
       $("#sidebar")?.classList.toggle("open");
     });
@@ -2121,7 +2158,7 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     };
     const current = localStorage.getItem(themeKey) || "dark";
     applyTheme(current);
-    $("#btnTheme").addEventListener("click", () => {
+    $("#btnTheme")?.addEventListener("click", () => {
       const next = document.documentElement.classList.contains("light") ? "dark" : "light";
       localStorage.setItem(themeKey, next);
       applyTheme(next);
@@ -2197,7 +2234,7 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     });
 
     // mode relay toggles (config -> modes)
-    $("#modesGrid").addEventListener("click", (e) => {
+    $("#modesGrid")?.addEventListener("click", (e) => {
       const sw = e.target.closest(".sw[data-mode-rel]");
       if (!sw) return;
       const id = sw.dataset.modeRel;
@@ -2253,52 +2290,52 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
       }, 220);
     };
 
-    $("#selControlMode").addEventListener("change", () => { lockUI("control", 2500); scheduleAutoApply(); });
-    $("#selSystemMode").addEventListener("change", () => { lockUI("system", 2500); scheduleAutoApply(); });
-$("#btnAutoRecompute").addEventListener("click", async () => {
+    $("#selControlMode")?.addEventListener("change", () => { lockUI("control", 2500); scheduleAutoApply(); });
+    $("#selSystemMode")?.addEventListener("change", () => { lockUI("system", 2500); scheduleAutoApply(); });
+$("#btnAutoRecompute")?.addEventListener("click", async () => {
       try{ await autoRecompute(); toast("AUTO přepočteno"); await loadStatus(); }
       catch(err){ toast("Chyba: " + err.message, "bad"); }
     });
 
     // save config (forms)
-    $("#btnSaveInputs").addEventListener("click", () => saveInputsFromForm().catch(e=>toast(e.message,"bad")));
-    $("#btnSaveRelays").addEventListener("click", () => saveRelaysFromForm().catch(e=>toast(e.message,"bad")));
-    $("#btnSaveModes").addEventListener("click", () => saveModesFromForm().catch(e=>toast(e.message,"bad")));
+    $("#btnSaveInputs")?.addEventListener("click", () => saveInputsFromForm().catch(e=>toast(e.message,"bad")));
+    $("#btnSaveRelays")?.addEventListener("click", () => saveRelaysFromForm().catch(e=>toast(e.message,"bad")));
+    $("#btnSaveModes")?.addEventListener("click", () => saveModesFromForm().catch(e=>toast(e.message,"bad")));
 
     // cfg json
     $("#cfgJson")?.addEventListener("input", () => {
       if (state.ui?.dirty) state.ui.dirty.cfgJson = true;
     });
 
-    $("#btnFmtCfg").addEventListener("click", () => {
+    $("#btnFmtCfg")?.addEventListener("click", () => {
       const obj = safeJson($("#cfgJson").value);
       if (!obj) return toast("Neplatný JSON", "bad");
       $("#cfgJson").value = prettyJson(obj);
       if (state.ui?.dirty) state.ui.dirty.cfgJson = true;
     });
-    $("#btnSaveCfgJson").addEventListener("click", () => saveConfigJsonFromEditor().catch(e=>toast(e.message,"bad")));
+    $("#btnSaveCfgJson")?.addEventListener("click", () => saveConfigJsonFromEditor().catch(e=>toast(e.message,"bad")));
 
     // mqtt
-    $("#btnSaveMqtt").addEventListener("click", () => saveMqtt().catch(e=>toast(e.message,"bad")));
-    $("#btnMqttDiscovery").addEventListener("click", () => mqttDiscovery().catch(e=>toast(e.message,"bad")));
+    $("#btnSaveMqtt")?.addEventListener("click", () => saveMqtt().catch(e=>toast(e.message,"bad")));
+    $("#btnMqttDiscovery")?.addEventListener("click", () => mqttDiscovery().catch(e=>toast(e.message,"bad")));
 
     // ble
-    $("#btnSaveBle").addEventListener("click", () => saveBle().catch(e=>toast(e.message,"bad")));
-    $("#btnStartPair").addEventListener("click", () => startPair().catch(e=>toast(e.message,"bad")));
-    $("#btnStopPair").addEventListener("click", () => stopPair().catch(e=>toast(e.message,"bad")));
+    $("#btnSaveBle")?.addEventListener("click", () => saveBle().catch(e=>toast(e.message,"bad")));
+    $("#btnStartPair")?.addEventListener("click", () => startPair().catch(e=>toast(e.message,"bad")));
+    $("#btnStopPair")?.addEventListener("click", () => stopPair().catch(e=>toast(e.message,"bad")));
 
     // rules
-    $("#btnFmtRules").addEventListener("click", () => {
+    $("#btnFmtRules")?.addEventListener("click", () => {
       const obj = safeJson($("#rulesJson").value);
       if (!obj) return toast("Neplatný JSON", "bad");
       $("#rulesJson").value = prettyJson(obj);
     });
-    $("#btnSaveRules").addEventListener("click", () => saveRules().catch(e=>toast(e.message,"bad")));
-    $("#btnReloadRules").addEventListener("click", () => loadRules().catch(e=>toast(e.message,"bad")));
+    $("#btnSaveRules")?.addEventListener("click", () => saveRules().catch(e=>toast(e.message,"bad")));
+    $("#btnReloadRules")?.addEventListener("click", () => loadRules().catch(e=>toast(e.message,"bad")));
 
     // files
-    $("#btnRefreshFiles").addEventListener("click", () => loadFiles().catch(e=>toast(e.message,"bad")));
-    $("#uploadForm").addEventListener("submit", async (e) => {
+    $("#btnRefreshFiles")?.addEventListener("click", () => loadFiles().catch(e=>toast(e.message,"bad")));
+    $("#uploadForm")?.addEventListener("submit", async (e) => {
       e.preventDefault();
       const file = $("#filePick").files?.[0];
       if (!file) return toast("Vyber soubor", "bad");
@@ -2308,7 +2345,7 @@ $("#btnAutoRecompute").addEventListener("click", async () => {
     });
 
     // reboot
-    $("#btnReboot").addEventListener("click", async () => {
+    $("#btnReboot")?.addEventListener("click", async () => {
       if (!confirm("Opravdu restartovat zařízení?")) return;
       try{ await reboot(); }
       catch(err){ toast("Chyba: " + err.message, "bad"); }
@@ -2323,29 +2360,38 @@ $("#btnAutoRecompute").addEventListener("click", async () => {
 
   // ---------- start ----------
   const init = async () => {
-    mountLegacySections();
+    await mountLegacySections();
     mountSummaryControls();
     updateDirtyIndicators();
     wireEvents();
-    const startRaw = (location.hash || "").replace("#","") || "dashboard";
-    const page = String(startRaw || "dashboard").trim() || "dashboard";
-    showPage(page);
-    try{
+    try {
       await loadAll();
       toast("Připraveno");
-    }catch(err){
+    } catch (err) {
       toast("Načtení selhalo: " + err.message, "bad");
     }
-    // polling (non aggressive)
-    setInterval(() => loadStatus().catch(()=>{}), 1200);
-    setInterval(() => loadDash().catch(()=>{}), 1500);
-    setInterval(() => loadConfig().catch(()=>{}), 15000);
-    setInterval(() => loadBle().catch(()=>{}), 2500);
   };
 
-  window.addEventListener("load", init);
-  window.addEventListener("hashchange", () => {
-    const page = (location.hash || "#dashboard").replace("#", "");
-    showPage(page);
-  });
+  const onPageLoad = () => {
+    mountLegacySections().catch(() => {});
+    mountSummaryControls();
+    updateDirtyIndicators();
+    wireEvents();
+    if (state.config) applyConfig(state.config);
+    if (state.status) renderTop();
+    if (state.dash) renderDashboard();
+  };
+
+  window.Core = window.Core || {};
+  window.Core.legacy = {
+    init,
+    onPageLoad,
+    mountLegacySections,
+    mountSummaryControls,
+    loadAll,
+    loadStatus,
+    loadDash,
+    loadConfig,
+    loadBle,
+  };
 })();

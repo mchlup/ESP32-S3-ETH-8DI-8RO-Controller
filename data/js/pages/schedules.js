@@ -1,5 +1,10 @@
 /* Schedules + TUV mapping module (v2) */
 (() => {
+  let initialized = false;
+  let intervalId = null;
+  const init = () => {
+    if (initialized) return;
+
   const App = window.App;
   if (!App) return;
 
@@ -604,7 +609,7 @@
     });
 
     refreshTuvStatus();
-    setInterval(refreshTuvStatus, 3000);
+    if (!intervalId) intervalId = setInterval(refreshTuvStatus, 3000);
   };
 
   // Hook render after config load
@@ -614,9 +619,17 @@
     updateInputHints(cfg);
     render();
   };
+  if (App.getConfig?.()) render();
+    initialized = true;
+  };
 
-  window.addEventListener("DOMContentLoaded", () => {
-    bind();
-    if (App.getConfig?.()) render();
-  });
+  const destroy = () => {
+    if (intervalId) {
+      clearInterval(intervalId);
+      intervalId = null;
+    }
+  };
+
+  window.Modules = window.Modules || {};
+  window.Modules.schedules = { init, destroy };
 })();

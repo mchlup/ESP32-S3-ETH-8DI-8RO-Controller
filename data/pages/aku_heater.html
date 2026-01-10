@@ -1,0 +1,52 @@
+<div class="summaryBar">
+          <div class="summaryMain">
+            <div class="summaryTitle">
+              <span class="summaryIcon">⚡</span>
+              <div>
+                <div class="h2">AKU heater</div>
+                <div class="muted">Elektrický dohřev akumulace.</div>
+              </div>
+            </div>
+            <span class="chip" id="chip-aku_heater">—</span>
+          </div>
+          <div class="summaryActions">
+            <div class="summaryToggle" data-mount="akuHeaterEnabled"></div>
+            <span class="dirty" id="dirty-aku_heater" hidden>Neuloženo</span>
+            <div data-mount="btnSaveAkuHeater"></div>
+            <button class="btn ghost" id="btnReloadAkuHeater" type="button">Obnovit</button>
+          </div>
+        </div>
+        <div class="grid2">
+          <details class="helpDrawer">
+            <summary>Nápověda</summary>
+            <div class="helpBody">
+              <ul class="helpList">
+                <li>Relé dohřevu je role <b>heater_aku</b>.</li>
+                <li>Teploty AKU vycházejí z rolí <b>tankTop/mid/bottom</b>.</li>
+              </ul>
+              <div class="btnRow">
+                <a class="btn ghost" href="#iofunc">Upravit ve Funkce I/O</a>
+                <a class="btn ghost" href="#temps">Upravit v Teploměry</a>
+              </div>
+            </div>
+          </details>
+          <div class="card">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Použité přiřazení</div>
+                <div class="muted">Role → konkrétní vstupy/výstupy</div>
+              </div>
+            </div>
+            <div class="pad">
+              <ul class="roleList" id="akuHeaterRoleList"></ul>
+            </div>
+          </div>
+        </div>
+        <details class="accordion" open>
+          <summary>Základní parametry</summary>
+          <div class="pad" id="mount-aku_heater"></div>
+        </details>
+        <details class="accordion">
+          <summary>Pokročilé</summary>
+          <div class="pad muted">Pokročilé volby dohřevu nejsou aktivní.</div>
+        </details>

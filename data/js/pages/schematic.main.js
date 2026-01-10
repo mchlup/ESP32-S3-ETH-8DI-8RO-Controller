@@ -342,18 +342,5 @@
       addPipe(pipesLayer, mp.d, mp.cls, mp.marker, mp.attrs || null);
     }
   }
-
-  window.addEventListener("DOMContentLoaded", () => {
-    try { render(); }
-    catch (e) {
-      console.error(e);
-      const pre = document.createElement("pre");
-      pre.style.whiteSpace = "pre-wrap";
-      pre.style.color = "salmon";
-      pre.textContent = String(e && e.stack ? e.stack : e);
-      document.body.appendChild(pre);
-    }
-  });
-
   window.SchemaMain = { render };
 })();

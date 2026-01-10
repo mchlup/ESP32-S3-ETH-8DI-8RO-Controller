@@ -1,5 +1,9 @@
 /* Smart cirkulace TUV – konfigurace */
 (() => {
+  let initialized = false;
+  const init = () => {
+    if (initialized) return;
+
   const $ = (id) => document.getElementById(id);
 
   const el = {
@@ -377,16 +381,19 @@
     loadFromConfig(cfg);
     refreshDash(cfg, true);
   };
+  const cfg = App.getConfig();
+  if (cfg) {
+    rebuildSourceSelect(el.returnSource);
+    setSelectOptions(el.demandInput, buildInputOptions(cfg), false);
+    setSelectOptions(el.pumpRelay, buildRelayOptions(cfg), false);
+    loadFromConfig(cfg);
+    refreshDash(cfg, true);
+  }
+    initialized = true;
+  };
 
-  window.addEventListener("DOMContentLoaded", () => {
-    bindEvents();
-    const cfg = App.getConfig();
-    if (cfg) {
-      rebuildSourceSelect(el.returnSource);
-      setSelectOptions(el.demandInput, buildInputOptions(cfg), false);
-      setSelectOptions(el.pumpRelay, buildRelayOptions(cfg), false);
-      loadFromConfig(cfg);
-      refreshDash(cfg, true);
-    }
-  });
+  const mount = () => init();
+
+  window.Pages = window.Pages || {};
+  window.Pages.recirc = { id: "recirc", mount, unmount() {} };
 })();

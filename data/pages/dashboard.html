@@ -1,0 +1,58 @@
+<div class="statusStrip" id="statusStrip">
+          <div class="statusItem" id="statusNet">Síť: —</div>
+          <div class="statusItem" id="statusMqtt">MQTT: —</div>
+          <div class="statusItem" id="statusUptime">Uptime: —</div>
+          <div class="statusItem statusAlarm" id="statusAlarm" hidden>Upozornění</div>
+        </div>
+
+        <div class="dashGrid">
+          <div class="panel">
+            <div class="panelHead">
+              <div>
+                <div class="panelTitle">Teploty</div>
+                <div class="muted">Role podle Teploměrů, pouze validní zdroje.</div>
+              </div>
+            </div>
+            <div class="tileGrid" id="tempTiles"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panelHead">
+              <div>
+                <div class="panelTitle">Funkce</div>
+                <div class="muted">Doménové stavy funkcí bez relé.</div>
+              </div>
+            </div>
+            <div class="tileGrid" id="featureTiles"></div>
+          </div>
+
+          <div class="panel">
+            <div class="panelHead">
+              <div>
+                <div class="panelTitle">Rychlé akce</div>
+                <div class="muted">Nejčastější úpravy rolí a funkcí.</div>
+              </div>
+            </div>
+            <div class="actionGrid" id="quickActions"></div>
+          </div>
+
+          <div class="panel schemaPreview" id="cardSchema">
+            <div class="panelHead">
+              <div>
+                <div class="panelTitle">Schéma systému</div>
+                <div class="muted">Kompaktní náhled okruhu.</div>
+              </div>
+              <a class="btn ghost mini" href="#schema">Otevřít</a>
+            </div>
+            <div class="pad" style="padding-top:10px">
+              <div id="schemaWrap" class="schemaWrap" aria-label="Schéma topného systému">
+                <svg id="svg" viewBox="0 0 920 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Schéma topného systému">
+                  <defs></defs>
+                  <rect x="0" y="0" width="920" height="420" fill="url(#bgGrid)"></rect>
+                  <g id="pipes"></g>
+                  <g id="instances"></g>
+                </svg>
+              </div>
+            </div>
+          </div>
+        </div>

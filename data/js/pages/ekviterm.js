@@ -4,6 +4,11 @@
  * - Zobrazuje runtime stav z /api/status (equitherm)
  */
 (() => {
+  let initialized = false;
+  let intervalId = null;
+  const init = () => {
+    if (initialized) return;
+
   const $ = (id) => document.getElementById(id);
 
   const el = {
@@ -1290,9 +1295,21 @@
   };
 
   // Periodic refresh (options + valve list)
-  setInterval(() => {
+  if (!intervalId) intervalId = setInterval(() => {
     const cfg = App.getConfig();
     refreshDash(cfg, true);
   }, 2500);
+    initialized = true;
+  };
 
+  const mount = () => init();
+  const unmount = () => {
+    if (intervalId) {
+      clearInterval(intervalId);
+      intervalId = null;
+    }
+  };
+
+  window.Pages = window.Pages || {};
+  window.Pages.ekviterm = { id: "ekviterm", mount, unmount };
 })();

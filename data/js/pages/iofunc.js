@@ -1,5 +1,9 @@
 /* I/O function mapping UI module (v3) */
 (() => {
+  let initialized = false;
+  const init = () => {
+    if (initialized) return;
+
   const App = window.App;
   if (!App) return;
 
@@ -544,11 +548,7 @@
     try { prev && prev(cfg); } catch (e) {}
     renderTables();
   };
-
-  window.addEventListener("DOMContentLoaded", () => {
-    bind();
-    if (App.getConfig?.()) renderTables();
-  });
+  if (App.getConfig?.()) renderTables();
 
   // Při přepnutí záložky Konfigurace chceme vždy renderovat z aktuálního cfg,
   // aby se parametry 3c ventilů synchronizovaly i s "Kalibrace ventilů".
@@ -559,4 +559,11 @@
 
   // expose for debugging
   window.IOFunc = { render, renderTables };
+    initialized = true;
+  };
+
+  const mount = () => init();
+
+  window.Pages = window.Pages || {};
+  window.Pages.iofunc = { id: "iofunc", mount, unmount() {} };
 })();

@@ -1,0 +1,80 @@
+<div class="grid2">
+          <div class="card">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">MQTT</div>
+                <div class="muted">Nastavení připojení + baseTopic</div>
+              </div>
+              <button class="btn" id="btnSaveMqtt">Uložit</button>
+            </div>
+
+            <div class="form">
+              <label class="check"><input type="checkbox" id="mqttEnabled"> <span>MQTT enabled</span></label>
+
+              <div class="row">
+                <div class="field">
+                  <label>Host</label>
+                  <input id="mqttHost" placeholder="192.168.1.50" />
+                </div>
+                <div class="field">
+                  <label>Port</label>
+                  <input id="mqttPort" type="number" min="1" max="65535" placeholder="1883" />
+                </div>
+              </div>
+
+              <div class="row">
+                <div class="field">
+                  <label>User</label>
+                  <input id="mqttUser" placeholder="(volitelné)" />
+                </div>
+                <div class="field">
+                  <label>Password</label>
+                  <input id="mqttPass" placeholder="(volitelné)" />
+                </div>
+              </div>
+
+              <div class="row">
+                <div class="field">
+                  <label>Client ID</label>
+                  <input id="mqttClientId" placeholder="espheat-xxxx" />
+                </div>
+                <div class="field">
+                  <label>Base topic</label>
+                  <input id="mqttBaseTopic" placeholder="espheat" />
+                </div>
+              </div>
+
+              <div class="row">
+                <div class="field">
+                  <label>HA prefix</label>
+                  <input id="mqttHaPrefix" placeholder="homeassistant" />
+                </div>
+                <div class="field">
+                  <label>Akce</label>
+                  <div class="btnRow">
+                    <button class="btn ghost" id="btnMqttDiscovery">Republish discovery</button>
+                  </div>
+                </div>
+              </div>
+
+              <div class="note">
+                Tip: v Home Assistant zkontroluj MQTT integraci a auto-discovery. Názvy relé/vstupů se berou z konfigurace.
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Stav</div>
+                <div class="muted">Rychlý přehled navázání spojení</div>
+              </div>
+            </div>
+            <div class="kv big">
+              <div class="k">Wi‑Fi</div><div class="v" id="stWifi">—</div>
+              <div class="k">MQTT</div><div class="v" id="stMqtt">—</div>
+              <div class="k">IP</div><div class="v" id="stIp">—</div>
+              <div class="k">Uptime</div><div class="v" id="stUptime">—</div>
+            </div>
+          </div>
+        </div>

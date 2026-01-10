@@ -23,9 +23,20 @@
   let lastDash = null;
 
   let renderQueued = false;
+  let initialized = false;
 
   function ensureSvgHost() {
-    const wrap = $id("schemaWrap");
+    let wrap = $id("schemaWrap");
+    if (!wrap) {
+      const standalone = $id("schemaStandalone");
+      if (standalone) {
+        wrap = document.createElement("div");
+        wrap.id = "schemaWrap";
+        wrap.className = "schemaWrap";
+        standalone.innerHTML = "";
+        standalone.appendChild(wrap);
+      }
+    }
     if (!wrap) return null;
 
     let svg = $id("svg");
@@ -391,15 +402,6 @@
     requestAnimationFrame(doRender);
   }
 
-  async function refreshDash() {
-    try {
-      lastDash = await apiGetJson("/api/dash");
-    } catch (e) {
-      // keep lastDash if fetch fails
-    }
-    scheduleRender();
-  }
-
   // Hook into App callbacks without breaking other modules
   window.App = window.App || {};
   const prevCfg = window.App.onConfigLoaded;
@@ -416,10 +418,27 @@
     scheduleRender();
   };
 
-  window.addEventListener("DOMContentLoaded", () => {
+  const prevDash = window.App.onDashLoaded;
+  window.App.onDashLoaded = (dash) => {
+    try { if (typeof prevDash === "function") prevDash(dash); } catch (_) {}
+    lastDash = dash || null;
+    scheduleRender();
+  };
+
+  const init = () => {
+    if (initialized) return;
+    initialized = true;
+  };
+
+  const mount = () => {
+    init();
+    lastCfg = window.App.getConfig?.() || lastCfg;
+    lastStatus = window.App.getStatus?.() || lastStatus;
+    lastDash = window.App.getDash?.() || lastDash;
     ensureSvgHost();
     scheduleRender();
-    refreshDash();
-    setInterval(refreshDash, 1200);
-  });
+  };
+
+  window.Pages = window.Pages || {};
+  window.Pages.schema = { id: "schema", mount, unmount() {} };
 })();

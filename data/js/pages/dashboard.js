@@ -297,6 +297,7 @@
   }[ch]));
 
   let dash = { temps: [], valves: [] };
+  let initialized = false;
 
   async function apiPostJson(url, body){
     const r = await fetch(url, {
@@ -1034,7 +1035,9 @@
     render();
   };
 
-  document.addEventListener("DOMContentLoaded", () => {
+  const init = () => {
+    if (initialized) return;
+    initialized = true;
     dash = getDash() || dash;
     render();
 
@@ -1050,10 +1053,19 @@
         refreshDash();
       } catch {}
     });
-  });
 
-  window.addEventListener("app:dashUpdated", (e) => {
-    dash = e?.detail || getDash() || dash;
+    window.addEventListener("app:dashUpdated", (e) => {
+      dash = e?.detail || getDash() || dash;
+      render();
+    });
+  };
+
+  const mount = () => {
+    init();
     render();
-  });
+    window.Pages?.schema?.mount?.();
+  };
+
+  window.Pages = window.Pages || {};
+  window.Pages.dashboard = { id: "dashboard", mount, unmount() {} };
 })();

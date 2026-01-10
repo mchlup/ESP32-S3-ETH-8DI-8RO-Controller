@@ -1,0 +1,54 @@
+<div class="summaryBar">
+          <div class="summaryMain">
+            <div class="summaryTitle">
+              <span class="summaryIcon">📈</span>
+              <div>
+                <div class="h2">Ekviterm</div>
+                <div class="muted">Řízení teploty topné vody podle venkovní teploty.</div>
+              </div>
+            </div>
+            <span class="chip" id="chip-ekviterm">—</span>
+          </div>
+          <div class="summaryActions">
+            <div class="summaryToggle" data-mount="eqEnabled"></div>
+            <span class="dirty" id="dirty-ekviterm" hidden>Neuloženo</span>
+            <div data-mount="btnSaveEquitherm"></div>
+            <button class="btn ghost" id="btnReloadEquitherm" type="button">Obnovit</button>
+          </div>
+        </div>
+        <div class="grid2">
+          <details class="helpDrawer">
+            <summary>Nápověda</summary>
+            <div class="helpBody">
+              <ul class="helpList">
+                <li>Ekviterm počítá cílovou teplotu vody podle venkovní teploty.</li>
+                <li>Vyžaduje role teploměrů: <b>outdoor</b> a <b>flow</b> (boiler_in).</li>
+                <li>Pokud používáš AKU podporu, využívá role <b>tankTop/mid/bottom</b>.</li>
+                <li>Směšovací ventil je určen rolí výstupu <b>valve_3way_mix</b>.</li>
+              </ul>
+              <div class="btnRow">
+                <a class="btn ghost" href="#temps">Upravit v Teploměry</a>
+                <a class="btn ghost" href="#iofunc">Upravit ve Funkce I/O</a>
+              </div>
+            </div>
+          </details>
+          <div class="card">
+            <div class="cardHead">
+              <div>
+                <div class="cardTitle">Použité přiřazení</div>
+                <div class="muted">Role → konkrétní senzory a výstupy</div>
+              </div>
+            </div>
+            <div class="pad">
+              <ul class="roleList" id="eqRoleList"></ul>
+            </div>
+          </div>
+        </div>
+        <details class="accordion" open>
+          <summary>Základní parametry</summary>
+          <div class="pad" id="mount-ekviterm"></div>
+        </details>
+        <details class="accordion">
+          <summary>Pokročilé</summary>
+          <div class="pad muted">Další pokročilé volby se zobrazí podle konfigurace systému.</div>
+        </details>

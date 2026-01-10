@@ -1,4 +1,9 @@
 (() => {
+  let initialized = false;
+  let observer = null;
+  const init = () => {
+    if (initialized) return;
+
   "use strict";
 
   const patterns = [
@@ -104,27 +109,37 @@
     el("btnBeepStop")?.addEventListener("click",  () => window.Buzzer.stop().catch(()=>{}));
   };
 
-  window.addEventListener("load", () => {
-    // app.js musí být načtené jako první (window.App)
-    if (!window.App || !window.App.apiGetJson) return;
-    bind();
-    // Načti hned při startu (pokud je tab viditelný), jinak až při aktivaci záložky
-    const buzTabBtn = document.querySelector('.tab[data-ctab="buzzer"]');
-    const buzPage = document.getElementById("cfg-buzzer");
+  // app.js musí být načtené jako první (window.App)
+  if (!window.App || !window.App.apiGetJson) return;
+  bind();
+  // Načti hned při startu (pokud je tab viditelný), jinak až při aktivaci záložky
+  const buzTabBtn = document.querySelector('.tab[data-ctab="buzzer"]');
+  const buzPage = document.getElementById("cfg-buzzer");
 
-    const refreshIfVisible = () => {
-      if (!buzPage) return;
-      if (buzPage.classList.contains("active")) loadUi().catch(()=>{});
-    };
+  const refreshIfVisible = () => {
+    if (!buzPage) return;
+    if (buzPage.classList.contains("active")) loadUi().catch(()=>{});
+  };
 
-    // start
-    refreshIfVisible();
+  // start
+  refreshIfVisible();
 
-    // při kliknutí na tab vždy refresh (ať je to „živé“)
-    if (buzTabBtn) buzTabBtn.addEventListener("click", () => loadUi().catch(()=>{}));
+  // při kliknutí na tab vždy refresh (ať je to „živé“)
+  if (buzTabBtn) buzTabBtn.addEventListener("click", () => loadUi().catch(()=>{}));
 
-    // fallback: pokud se active třída přepíná jinak, hlídej změny
-    const mo = new MutationObserver(() => refreshIfVisible());
-    if (buzPage) mo.observe(buzPage, { attributes:true, attributeFilter:["class"] });
-  });
+  // fallback: pokud se active třída přepíná jinak, hlídej změny
+  observer = new MutationObserver(() => refreshIfVisible());
+  if (buzPage) observer.observe(buzPage, { attributes:true, attributeFilter:["class"] });
+    initialized = true;
+  };
+
+  const destroy = () => {
+    if (observer) {
+      observer.disconnect();
+      observer = null;
+    }
+  };
+
+  window.Modules = window.Modules || {};
+  window.Modules.buzzer = { init, destroy };
 })();
