@@ -182,6 +182,7 @@ static void loadConfigFromFS() {
     // Zároveň necháváme .bak beze změny.
     if (restoredFromBak) {
         const char* tmpPath = "/config.json.restore.tmp";
+        fsLock();
         File wf = LittleFS.open(tmpPath, "w");
         if (wf) {
             wf.print(g_configJson);
@@ -198,6 +199,7 @@ static void loadConfigFromFS() {
         } else {
             Serial.println(F("[CFG] Restore write-back failed (open tmp)."));
         }
+        fsUnlock();
     }
 
     applyAllConfig(g_configJson);
@@ -316,37 +318,8 @@ static void handleApiDash() {
 }
 
 static bool saveConfigToFS() {
-    const char* tmpPath = "/config.json.tmp";
     const char* bakPath = "/config.json.bak";
-
-    File f = LittleFS.open(tmpPath, "w");
-    if (!f) return false;
-
-    const size_t written = f.print(g_configJson);
-    f.flush();
-    f.close();
-
-    if (written != g_configJson.length()) {
-        LittleFS.remove(tmpPath);
-        return false;
-    }
-
-    if (LittleFS.exists(bakPath)) LittleFS.remove(bakPath);
-    if (LittleFS.exists("/config.json")) {
-        if (!LittleFS.rename("/config.json", bakPath)) {
-            LittleFS.remove(tmpPath);
-            return false;
-        }
-    }
-
-    if (!LittleFS.rename(tmpPath, "/config.json")) {
-        if (LittleFS.exists(bakPath)) LittleFS.rename(bakPath, "/config.json");
-        LittleFS.remove(tmpPath);
-        return false;
-    }
-
-    if (LittleFS.exists(bakPath)) LittleFS.remove(bakPath);
-    return true;
+    return fsWriteAtomicKeepBak("/config.json", g_configJson, bakPath, true);
 }
 
 // ===== API status =====
