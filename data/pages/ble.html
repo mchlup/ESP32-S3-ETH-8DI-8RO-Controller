@@ -29,8 +29,9 @@
                 <div class="field">
                   <label>Security mode</label>
                   <select id="bleSecurityMode">
-                    <option value="0">0 (none)</option>
-                    <option value="1">1 (passkey)</option>
+                    <option value="off">off (none)</option>
+                    <option value="bonding">bonding (secure)</option>
+                    <option value="passkey">passkey (MITM)</option>
                   </select>
                 </div>
                 <div class="field">
@@ -44,6 +45,8 @@
               <hr class="sep" />
 
               <label class="check"><input type="checkbox" id="meteoEnabled"> <span>Meteo enabled</span></label>
+              <label class="check"><input type="checkbox" id="meteoAutoDiscover"> <span>Auto vyhledat meteostanici (nejlepší RSSI)</span></label>
+              <label class="check"><input type="checkbox" id="meteoAutoSave"> <span>Po nalezení uložit MAC + přidat do allowlistu</span></label>
 
               <div class="row">
                 <div class="field">

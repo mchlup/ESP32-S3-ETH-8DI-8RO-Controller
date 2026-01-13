@@ -344,6 +344,7 @@
   }
 
   window.addEventListener("DOMContentLoaded", () => {
+    if (!document.getElementById("svg")) return;
     try { render(); }
     catch (e) {
       console.error(e);

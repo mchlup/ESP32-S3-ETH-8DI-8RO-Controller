@@ -677,7 +677,10 @@
   }
 
   function loadFromConfig(cfg) {
-    App.ensureConfigShape(cfg);
+    // Defensive: některé moduly mohly (v minulých verzích) volat App.onConfigLoaded bez cfg.
+    // Spadnout na cfg.equitherm je horší než použít aktuální App config.
+    cfg = cfg || (App.getConfig?.() || {});
+    App.ensureConfigShape?.(cfg);
     syncRolesToEquitherm(cfg);
     const e = cfg.equitherm || {};
     el.enabled.checked = !!e.enabled;

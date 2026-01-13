@@ -24,7 +24,9 @@
     ui: {
       lock: { controlUntil: 0, systemUntil: 0 },
       timers: { autoApply: null },
-      dirty: { cfgJson: false, form: false },
+      // dirty.form = konfigurační formuláře (/api/config)
+      // dirty.ble  = BLE konfigurace (/api/ble/config)
+      dirty: { cfgJson: false, form: false, ble: false },
       connOk: true,
     },
   };
@@ -187,11 +189,55 @@
       const id = holder.dataset.mount;
       const el = document.getElementById(id);
       if (!el) return;
-      let node = el;
+
+      // Router může stránku znovu přimountovat - držme holder čistý
+      holder.innerHTML = "";
+
+      // Přepínač (checkbox) – vytvoř klon v summary a synchronizuj s původním prvkem.
       if (el.tagName === "INPUT" && el.type === "checkbox") {
-        node = el.closest("label") || el;
+        const label = document.createElement("label");
+        label.className = "switch";
+
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.checked = !!el.checked;
+
+        const slider = document.createElement("span");
+        slider.className = "slider";
+
+        label.appendChild(input);
+        label.appendChild(slider);
+        holder.appendChild(label);
+
+        // clone → origin
+        input.addEventListener("change", () => {
+          el.checked = input.checked;
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+        });
+
+        // origin → clone
+        el.addEventListener("change", () => { input.checked = !!el.checked; });
+        return;
       }
-      holder.appendChild(node);
+
+      // Save button – klon, který pouze zavolá původní click(); původní tlačítko schovej.
+      if (el.tagName === "BUTTON") {
+        const btn = el.cloneNode(true);
+        btn.removeAttribute("id");
+        btn.addEventListener("click", (e) => {
+          e.preventDefault();
+          el.click();
+        });
+        holder.appendChild(btn);
+        el.style.display = "none";
+        return;
+      }
+
+      // Fallback – clone (nepřesouvat, ať se nerozbije layout)
+      const clone = el.cloneNode(true);
+      if (clone && clone.removeAttribute) clone.removeAttribute("id");
+      holder.appendChild(clone);
     });
   };
 
@@ -1382,9 +1428,29 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
   };
 
   const loadBle = async () => {
+    const now = Date.now();
+    // Status můžeme tahat často (kvůli meteo hodnotám), ale konfiguraci NIKDY
+    // nepřepisujeme uživateli během editace formuláře.
     state.bleStatus = await apiGet("/api/ble/status").catch(()=>null);
-    state.bleConfig = await apiGet("/api/ble/config").catch(()=>null);
-    state.blePaired = await apiGet("/api/ble/paired").catch(()=>null);
+
+    const bleRoot = $("#page-ble");
+    const active = document.activeElement;
+    const bleEditing = !!(bleRoot && active && bleRoot.contains(active) && /^(INPUT|SELECT|TEXTAREA)$/.test(active.tagName));
+    const bleLocked = !!state.ui?.dirty?.ble || bleEditing;
+
+    // Konfiguraci + allowlist načítáme jen když to neclobberne rozpracované změny.
+    const needCfg = !bleLocked && (!state.bleConfig || (now - (state.bleConfigTs || 0) > 6000));
+    const needPaired = !bleLocked && (!state.blePaired || (now - (state.blePairedTs || 0) > 6000));
+
+    if (needCfg) {
+      state.bleConfig = await apiGet("/api/ble/config").catch(()=>state.bleConfig);
+      state.bleConfigTs = now;
+    }
+    if (needPaired) {
+      state.blePaired = await apiGet("/api/ble/paired").catch(()=>state.blePaired);
+      state.blePairedTs = now;
+    }
+
     renderBle();
   };
 
@@ -1393,17 +1459,24 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     cfg.enabled = !!$("#bleEnabled").checked;
     cfg.deviceName = $("#bleDeviceName").value || "";
     cfg.advertise = ($("#bleAdvertise").value === "true");
-    cfg.securityMode = Number($("#bleSecurityMode").value || 0);
+    cfg.securityMode = String($("#bleSecurityMode").value || "bonding");
     cfg.passkey = Number($("#blePasskey").value || 0);
     cfg.allowlistEnforced = !!$("#bleAllowlist").checked;
 
     cfg.meteoEnabled = !!$("#meteoEnabled").checked;
+    if ($("#meteoAutoDiscover")) cfg.meteoAutoDiscover = !!$("#meteoAutoDiscover").checked;
+    if ($("#meteoAutoSave")) cfg.meteoAutoSave = !!$("#meteoAutoSave").checked;
     cfg.meteoMac = $("#meteoMac").value || "";
     cfg.meteoScanMs = Number($("#meteoScanMs").value || 0);
     cfg.meteoReconnectMs = Number($("#meteoReconnectMs").value || 0);
 
     await apiPostText("/api/ble/config", prettyJson(cfg));
+    // successful save => BLE form is no longer dirty
+    if (state.ui?.dirty) state.ui.dirty.ble = false;
     toast("BLE uloženo");
+    // force refresh of saved config/paired
+    state.bleConfigTs = 0;
+    state.blePairedTs = 0;
     await loadBle();
     await loadStatus();
   };
@@ -1874,19 +1947,51 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     const st = state.bleStatus || {};
     const paired = state.blePaired?.devices || [];
 
-    $("#bleEnabled").checked = !!cfg.enabled;
-    const pairCard = $("#blePairCard");
-    if (pairCard) pairCard.classList.toggle("hidden", !cfg.enabled);
-    $("#bleDeviceName").value = cfg.deviceName || "";
-    $("#bleAdvertise").value = (cfg.advertise ? "true" : "false");
-    $("#bleSecurityMode").value = String(cfg.securityMode ?? 0);
-    $("#blePasskey").value = String(cfg.passkey ?? "");
-    $("#bleAllowlist").checked = !!cfg.allowlistEnforced;
+    // Wire "dirty" handlers for BLE form controls (page content is re-mounted by router).
+    const bleEls = [
+      "bleEnabled","bleDeviceName","bleAdvertise","bleSecurityMode","blePasskey","bleAllowlist",
+      "meteoEnabled","meteoAutoDiscover","meteoAutoSave","meteoMac","meteoScanMs","meteoReconnectMs",
+    ];
+    for (const id of bleEls) {
+      const el = $("#" + id);
+      if (!el || el.dataset.bleDirtyWired === "1") continue;
+      const mark = () => { if (state.ui?.dirty) state.ui.dirty.ble = true; };
+      el.addEventListener("input", mark);
+      el.addEventListener("change", mark);
+      el.dataset.bleDirtyWired = "1";
+    }
 
-    $("#meteoEnabled").checked = !!cfg.meteoEnabled;
-    $("#meteoMac").value = cfg.meteoMac || "";
-    $("#meteoScanMs").value = String(cfg.meteoScanMs ?? "");
-    $("#meteoReconnectMs").value = String(cfg.meteoReconnectMs ?? "");
+    const bleRoot = $("#page-ble");
+    const active = document.activeElement;
+    const bleEditing = !!(bleRoot && active && bleRoot.contains(active) && /^(INPUT|SELECT|TEXTAREA)$/.test(active.tagName));
+    const bleLocked = !!state.ui?.dirty?.ble || bleEditing;
+
+    // IMPORTANT: when user is editing, do NOT overwrite form values via polling.
+    if (!bleLocked) $("#bleEnabled").checked = !!cfg.enabled;
+    const enabledNow = bleLocked ? !!$("#bleEnabled").checked : !!cfg.enabled;
+    const pairCard = $("#blePairCard");
+    if (pairCard) pairCard.classList.toggle("hidden", !enabledNow);
+    if (!bleLocked) {
+      $("#bleDeviceName").value = cfg.deviceName || "";
+      $("#bleAdvertise").value = (cfg.advertise ? "true" : "false");
+    }
+    // securityMode: string ("off"|"bonding"|"passkey"); tolerate legacy numeric UI values
+    {
+      const sm = cfg.securityMode;
+      const v = (typeof sm === "number") ? (sm === 0 ? "off" : "passkey") : String(sm || "bonding");
+      if (!bleLocked) $("#bleSecurityMode").value = v;
+    }
+    if (!bleLocked) {
+      $("#blePasskey").value = String(cfg.passkey ?? "");
+      $("#bleAllowlist").checked = !!cfg.allowlistEnforced;
+
+      $("#meteoEnabled").checked = !!cfg.meteoEnabled;
+      if ($("#meteoAutoDiscover")) $("#meteoAutoDiscover").checked = (cfg.meteoAutoDiscover ?? true);
+      if ($("#meteoAutoSave")) $("#meteoAutoSave").checked = (cfg.meteoAutoSave ?? true);
+      $("#meteoMac").value = cfg.meteoMac || "";
+      $("#meteoScanMs").value = String(cfg.meteoScanMs ?? "");
+      $("#meteoReconnectMs").value = String(cfg.meteoReconnectMs ?? "");
+    }
 
     // status
     $("#bleState").textContent = st.enabled ? "enabled" : "disabled";
@@ -1898,23 +2003,27 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     } else if (st.meteoConnected) $("#bleMeteoState").textContent = "connected (bez dat)";
     else $("#bleMeteoState").textContent = "ne";
 
-    const host = $("#tblBlePaired");
-    host.innerHTML = "";
-    host.appendChild(makeTableHead(["MAC", "Name", "Role", "Added", "Akce"]));
-    for (const d of paired){
-      const row = document.createElement("div");
-      row.className = "trow";
-      row.style.gridTemplateColumns = "1.2fr 1fr .8fr .8fr 120px";
-      row.innerHTML = `
-        <div class="col1">${escapeHtml(d.mac||"")}</div>
-        <div class="col2">${escapeHtml(d.name||"")}</div>
-        <div class="col3">${escapeHtml(d.role||"")}</div>
-        <div class="col4">${escapeHtml(d.addedAt||"")}</div>
-        <div class="col5"><button class="btn ghost" data-del-mac="${escapeAttr(d.mac||"")}">Odebrat</button></div>
-      `;
-      host.appendChild(row);
+    // Allowlist table re-render can be visually disruptive during editing (scroll jumps).
+    // So we freeze it while BLE form is dirty/focused.
+    if (!bleLocked) {
+      const host = $("#tblBlePaired");
+      host.innerHTML = "";
+      host.appendChild(makeTableHead(["MAC", "Name", "Role", "Added", "Akce"]));
+      for (const d of paired){
+        const row = document.createElement("div");
+        row.className = "trow";
+        row.style.gridTemplateColumns = "1.2fr 1fr .8fr .8fr 120px";
+        row.innerHTML = `
+          <div class="col1">${escapeHtml(d.mac||"")}</div>
+          <div class="col2">${escapeHtml(d.name||"")}</div>
+          <div class="col3">${escapeHtml(d.role||"")}</div>
+          <div class="col4">${escapeHtml(d.addedAt||"")}</div>
+          <div class="col5"><button class="btn ghost" data-del-mac="${escapeAttr(d.mac||"")}">Odebrat</button></div>
+        `;
+        host.appendChild(row);
+      }
+      $$("[data-del-mac]").forEach(b => b.addEventListener("click", () => removePaired(b.dataset.delMac).catch(e=>toast(e.message,"bad"))));
     }
-    $$("[data-del-mac]").forEach(b => b.addEventListener("click", () => removePaired(b.dataset.delMac).catch(e=>toast(e.message,"bad"))));
   };
 
   // ---------- render: files ----------
@@ -2333,6 +2442,38 @@ $("#btnAutoRecompute")?.addEventListener("click", async () => {
     wireEvents();
   };
 
+
+  // ---------------------------------------------------------------------------
+  // Compatibility shims
+  // In the modular UI, some legacy exports are expected by other modules.
+  // These wrappers delegate to page modules when available and otherwise safely no-op.
+
+  const renderStatus = () => {
+    try {
+      if (typeof renderTop === "function") renderTop();
+      if (typeof renderDashboard === "function") renderDashboard();
+    } catch (_) {}
+  };
+
+  const renderTemps = () => {
+    try {
+      if (window.TempsTab && typeof window.TempsTab.render === "function") {
+        window.TempsTab.render();
+        return;
+      }
+      const rid = window.Core?.router?.currentId;
+      if (rid === "temps" && window.Pages?.temps?.mount) {
+        const root = document.getElementById("page-temps") || document.getElementById("view")?.firstElementChild || document.getElementById("view");
+        window.Pages.temps.mount({ root });
+      }
+    } catch (_) {}
+  };
+
+  const renderRules = () => {
+    try {
+      if (typeof renderRulesTable === "function") renderRulesTable();
+    } catch (_) {}
+  };
   window.Core = window.Core || {};
   window.Core.legacy = {
     init,

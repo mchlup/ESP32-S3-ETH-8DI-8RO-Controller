@@ -10,7 +10,7 @@
           <input class="pfield" id="tempsSearch" type="search" placeholder="Hledat (role/zdroj)">
         </div>
         <div id="mount-temps">
-<div class="tabPage" id="cfg-tempscfg">
+<div class="tabPage active" id="cfg-tempscfg">
           <div class="grid2">
             <div class="card">
               <div class="cardHead">
@@ -69,58 +69,7 @@
           </div>
         </div>
 </div>
-                  <div class="muted">DS18B20 na pin headeru: pevné mapování Teploměr 1–4 = GPIO0–3. Neovlivňuje konfiguraci „Funkce I/O“. (Adresa je volitelná – jinak se použije první senzor na sběrnici.)</div>
-                </div>
-                <button class="btn" id="btnSaveTempsCfg">Uložit</button>
-              </div>
-              <div class="table" id="tblTempsCfg"></div>
-            </div>
 
-            <div class="card">
-              <div class="cardHead">
-                <div>
-                  <div class="cardTitle">Teploměry (MQTT/BLE)</div>
-                  <div class="muted">Dva MQTT teploměry s možností parsování jednoduchého JSON + jeden BLE teploměr. Zobrazují se společně s Dallas teploměry ve volbách napříč systémem (např. Ekviterm).</div>
-                </div>
-              </div>
-              <div class="table" id="tblExtraTempsCfg"></div>
-              <div class="pad" style="padding-top:8px">
-                <div class="muted" style="font-size:12px">Tip: MQTT payload může být číslo (např. <code>21.5</code>) nebo JSON (např. <code>{"tempC":21.5}</code>). Do <b>jsonKey</b> můžeš zadat i cestu (např. <code>sensor.tempC</code>).</div>
-              </div>
-            </div>
-
-            <div class="card">
-              <div class="cardHead">
-                <div>
-                  <div class="cardTitle">Význam teploměrů</div>
-                  <div class="muted">Přiřaď zdroj teploty k typům v otopném systému (venkovní, topná voda, vratka, TUV, akumulační nádrž…). Tyto typy pak může používat ekviterm i další logika bez duplicitních voleb.</div>
-                </div>
-                <button class="btn" id="btnSaveTempRoles">Uložit</button>
-              </div>
-              <div class="table" id="tblTempRolesCfg"></div>
-            </div>
-
-            <div class="card">
-              <div class="cardHead">
-                <div>
-                  <div class="cardTitle">Diagnostika</div>
-                  <div class="muted">Hodnoty jsou čtené z /api/dash (index odpovídá vstupu 1–8).</div>
-                </div>
-              </div>
-                            <div class="kv">
-                <div class="k">Aktualizace</div><div class="v" id="tempsLastUpd">—</div>
-              </div>
-              <div style="height:10px"></div>
-              <div class="muted">Dallas diagnostika (GPIO0–3): stav sběrnice, nalezená čidla, ROM a teploty.</div>
-              <div class="table" id="tblDallasDiag"></div>
-              <div style="height:10px"></div>
-              <div class="muted">MQTT/BLE diagnostika: poslední naměřená hodnota a stáří dat (pokud jsou k dispozici).</div>
-              <div class="table" id="tblExtraTempsDiag"></div>
-            </div>
-
-
-          </div>
-        </div>
 
   </div>
       </section>

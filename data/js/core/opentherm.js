@@ -74,10 +74,14 @@
     if (!els.enabled || !els.mode) return; // page not present
 
     // App hook
+    // IMPORTANT:
+    // - legacy.js volá App.onConfigLoaded(cfg) bez await.
+    // - nesmíme proto vracet Promise (jinak "Uncaught (in promise)" a rozbití dalších modulů).
+    // - vždy předáme cfg dál, jinak navazující moduly dostanou undefined.
     if (window.App) {
-      App.onConfigLoaded = ((prev) => async () => {
-        if (prev) await prev();
-        loadUiFromConfig();
+      App.onConfigLoaded = ((prev) => (cfg) => {
+        try { if (typeof prev === "function") prev(cfg); } catch (_) {}
+        loadUiFromConfig(cfg);
       })(App.onConfigLoaded);
     }
 
