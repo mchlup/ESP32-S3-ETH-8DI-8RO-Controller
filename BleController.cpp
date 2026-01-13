@@ -10,6 +10,15 @@
 // NimBLE (Arduino-ESP32 core 3.x)
 #include <NimBLEDevice.h>
 
+// NimBLE-Arduino 2.x uses explicit address type (public/random) in NimBLEAddress.
+// Keep buildable even if headers don't export these macros for some reason.
+#ifndef BLE_ADDR_PUBLIC
+#define BLE_ADDR_PUBLIC 0
+#endif
+#ifndef BLE_ADDR_RANDOM
+#define BLE_ADDR_RANDOM 1
+#endif
+
 #include "RelayController.h"
 #include "LogicController.h"
 #include "RgbLedController.h"
@@ -44,8 +53,11 @@ struct BleConfig {
 
     // meteo client
     bool meteoEnabled = false;
-    String meteoMac = "";            // "AA:BB:CC:DD:EE:FF"
-    uint32_t meteoScanMs = 4000;
+    String meteoMac = "";            // "AA:BB:CC:DD:EE:FF" (pokud je prázdné a auto-discovery je ON, pokusí se zařízení najít)
+    bool meteoAutoDiscover = true;   // scan a vybere nejlepší RSSI meteostanici, pokud meteoMac není nastavené
+    bool meteoAutoSave = true;       // po nalezení uloží meteoMac do /ble.json a přidá do allowlistu
+    uint32_t meteoDiscoverIntervalMs = 10000; // jak často opakovat scan, když se nedaří nic najít
+    uint32_t meteoScanMs = 4000;     // délka scan okna
     uint32_t meteoReconnectMs = 8000;
 };
 
@@ -87,6 +99,16 @@ static uint32_t g_meteoLastMs = 0;
 static NimBLEClient* g_meteoClient = nullptr;
 static NimBLERemoteCharacteristic* g_meteoRemoteCh = nullptr;
 static uint32_t g_meteoNextActionMs = 0;
+static bool g_meteoScanning = false;
+static uint32_t g_meteoNextDiscoverMs = 0;
+static String g_meteoLastSeenMac = "";
+static String g_meteoLastSeenName = "";
+static int g_meteoLastSeenRssi = -999;
+
+// scan best candidate
+static String g_scanBestMac = "";
+static String g_scanBestName = "";
+static int g_scanBestRssi = -999;
 
 // ---------- Helpers ----------
 static String nowIso() {
@@ -201,6 +223,9 @@ static bool loadConfigFS() {
 
     g_cfg.meteoEnabled = doc["meteoEnabled"] | false;
     g_cfg.meteoMac = String((const char*)(doc["meteoMac"] | ""));
+    g_cfg.meteoAutoDiscover = doc["meteoAutoDiscover"] | true;
+    g_cfg.meteoAutoSave = doc["meteoAutoSave"] | true;
+    g_cfg.meteoDiscoverIntervalMs = (uint32_t)(doc["meteoDiscoverIntervalMs"] | 10000);
     g_cfg.meteoScanMs = (uint32_t)(doc["meteoScanMs"] | 4000);
     g_cfg.meteoReconnectMs = (uint32_t)(doc["meteoReconnectMs"] | 8000);
     return true;
@@ -222,6 +247,9 @@ static bool saveConfigFS() {
 
     doc["meteoEnabled"] = g_cfg.meteoEnabled;
     doc["meteoMac"] = g_cfg.meteoMac;
+    doc["meteoAutoDiscover"] = g_cfg.meteoAutoDiscover;
+    doc["meteoAutoSave"] = g_cfg.meteoAutoSave;
+    doc["meteoDiscoverIntervalMs"] = g_cfg.meteoDiscoverIntervalMs;
     doc["meteoScanMs"] = g_cfg.meteoScanMs;
     doc["meteoReconnectMs"] = g_cfg.meteoReconnectMs;
 
@@ -240,6 +268,115 @@ static void setAck(const String& json) {
 
 static String macToString(const NimBLEAddress& a) {
     return String(a.toString().c_str());
+}
+
+
+// ---------- Meteo auto-discovery (scan) ----------
+static void meteoScanFinalize() {
+    g_meteoScanning = false;
+
+    if (g_scanBestMac.length()) {
+        g_meteoLastSeenMac = g_scanBestMac;
+        g_meteoLastSeenName = g_scanBestName;
+        g_meteoLastSeenRssi = g_scanBestRssi;
+
+        Serial.printf("[BLE] Meteo auto-discovery: found %s (RSSI %d, name=%s)\n",
+                      g_scanBestMac.c_str(), g_scanBestRssi, g_scanBestName.c_str());
+
+        // adopt
+        g_cfg.meteoMac = g_scanBestMac;
+
+        // auto-save: config + allowlist
+        if (g_cfg.meteoAutoSave) {
+            if (!isInAllowlist(g_scanBestMac)) {
+                PairedDevice d;
+                d.mac = g_scanBestMac;
+                d.name = g_scanBestName.length() ? g_scanBestName : "meteo";
+                d.role = "meteo";
+                d.addedAt = (uint32_t)(millis() / 1000);
+                g_allow.push_back(d);
+                saveAllowlistFS();
+            }
+            saveConfigFS();
+        }
+
+        // try connect ASAP
+        g_meteoNextActionMs = millis() + 200;
+        g_meteoNextDiscoverMs = 0;
+    } else {
+        Serial.println(F("[BLE] Meteo auto-discovery: nothing found"));
+        const uint32_t now = millis();
+        g_meteoNextDiscoverMs = now + (g_cfg.meteoDiscoverIntervalMs ? g_cfg.meteoDiscoverIntervalMs : 10000);
+    }
+
+    // reset best candidate
+    g_scanBestMac = "";
+    g_scanBestName = "";
+    g_scanBestRssi = -999;
+}
+
+// NimBLE-Arduino 2.x: NimBLEAdvertisedDeviceCallbacks replaced by NimBLEScanCallbacks,
+// scan end callback moved to onScanEnd().
+class MeteoScanCallbacks : public NimBLEScanCallbacks {
+public:
+    void onResult(const NimBLEAdvertisedDevice* dev) override {
+        if (!dev) return;
+
+        if (!dev->isAdvertisingService(UUID_SVC_METEO)) return;
+
+        const int rssi = dev->getRSSI();
+        if (rssi > g_scanBestRssi) {
+            g_scanBestRssi = rssi;
+            g_scanBestMac = macToString(dev->getAddress());
+            g_scanBestName = String(dev->getName().c_str());
+        }
+    }
+
+    void onScanEnd(const NimBLEScanResults& scanResults, int reason) override {
+        (void)scanResults;
+        (void)reason;
+        meteoScanFinalize();
+    }
+};
+
+static MeteoScanCallbacks g_meteoScanCbs;
+
+static bool meteoStartScanIfNeeded() {
+    if (!g_cfg.meteoEnabled) return false;
+    if (!g_cfg.meteoAutoDiscover) return false;
+    if (g_cfg.meteoMac.length()) return false; // already set
+    if (g_meteoScanning) return false;
+
+    const uint32_t now = millis();
+    if (g_meteoNextDiscoverMs && (int32_t)(now - g_meteoNextDiscoverMs) < 0) return false;
+
+    NimBLEScan* scan = NimBLEDevice::getScan();
+    if (!scan) return false;
+
+    g_scanBestMac = "";
+    g_scanBestName = "";
+    g_scanBestRssi = -999;
+
+    // callbacks-only scan (do not store results to save RAM)
+    scan->setMaxResults(0);
+    scan->setScanCallbacks(&g_meteoScanCbs, false);
+    scan->setActiveScan(true);
+    scan->setInterval(97);
+    scan->setWindow(37);
+
+    uint32_t durMs = g_cfg.meteoScanMs;
+    if (durMs < 2000) durMs = 2000;
+    if (durMs > 30000) durMs = 30000;
+
+    Serial.printf("[BLE] Meteo auto-discovery: scanning (%lums)\n", (unsigned long)durMs);
+    g_meteoScanning = scan->start(durMs, false, true);
+    if (!g_meteoScanning) {
+        // failed to start scan -> retry later
+        g_meteoNextDiscoverMs = now + (g_cfg.meteoDiscoverIntervalMs ? g_cfg.meteoDiscoverIntervalMs : 10000);
+        return false;
+    }
+
+    return true;
 }
 
 // ---------- Command handling (from display/app) ----------
@@ -431,17 +568,26 @@ static bool meteoConnectIfNeeded() {
         g_meteoRemoteCh = nullptr;
     }
 
-    NimBLEAddress addr(std::string(g_cfg.meteoMac.c_str()), BLE_ADDR_PUBLIC);
     g_meteoClient = NimBLEDevice::createClient();
 
     // short timeouts
     g_meteoClient->setConnectTimeout(4);
 
     Serial.printf("[BLE] Meteo connect -> %s\n", g_cfg.meteoMac.c_str());
-    if (!g_meteoClient->connect(addr)) {
-        Serial.println("[BLE] Meteo connect failed");
-        g_meteoNextActionMs = now + g_cfg.meteoReconnectMs;
-        return false;
+
+    auto tryConnect = [&](uint8_t addrType) -> bool {
+        // NimBLE-Arduino 2.x requires address type; most peripherals use public or random static.
+        NimBLEAddress addr(std::string(g_cfg.meteoMac.c_str()), addrType);
+        return g_meteoClient->connect(addr);
+    };
+
+    if (!tryConnect(BLE_ADDR_PUBLIC)) {
+        // Retry as random static (common for many ESP/Nordic peripherals)
+        if (!tryConnect(BLE_ADDR_RANDOM)) {
+            Serial.println("[BLE] Meteo connect failed");
+            g_meteoNextActionMs = now + g_cfg.meteoReconnectMs;
+            return false;
+        }
     }
 
     NimBLERemoteService* svc = g_meteoClient->getService(UUID_SVC_METEO);
@@ -562,7 +708,8 @@ void bleLoop() {
         g_statusCh->notify(true);
     }
 
-    // meteo client handling
+    // meteo auto-discovery + client handling
+    meteoStartScanIfNeeded();
     meteoConnectIfNeeded();
 
     if (g_meteoClient && g_meteoClient->isConnected()) {
@@ -584,6 +731,13 @@ String bleGetStatusJson() {
     doc["pairingRemainingSec"] = g_pairingWindow ? (uint32_t)((g_pairingUntilMs - millis())/1000) : 0;
 
     doc["meteoEnabled"] = g_cfg.meteoEnabled;
+    doc["meteoAutoDiscover"] = g_cfg.meteoAutoDiscover;
+    doc["meteoAutoSave"] = g_cfg.meteoAutoSave;
+    doc["meteoScanning"] = g_meteoScanning;
+    doc["meteoMac"] = g_cfg.meteoMac;
+    doc["meteoLastSeenMac"] = g_meteoLastSeenMac;
+    doc["meteoLastSeenName"] = g_meteoLastSeenName;
+    doc["meteoLastSeenRssi"] = g_meteoLastSeenRssi;
     doc["meteoConnected"] = (g_meteoClient && g_meteoClient->isConnected());
     doc["meteoFix"] = g_meteoFix;
 
@@ -615,6 +769,9 @@ String bleGetConfigJson() {
 
     doc["meteoEnabled"] = g_cfg.meteoEnabled;
     doc["meteoMac"] = g_cfg.meteoMac;
+    doc["meteoAutoDiscover"] = g_cfg.meteoAutoDiscover;
+    doc["meteoAutoSave"] = g_cfg.meteoAutoSave;
+    doc["meteoDiscoverIntervalMs"] = g_cfg.meteoDiscoverIntervalMs;
     doc["meteoScanMs"] = g_cfg.meteoScanMs;
     doc["meteoReconnectMs"] = g_cfg.meteoReconnectMs;
 
@@ -637,6 +794,9 @@ bool bleSetConfigJson(const String& json) {
 
     g_cfg.meteoEnabled = doc["meteoEnabled"] | g_cfg.meteoEnabled;
     g_cfg.meteoMac = String((const char*)(doc["meteoMac"] | g_cfg.meteoMac.c_str()));
+    g_cfg.meteoAutoDiscover = doc["meteoAutoDiscover"] | g_cfg.meteoAutoDiscover;
+    g_cfg.meteoAutoSave = doc["meteoAutoSave"] | g_cfg.meteoAutoSave;
+    g_cfg.meteoDiscoverIntervalMs = (uint32_t)(doc["meteoDiscoverIntervalMs"] | g_cfg.meteoDiscoverIntervalMs);
     g_cfg.meteoScanMs = (uint32_t)(doc["meteoScanMs"] | g_cfg.meteoScanMs);
     g_cfg.meteoReconnectMs = (uint32_t)(doc["meteoReconnectMs"] | g_cfg.meteoReconnectMs);
 

@@ -809,7 +809,19 @@ static void equithermRecompute(){
     // Outdoor temperature (venek)
     float tout = NAN;
     EqSourceDiag outDiag;
-    const bool outdoorOk = tryGetTempFromSource(s_eqOutdoorCfg, tout, &outDiag);
+    bool outdoorOk = tryGetTempFromSource(s_eqOutdoorCfg, tout, &outDiag);
+
+    // Auto-map: pokud není venkovní teplota nastavená (source none) a je k dispozici BLE meteo, použij ji.
+    if ((!outdoorOk || !isfinite(tout)) && (!s_eqOutdoorCfg.source.length() || s_eqOutdoorCfg.source == "none")) {
+        float tBle = NAN;
+        if (bleGetMeteoTempC(tBle) && isfinite(tBle)) {
+            tout = tBle;
+            outdoorOk = true;
+            outDiag.valid = true;
+            outDiag.ageMs = 0;
+            outDiag.reason = "auto BLE meteo";
+        }
+    }
     if (!outdoorOk || !isfinite(tout)) {
         // fallback: poslední validní hodnota (maxAge), poté fixní fallback
         const uint32_t nowMs = millis();
