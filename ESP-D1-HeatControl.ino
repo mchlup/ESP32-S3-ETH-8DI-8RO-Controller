@@ -11,7 +11,6 @@
 #include "BleController.h"
 #include "RgbLedController.h"
 #include "BuzzerController.h"
-#include "RuleEngine.h"
 #include "DallasController.h"
 #include "FsController.h"
 #include "ThermometerController.h"
@@ -128,13 +127,11 @@ void setup() {
     });
 
     logicInit();
-    #if FEATURE_RULE_ENGINE
-        ruleEngineInit();
-    #endif
     rgbLedInit();       // RGB LED (pokud používáš)
     thermometersInit(); // MQTT/BLE teploměry (konfigurace)
     openthermInit();    // OpenTherm (boiler) - zatím stub/placeholder
-    fsInit();           // Network + Web + MQTT + OTA
+    fsInit();           // LittleFS
+    webserverLoadConfigFromFS();
     networkInit();
     DallasController::begin();
     DallasController::configureGpio(0, TEMP_INPUT_AUTO);
@@ -174,11 +171,6 @@ void loop() {
     //dallasLoop();
     networkLoop();
     mqttLoop();
-
-    // pravidla (běží pouze v AUTO)
-    #if FEATURE_RULE_ENGINE
-        ruleEngineUpdate();
-    #endif
 
     // logika (AUTO/MANUAL + ventily + equitherm)
     logicUpdate();

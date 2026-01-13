@@ -21,7 +21,6 @@
 #include "ThermometerController.h"
 #include "TempParse.h"
 #include "OpenThermController.h"
-#include "RuleEngine.h"
 #include "DallasController.h"
 
 static WebServer server(80);
@@ -33,6 +32,7 @@ static uint32_t g_rebootAtMs    = 0;
 
 // Globální JSON konfigurace (popisy + mapování relé + režimy)
 static String g_configJson;
+static bool g_configLoaded = false;
 
 static void applyAllConfig(const String& json){
     networkApplyConfig(json);
@@ -45,40 +45,6 @@ static void applyAllConfig(const String& json){
     mqttApplyConfig(json);
 }
 
-
-// Rule engine JSON (uložené v LittleFS jako /rules.json)
-#if FEATURE_RULE_ENGINE
-    static String g_rulesJson;
-    static bool   g_rulesEnabled = false;
-#endif
-
-// ===== JSON helper =====
-
-static String jsonEscape(const String& in) {
-    String out;
-    out.reserve(in.length() + 16);
-    for (size_t i = 0; i < in.length(); i++) {
-        const char c = in[i];
-        switch (c) {
-            case '\\': out += "\\\\"; break;
-            case '"':  out += "\\\""; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            default:
-                if ((uint8_t)c < 0x20) {
-                    // control chars -> \u00XX
-                    char buf[7];
-                    snprintf(buf, sizeof(buf), "\\u%04X", (unsigned int)(uint8_t)c);
-                    out += buf;
-                } else {
-                    out += c;
-                }
-                break;
-        }
-    }
-    return out;
-}
 
 // ===== Pomocné funkce pro FS =====
 
@@ -237,6 +203,7 @@ static void loadConfigFromFS() {
     applyAllConfig(g_configJson);
 
     Serial.println(F("[CFG] config.json loaded & applied."));
+    g_configLoaded = true;
 }
 
 
@@ -382,80 +349,6 @@ static bool saveConfigToFS() {
     return true;
 }
 
-// ===== Rules (rules.json) =====
-#if FEATURE_RULE_ENGINE
-// forward declaration (používá se v loadRulesFromFS)
-static bool saveRulesToFS();
-
-static void loadRulesFromFS() {
-    if (!LittleFS.exists("/rules.json")) {
-        g_rulesEnabled = false;
-        g_rulesJson = "{\"enabled\":false,\"defaultOffControlled\":true,\"rules\":[]}";
-        File f = LittleFS.open("/rules.json", "w");
-        if (f) { f.print(g_rulesJson); f.close(); }
-        Serial.println(F("[RULES] No rules.json, default created."));
-        return;
-    }
-    File f = LittleFS.open("/rules.json", "r");
-    if (!f) {
-        g_rulesEnabled = false;
-        g_rulesJson = "{\"enabled\":false,\"defaultOffControlled\":true,\"rules\":[]}";
-        Serial.println(F("[RULES] rules.json open failed, using default."));
-        return;
-    }
-    g_rulesJson = "";
-    while (f.available()) g_rulesJson += (char)f.read();
-    f.close();
-    if (!g_rulesJson.length()) {
-        g_rulesEnabled = false;
-        g_rulesJson = "{\"enabled\":false,\"defaultOffControlled\":true,\"rules\":[]}";
-        Serial.println(F("[RULES] rules.json empty, using default."));
-        return;
-    }
-    // pokusíme se vytáhnout enabled (podporujeme i legacy formát: JSON array => enabled=true)
-    StaticJsonDocument<512> doc;
-    if (deserializeJson(doc, g_rulesJson) == DeserializationError::Ok) {
-        if (doc.is<JsonArray>()) {
-            g_rulesEnabled = true;
-        } else {
-            g_rulesEnabled = doc["enabled"] | false;
-        }
-    } else {
-        g_rulesEnabled = false;
-    }
-    Serial.println(F("[RULES] rules.json loaded."));
-
-    // Aplikuj do runtime Rule Engine
-    String errMsg;
-    if (!ruleEngineLoadFromJson(g_rulesJson, &errMsg)) {
-        Serial.print(F("[RULES] ruleEngineLoadFromJson failed: "));
-        Serial.println(errMsg);
-        ruleEngineSetEnabled(false);
-        g_rulesEnabled = false;
-    } else {
-        // sjednocení: stav v RAM odpovídá pravidlům
-        // (loadFromJson nastavuje enabled podle JSONu, ale držíme i kopii pro UI)
-        g_rulesEnabled = ruleEngineIsEnabled();
-        // normalizace exportu (řeší legacy array formát, doplní defaultOffControlled, atd.)
-        g_rulesJson = ruleEngineExportJson();
-        // volitelně migrace do FS (ať se UI příště vždy načte stejně)
-        saveRulesToFS();
-    }
-}
-
-static bool saveRulesToFS() {
-    File f = LittleFS.open("/rules.json", "w");
-    if (!f) {
-        Serial.println(F("[RULES] Failed to open rules.json for write."));
-        return false;
-    }
-    f.print(g_rulesJson);
-    f.close();
-    Serial.println(F("[RULES] rules.json saved."));
-    return true;
-}
-#endif
-
 // ===== API status =====
 
 void handleApiStatus() {
@@ -473,7 +366,6 @@ void handleApiStatus() {
     autoObj["triggerInput"] = as.triggerInput;
     autoObj["triggerMode"] = logicModeToString(as.triggerMode);
     autoObj["usingRelayMap"] = as.usingRelayMap;
-    autoObj["blockedByRules"] = as.blockedByRules;
     autoObj["defaultOffUnmapped"] = logicGetAutoDefaultOffUnmapped();
 
     // --- relays ---
@@ -666,24 +558,6 @@ void handleApiStatus() {
         openthermFillJson(ot);
     }
 
-    // UI kompatibilita: top-level alias
-    doc["ruleEngineEnabled"] = ruleEngineIsEnabled();
-    #if FEATURE_RULE_ENGINE
-
-    // Rule Engine status (jako objekt)
-    {
-        DynamicJsonDocument rulesDoc(3072);
-        DeserializationError err = deserializeJson(rulesDoc, ruleEngineGetStatusJson());
-        if (!err) {
-            JsonObject ro = doc.createNestedObject("rules");
-            ro.set(rulesDoc.as<JsonObject>());
-        } else {
-            JsonObject ro = doc.createNestedObject("rules");
-            ro["error"] = err.c_str();
-        }
-    }
-    #endif
-
     String out;
     serializeJson(doc, out);
     server.send(200, "application/json", out);
@@ -783,8 +657,11 @@ void handleApiConfigPost() {
         return;
     }
 
+    String sanitized;
+    serializeJson(doc, sanitized);
+
     String previous = g_configJson;
-    g_configJson = body;
+    g_configJson = sanitized;
     if (!saveConfigToFS()) {
         g_configJson = previous;
         server.send(500, "application/json", "{\"error\":\"save failed\"}");
@@ -993,68 +870,6 @@ void handleApiModeCtrlPost() {
     handleApiModeCtrlGet();
 }
 
-// ===== RULES API =====
-#if FEATURE_RULE_ENGINE
-void handleApiRulesGet() {
-    // vždy vrať to, co drží runtime engine (nejspolehlivější zdroj)
-    // fallback: lokální kopie / default
-    String cur = ruleEngineExportJson();
-    if (cur.length()) {
-        g_rulesJson = cur;
-        g_rulesEnabled = ruleEngineIsEnabled();
-    } else if (!g_rulesJson.length()) {
-        g_rulesEnabled = false;
-        g_rulesJson = "{\"enabled\":false,\"rules\":[]}";
-    }
-    server.send(200, "application/json", g_rulesJson);
-}
-
-void handleApiRulesPost() {
-    String body = server.arg("plain");
-    body.trim();
-    if (!body.length()) {
-        server.send(400, "application/json", "{\"error\":\"empty body\"}");
-        return;
-    }
-
-    // validace, že je to JSON + načtení do runtime (tím zároveň ověříme formát pravidel)
-    String errMsg;
-    if (!ruleEngineLoadFromJson(body, &errMsg)) {
-        String out = String("{\"error\":\"rule parse failed\",\"detail\":\"") + jsonEscape(errMsg) + "\"}";
-        server.send(400, "application/json", out);
-        return;
-    }
-
-    // Když UI pošle enabled=false, engine se vypne (loadFromJson nastavuje enabled podle JSONu)
-    // ale pro jistotu držíme konzistentní kopii
-    g_rulesEnabled = ruleEngineIsEnabled();
-    g_rulesJson = ruleEngineExportJson();
-
-    if (!saveRulesToFS()) {
-        server.send(500, "application/json", "{\"error\":\"save failed\"}");
-        return;
-    }
-
-    server.send(200, "application/json", "{\"status\":\"ok\"}");
-}
-
-void handleApiRulesStatus() {
-    server.send(200, "application/json", ruleEngineGetStatusJson());
-}
-#else
-// Rule engine není zbuilděný – UI endpointy ale udržujeme kvůli kompatibilitě
-void handleApiRulesGet() {
-    server.send(200, "application/json", "{\"enabled\":false,\"rules\":[],\"disabledByBuild\":true}");
-}
-
-void handleApiRulesPost() {
-    server.send(501, "application/json", "{\"error\":\"rule engine disabled\",\"disabledByBuild\":true}");
-}
-
-void handleApiRulesStatus() {
-    server.send(200, "application/json", "{\"enabled\":false,\"disabledByBuild\":true}");
-}
-#endif
 // ===== REBOOT API =====
 
 void handleApiRebootPost() {
@@ -1216,11 +1031,6 @@ static void handleApiCaps() {
     doc["rtc"] = networkIsRtcPresent();
     doc["schedules"] = true;
     doc["iofunc"] = true;
-    #if FEATURE_RULE_ENGINE
-        doc["ruleEngine"] = true;
-    #else
-        doc["ruleEngine"] = false;
-    #endif
     doc["mqtt"] = true;
     doc["ble"] = true;
     doc["opentherm"] = true;
@@ -1230,14 +1040,17 @@ static void handleApiCaps() {
     server.send(200, "application/json", out);
 }
 
+void webserverLoadConfigFromFS() {
+    if (fsIsReady()) {
+        loadConfigFromFS();
+    }
+}
+
 // ===== Inicializace webserveru =====
 void webserverInit() {
     // FS je mountnutý v setup() přes fsInit(); tady jen načti konfiguraci, pokud je dostupná
-    if (fsIsReady()) {
+    if (fsIsReady() && !g_configLoaded) {
         loadConfigFromFS();
-        #if FEATURE_RULE_ENGINE
-            loadRulesFromFS();
-        #endif
     }
 
     server.on("/", HTTP_GET, []() {
@@ -1292,11 +1105,6 @@ void webserverInit() {
 
     server.on("/api/mode_ctrl", HTTP_GET, handleApiModeCtrlGet);
     server.on("/api/mode_ctrl", HTTP_POST, handleApiModeCtrlPost);
-
-    // Rules (endpointy držíme vždy – při disabled buildu vrací informaci o vypnutí)
-    server.on("/api/rules", HTTP_GET, handleApiRulesGet);
-    server.on("/api/rules", HTTP_POST, handleApiRulesPost);
-    server.on("/api/rules/status", HTTP_GET, handleApiRulesStatus);
 
     // Reboot
     server.on("/api/reboot", HTTP_POST, handleApiRebootPost);

@@ -16,8 +16,6 @@
     bleStatus: null,
     bleConfig: null,
     blePaired: null,
-    rules: null,
-    rulesStatus: null,
     files: null,
     lastConfigHash: "",
     pendingConfig: null,
@@ -123,7 +121,7 @@
 
   // ---------- navigation ----------
   const setCfgTab = (name) => {
-    // FIX: scope pouze na stránku Konfigurace (jinak se deaktivují tabPage i v Rule engine)
+    // FIX: scope pouze na stránku Konfigurace (jinak se deaktivují tabPage i jinde)
     const root = $("#page-config");
     if (!root) return;
     $$(".tab", root).forEach(b => b.classList.toggle("active", b.dataset.ctab === name));
@@ -1503,413 +1501,6 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     await loadBle();
   };
 
-  const loadRules = async () => {
-    state.rules = await apiGet("/api/rules").catch(()=>null);
-    state.rulesStatus = await apiGet("/api/rules/status").catch(()=>null);
-    const rulesJson = $("#rulesJson");
-    const rulesStatus = $("#rulesStatus");
-    if (rulesJson) rulesJson.value = state.rules ? prettyJson(state.rules) : "{\n  \"enabled\": false,\n  \"rules\": []\n}";
-    if (rulesStatus) rulesStatus.textContent = state.rulesStatus ? prettyJson(state.rulesStatus) : "—";
-    renderRulesTable();
-  };
-
-  const saveRules = async () => {
-    // sync editor -> JSON
-    if ($("#rulesEnabled")) {
-      const r = rulesEnsureShape();
-      r.enabled = $("#rulesEnabled").checked;
-      r.defaultOffControlled = $("#rulesDefaultOff").checked;
-      rulesToTextarea();
-    }
-    const txt = $("#rulesJson").value;
-    const parsed = safeJson(txt);
-    if (!parsed) { toast("Neplatný JSON", "bad"); return; }
-    await apiPostText("/api/rules", JSON.stringify(parsed));
-    toast("Rules uloženy");
-    await loadRules();
-    await loadStatus();
-  };
-  // ---------- rules editor ----------
-  const rulesEnsureShape = () => {
-    if (!state.rules || typeof state.rules !== "object") state.rules = { enabled:false, defaultOffControlled:true, rules:[] };
-    if (!Array.isArray(state.rules.rules)) state.rules.rules = [];
-    if (state.rules.defaultOffControlled == null) state.rules.defaultOffControlled = true;
-    return state.rules;
-  };
-
-  const renderRulesTable = () => {
-    const root = $("#rulesTable");
-    if (!root) return;
-    const r = rulesEnsureShape();
-    $("#rulesEnabled").checked = !!r.enabled;
-    $("#rulesDefaultOff").checked = !!r.defaultOffControlled;
-
-    const rows = r.rules || [];
-    if (!rows.length){
-      root.innerHTML = `<div class="muted" style="padding:12px 0">Zatím žádná pravidla.</div>`;
-      return;
-    }
-
-    const head = `
-      <div class="trow head">
-        <div>ID</div><div>Název</div><div>WHEN/THEN</div><div>Akce</div>
-      </div>`;
-    const body = rows.map((it, idx) => {
-      const id = it.id ?? (idx+1);
-      const name = escapeHtml(it.name || `Rule ${id}`);
-      const en = it.enabled === false ? "OFF" : "ON";
-      const wItems = it.when?.items || [];
-      const aItems = it.then || [];
-
-      const whenTxt = (wItems.length)
-        ? wItems.map(w => {
-            if ((w.type || "input") === "time") return `time ${w.from||"00:00"}–${w.to||"00:00"}`;
-            if ((w.type || "input") === "mqtt") return `mqtt ${w.topic||"?"}=${w.value||""}`;
-            return `in${w.input||"?"}=${w.state||"ACTIVE"}`;
-          }).join(` ${it.when?.op || "AND"} `)
-        : "—";
-
-      const thenTxt = (aItems.length)
-        ? aItems.map(a => {
-            const t = a.type || "relay_set";
-            if (t === "mqtt_publish") return `mqtt_pub ${a.topic||"?"}`;
-            if (t === "relay_pulse") return `pulse R${a.relay||"?"} ${a.ms||500}ms`;
-            return `R${a.relay||"?"}=${a.value ? "ON" : "OFF"}`;
-          }).join(", ")
-        : "—";
-      return `
-        <div class="trow">
-          <div>${id}<div class="muted">${en}</div></div>
-          <div>${name}<div class="muted">${escapeHtml(it.desc||"")}</div></div>
-          <div class="muted">${escapeHtml(whenTxt)} • ${escapeHtml(thenTxt)}</div>
-          <div>
-            <button class="btn ghost" data-rule-edit="${id}">Upravit</button>
-          </div>
-        </div>`;
-    }).join("");
-
-    root.innerHTML = head + body;
-  };
-
-  const rulesToTextarea = () => {
-    if ($("#rulesJson")) $("#rulesJson").value = prettyJson(rulesEnsureShape());
-  };
-
-  const textareaToRules = () => {
-    const parsed = safeJson($("#rulesJson")?.value || "");
-    if (!parsed) return false;
-    state.rules = parsed;
-    return true;
-  };
-
-  const inputOptionsHtml = () =>
-    Array.from({ length: INPUT_COUNT }, (_, i) => `<option value="${i + 1}">Vstup ${i + 1}</option>`).join("");
-
-  const relayOptionsHtml = () =>
-    Array.from({ length: RELAY_COUNT }, (_, i) => `<option value="${i + 1}">Relé ${i + 1}</option>`).join("");
-
-  const applyCondRowVisibility = (row) => {
-    const type = row.querySelector(".condType")?.value || "input";
-    row.querySelectorAll("[data-cond='input']").forEach(el => el.style.display = (type === "input") ? "" : "none");
-    row.querySelectorAll("[data-cond='time']").forEach(el => el.style.display = (type === "time") ? "" : "none");
-    row.querySelectorAll("[data-cond='mqtt']").forEach(el => el.style.display = (type === "mqtt") ? "" : "none");
-  };
-
-  const createCondRow = (cond = {}) => {
-    const type = (cond.type || "input");
-    const el = document.createElement("div");
-    el.className = "row";
-    el.style.padding = "0";
-    el.style.gap = "10px";
-    el.innerHTML = `
-      <div class="field">
-        <label>Typ</label>
-        <select class="condType">
-          <option value="input">Input</option>
-          <option value="time">Time</option>
-          <option value="mqtt">MQTT</option>
-        </select>
-      </div>
-
-      <div class="field" data-cond="input">
-        <label>Vstup</label>
-        <select class="condInput">${inputOptionsHtml()}</select>
-      </div>
-      <div class="field" data-cond="input">
-        <label>Stav</label>
-        <select class="condState">
-          <option value="ACTIVE">ACTIVE</option>
-          <option value="INACTIVE">INACTIVE</option>
-        </select>
-      </div>
-
-      <div class="field" data-cond="time">
-        <label>Od</label>
-        <input class="condFrom" type="time" />
-      </div>
-      <div class="field" data-cond="time">
-        <label>Do</label>
-        <input class="condTo" type="time" />
-      </div>
-
-      <div class="field" data-cond="mqtt">
-        <label>Topic</label>
-        <input class="condTopic" placeholder="např. home/xxx/state" />
-      </div>
-      <div class="field" data-cond="mqtt">
-        <label>Hodnota</label>
-        <input class="condValue" placeholder="např. ON" />
-      </div>
-
-      <div class="field" style="display:flex;align-items:flex-end">
-        <button class="btn bad ghost btnRemoveCond" title="Odebrat">×</button>
-      </div>
-    `;
-
-    el.querySelector(".condType").value = type;
-    el.querySelector(".condInput").value = String(cond.input ?? 1);
-    el.querySelector(".condState").value = String(cond.state ?? "ACTIVE");
-    el.querySelector(".condFrom").value = String(cond.from ?? "00:00");
-    el.querySelector(".condTo").value = String(cond.to ?? "00:00");
-    el.querySelector(".condTopic").value = String(cond.topic ?? "");
-    el.querySelector(".condValue").value = String(cond.value ?? "");
-
-    el.querySelector(".condType")?.addEventListener("change", () => applyCondRowVisibility(el));
-    el.querySelector(".btnRemoveCond")?.addEventListener("click", (e) => { e.preventDefault(); el.remove(); });
-
-    applyCondRowVisibility(el);
-    return el;
-  };
-
-  const applyActionRowVisibility = (row) => {
-    const type = row.querySelector(".actType")?.value || "relay_set";
-    row.querySelectorAll("[data-act='relay_set']").forEach(el => el.style.display = (type === "relay_set") ? "" : "none");
-    row.querySelectorAll("[data-act='relay_pulse']").forEach(el => el.style.display = (type === "relay_pulse") ? "" : "none");
-    row.querySelectorAll("[data-act='mqtt_publish']").forEach(el => el.style.display = (type === "mqtt_publish") ? "" : "none");
-  };
-
-  const createActionRow = (a = {}) => {
-    const type = (a.type || "relay_set");
-    const el = document.createElement("div");
-    el.className = "row";
-    el.style.padding = "0";
-    el.style.gap = "10px";
-    el.innerHTML = `
-      <div class="field">
-        <label>Typ</label>
-        <select class="actType">
-          <option value="relay_set">Relay set</option>
-          <option value="relay_pulse">Relay pulse (JSON)</option>
-          <option value="mqtt_publish">MQTT publish (JSON)</option>
-        </select>
-      </div>
-
-      <div class="field" data-act="relay_set">
-        <label>Relé</label>
-        <select class="actRelay">${relayOptionsHtml()}</select>
-      </div>
-      <div class="field" data-act="relay_set">
-        <label>Hodnota</label>
-        <select class="actValue">
-          <option value="true">ON</option>
-          <option value="false">OFF</option>
-        </select>
-      </div>
-
-      <div class="field" data-act="relay_pulse">
-        <label>Relé</label>
-        <select class="actPulseRelay">${relayOptionsHtml()}</select>
-      </div>
-      <div class="field" data-act="relay_pulse">
-        <label>ms</label>
-        <input class="actPulseMs" type="number" min="1" step="10" />
-      </div>
-
-      <div class="field" data-act="mqtt_publish">
-        <label>Topic</label>
-        <input class="actMqttTopic" />
-      </div>
-      <div class="field" data-act="mqtt_publish">
-        <label>Payload</label>
-        <input class="actMqttPayload" />
-      </div>
-
-      <div class="field" style="display:flex;align-items:flex-end">
-        <button class="btn bad ghost btnRemoveAct" title="Odebrat">×</button>
-      </div>
-    `;
-
-    el.querySelector(".actType").value = type;
-    el.querySelector(".actRelay").value = String(a.relay ?? 1);
-    el.querySelector(".actValue").value = (a.value ? "true" : "false");
-    el.querySelector(".actPulseRelay").value = String(a.relay ?? 1);
-    el.querySelector(".actPulseMs").value = String(a.ms ?? 500);
-    el.querySelector(".actMqttTopic").value = String(a.topic ?? "");
-    el.querySelector(".actMqttPayload").value = String(a.payload ?? "");
-
-    el.querySelector(".actType")?.addEventListener("change", () => applyActionRowVisibility(el));
-    el.querySelector(".btnRemoveAct")?.addEventListener("click", (e) => { e.preventDefault(); el.remove(); });
-
-    applyActionRowVisibility(el);
-    return el;
-  };
-
-  const openRuleModal = (ruleId) => {
-    const r = rulesEnsureShape();
-    const modal = $("#ruleModal");
-    if (!modal) return;
-
-    const idx = r.rules.findIndex(x => String(x.id) === String(ruleId));
-    const isNew = idx < 0;
-    const it = isNew ? {
-      id: (Date.now() & 0xffffffff) >>> 0,
-      enabled: true,
-      priority: 50,
-      stopOnMatch: false,
-      debounceMs: 0,
-      minOnMs: 0,
-      minOffMs: 0,
-      name: "",
-      desc: "",
-      when: { op: "AND", items: [ { type:"input", input: 1, state: "ACTIVE" } ] },
-      then: [ { type:"relay_set", relay: 1, value: true } ]
-    } : JSON.parse(JSON.stringify(r.rules[idx]));
-
-    modal.dataset.ruleId = String(it.id);
-    modal.dataset.isNew = isNew ? "1" : "0";
-    $("#ruleModalTitle").textContent = isNew ? "Nové pravidlo" : `Upravit pravidlo #${it.id}`;
-
-    $("#ruleName").value = it.name || "";
-    $("#ruleDesc").value = it.desc || "";
-    $("#ruleEnabled").value = (it.enabled === false) ? "false" : "true";
-    $("#rulePriority").value = String(it.priority ?? 50);
-    $("#ruleStopOnMatch").value = (it.stopOnMatch ? "true" : "false");
-    $("#ruleDebounceMs").value = String(it.debounceMs ?? 0);
-    $("#ruleMinOnMs").value = String(it.minOnMs ?? 0);
-    $("#ruleMinOffMs").value = String(it.minOffMs ?? 0);
-
-    $("#ruleWhenOp").value = String(it.when?.op ?? "AND");
-    const wl = $("#ruleWhenList");
-    if (wl) {
-      wl.innerHTML = "";
-      const items = (it.when?.items && it.when.items.length) ? it.when.items : [ { type:"input", input: 1, state:"ACTIVE" } ];
-      items.forEach(c => wl.appendChild(createCondRow(c)));
-    }
-
-    const tl = $("#ruleThenList");
-    if (tl) {
-      tl.innerHTML = "";
-      const acts = (it.then && it.then.length) ? it.then : [ { type:"relay_set", relay: 1, value: true } ];
-      acts.forEach(a => tl.appendChild(createActionRow(a)));
-    }
-
-    $("#btnRuleDelete").classList.toggle("hidden", isNew);
-
-    modal.classList.remove("hidden");
-  };
-
-  const closeRuleModal = () => {
-    const modal = $("#ruleModal");
-    if (modal) modal.classList.add("hidden");
-  };
-
-  const saveRuleFromModal = () => {
-    const modal = $("#ruleModal");
-    const r = rulesEnsureShape();
-    if (!modal) return;
-
-    const id = Number(modal.dataset.ruleId || 0) || ((Date.now() & 0xffffffff) >>> 0);
-    const isNew = modal.dataset.isNew === "1";
-    const whenItems = [];
-    $("#ruleWhenList")?.querySelectorAll(".row").forEach(row => {
-      const type = row.querySelector(".condType")?.value || "input";
-      if (type === "input") {
-        whenItems.push({
-          type: "input",
-          input: Number(row.querySelector(".condInput")?.value || 1),
-          state: String(row.querySelector(".condState")?.value || "ACTIVE"),
-        });
-      } else if (type === "time") {
-        whenItems.push({
-          type: "time",
-          from: String(row.querySelector(".condFrom")?.value || "00:00"),
-          to: String(row.querySelector(".condTo")?.value || "00:00"),
-        });
-      } else if (type === "mqtt") {
-        whenItems.push({
-          type: "mqtt",
-          topic: String(row.querySelector(".condTopic")?.value || ""),
-          value: String(row.querySelector(".condValue")?.value || ""),
-        });
-      }
-    });
-
-    const thenActs = [];
-    $("#ruleThenList")?.querySelectorAll(".row").forEach(row => {
-      const type = row.querySelector(".actType")?.value || "relay_set";
-      if (type === "relay_set") {
-        thenActs.push({
-          type: "relay_set",
-          relay: Number(row.querySelector(".actRelay")?.value || 1),
-          value: (row.querySelector(".actValue")?.value === "true"),
-        });
-      } else if (type === "relay_pulse") {
-        thenActs.push({
-          type: "relay_pulse",
-          relay: Number(row.querySelector(".actPulseRelay")?.value || 1),
-          ms: Number(row.querySelector(".actPulseMs")?.value || 500),
-        });
-      } else if (type === "mqtt_publish") {
-        thenActs.push({
-          type: "mqtt_publish",
-          topic: String(row.querySelector(".actMqttTopic")?.value || ""),
-          payload: String(row.querySelector(".actMqttPayload")?.value || ""),
-        });
-      }
-    });
-
-    if (!whenItems.length) whenItems.push({ type:"input", input: 1, state:"ACTIVE" });
-    if (!thenActs.length) thenActs.push({ type:"relay_set", relay: 1, value: true });
-
-    const it = {
-      id,
-      name: $("#ruleName").value || "",
-      desc: $("#ruleDesc").value || "",
-      enabled: $("#ruleEnabled").value === "true",
-      priority: Number($("#rulePriority").value || 50),
-      stopOnMatch: $("#ruleStopOnMatch").value === "true",
-      debounceMs: Number($("#ruleDebounceMs").value || 0),
-      minOnMs: Number($("#ruleMinOnMs").value || 0),
-      minOffMs: Number($("#ruleMinOffMs").value || 0),
-      when: { op: $("#ruleWhenOp").value || "AND", items: whenItems },
-      then: thenActs,
-    };
-
-    if (isNew){
-      r.rules.push(it);
-    } else {
-      const idx = r.rules.findIndex(x => String(x.id) === String(id));
-      if (idx >= 0) r.rules[idx] = it;
-      else r.rules.push(it);
-    }
-
-    rulesToTextarea();
-    renderRulesTable();
-    closeRuleModal();
-  };
-
-  const deleteRuleFromModal = () => {
-    const modal = $("#ruleModal");
-    const r = rulesEnsureShape();
-    if (!modal) return;
-    const id = Number(modal.dataset.ruleId || 0);
-    r.rules = r.rules.filter(x => String(x.id) !== String(id));
-    rulesToTextarea();
-    renderRulesTable();
-    closeRuleModal();
-  };
-
-
   const loadFiles = async () => {
     state.files = await apiGet("/api/fs/list").catch(()=>null);
     renderFiles();
@@ -2205,7 +1796,6 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     await loadStatus();
     await loadDash();
     await loadBle();
-    await loadRules();
     await loadFiles();
   };
 
@@ -2265,38 +1855,6 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     $("#btnSaveAku")?.addEventListener("click", () => $("#btnSaveEquitherm")?.click());
 
     
-    // rules tabs
-    $$(".rtab").forEach(b => b.addEventListener("click", () => {
-      $$(".rtab").forEach(x => x.classList.toggle("active", x === b));
-      $("#rtab-editor").classList.toggle("active", b.dataset.rtab === "editor");
-      $("#rtab-json").classList.toggle("active", b.dataset.rtab === "json");
-    }));
-
-    // rules editor
-    $("#btnAddRule")?.addEventListener("click", () => openRuleModal("NEW"));
-    $("#rulesTable")?.addEventListener("click", (e) => {
-      const btn = e.target.closest("[data-rule-edit]");
-      if (!btn) return;
-      openRuleModal(btn.dataset.ruleEdit);
-    });
-    $("#rulesEnabled")?.addEventListener("change", () => { const r = rulesEnsureShape(); r.enabled = $("#rulesEnabled").checked; rulesToTextarea(); });
-    $("#rulesDefaultOff")?.addEventListener("change", () => { const r = rulesEnsureShape(); r.defaultOffControlled = $("#rulesDefaultOff").checked; rulesToTextarea(); });
-
-    // modal events
-    $("#btnRuleClose")?.addEventListener("click", closeRuleModal);
-    $("#btnRuleSave")?.addEventListener("click", (e) => { e.preventDefault(); saveRuleFromModal(); });
-    $("#btnRuleDelete")?.addEventListener("click", (e) => { e.preventDefault(); deleteRuleFromModal(); });
-    $("#btnRuleAddCond")?.addEventListener("click", (e) => {
-      e.preventDefault();
-      $("#ruleWhenList")?.appendChild(createCondRow({ type:"input", input:1, state:"ACTIVE" }));
-    });
-    $("#btnRuleAddAction")?.addEventListener("click", (e) => {
-      e.preventDefault();
-      $("#ruleThenList")?.appendChild(createActionRow({ type:"relay_set", relay:1, value:true }));
-    });
-    $("#ruleModal")?.addEventListener("click", (e) => {
-      if (e.target && e.target.dataset && e.target.dataset.close) closeRuleModal();
-    });
     // relay toggles (legacy dashboard)
     $("#relayGrid")?.addEventListener("click", async (e) => {
       const sw = e.target.closest(".sw[data-relay]");
@@ -2401,15 +1959,6 @@ $("#btnAutoRecompute")?.addEventListener("click", async () => {
     $("#btnStartPair")?.addEventListener("click", () => startPair().catch(e=>toast(e.message,"bad")));
     $("#btnStopPair")?.addEventListener("click", () => stopPair().catch(e=>toast(e.message,"bad")));
 
-    // rules
-    $("#btnFmtRules")?.addEventListener("click", () => {
-      const obj = safeJson($("#rulesJson").value);
-      if (!obj) return toast("Neplatný JSON", "bad");
-      $("#rulesJson").value = prettyJson(obj);
-    });
-    $("#btnSaveRules")?.addEventListener("click", () => saveRules().catch(e=>toast(e.message,"bad")));
-    $("#btnReloadRules")?.addEventListener("click", () => loadRules().catch(e=>toast(e.message,"bad")));
-
     // files
     $("#btnRefreshFiles")?.addEventListener("click", () => loadFiles().catch(e=>toast(e.message,"bad")));
     $("#uploadForm")?.addEventListener("submit", async (e) => {
@@ -2469,11 +2018,6 @@ $("#btnAutoRecompute")?.addEventListener("click", async () => {
     } catch (_) {}
   };
 
-  const renderRules = () => {
-    try {
-      if (typeof renderRulesTable === "function") renderRulesTable();
-    } catch (_) {}
-  };
   window.Core = window.Core || {};
   window.Core.legacy = {
     init,
@@ -2485,17 +2029,14 @@ $("#btnAutoRecompute")?.addEventListener("click", async () => {
     loadDash,
     loadConfig,
     loadBle,
-    loadRules,
     loadFiles,
     saveConfigJsonFromEditor,
     saveMqtt,
     saveBle,
-    saveRules,
     updateDirtyIndicators,
     renderDashboard,
     renderIO,
     renderTemps,
-    renderRules,
     renderFiles,
     renderTop,
     renderStatus,

@@ -26,7 +26,6 @@ Projekt je navržen jako mezičlánek mezi kotlem, ventily, čidly a nadřazený
 * ✅ OTA aktualizace firmware
 * ✅ Wi-Fi konfigurace pomocí **WiFiManager**
 * ✅ Podpora RTC
-* ✅ Rule engine & logická pravidla
 * ✅ Stavový dashboard (teploty, relé, režimy, ekviterm)
 
 ---
@@ -77,7 +76,6 @@ ESP-HeatAndDomesticController
 ├── RelayController.*             # Relé
 ├── InputController.*             # Digitální vstupy
 ├── LogicController.*             # Hlavní logika
-├── RuleEngine.*                  # Pravidla a podmínky
 ├── ConditionEvaluator.*          # Vyhodnocování podmínek
 ├── ActionExecutor.*              # Provádění akcí
 ├── OpenThermController.*         # OpenTherm (rozšiřitelné)
