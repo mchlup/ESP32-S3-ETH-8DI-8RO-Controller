@@ -51,7 +51,6 @@ data/
       system.js
       ota.js
       files.js
-      rules.js
 
   pages/
     dashboard.html
@@ -68,7 +67,6 @@ data/
     system.html
     ota.html
     files.html
-    rules.html
 ```
 
 ### Základní tok

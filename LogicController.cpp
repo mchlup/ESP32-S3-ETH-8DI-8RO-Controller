@@ -2,7 +2,6 @@
 #include "RelayController.h"
 #include "InputController.h"
 #include "ConfigStore.h"
-#include "RuleEngine.h"
 #include "BuzzerController.h"
 #include "DallasController.h"
 #include "MqttController.h"
@@ -57,7 +56,7 @@ static uint8_t modeTriggerInput[5] = { 0, 0, 0, 0, 0 };
 static bool s_autoDefaultOffUnmapped = true;
 
 // Diagnostika AUTO (status pro UI)
-static AutoStatus s_autoStatus = { false, 0, SystemMode::MODE1, false, false };
+static AutoStatus s_autoStatus = { false, 0, SystemMode::MODE1, false };
 
 // Aktuální řízení a režim
 static ControlMode currentControlMode = ControlMode::AUTO;
@@ -1561,16 +1560,6 @@ void logicRecomputeFromInputs() {
         return;
     }
 
-    // Pokud jsou povolená pravidla, legacy AUTO logika se nesmí „prát“ s Rule Engine
-    if (ruleEngineIsEnabled()) {
-        s_autoStatus.triggered = false;
-        s_autoStatus.triggerInput = 0;
-        s_autoStatus.triggerMode = currentMode;
-        s_autoStatus.usingRelayMap = false;
-        s_autoStatus.blockedByRules = true;
-        return;
-    }
-
     SystemMode triggered;
     if (getTriggeredAutoMode(triggered)) {
         if (currentMode != triggered) {
@@ -1587,8 +1576,6 @@ void logicRecomputeFromInputs() {
     s_autoStatus.triggerInput = 0;
     s_autoStatus.triggerMode = currentMode;
     s_autoStatus.usingRelayMap = true;
-    s_autoStatus.blockedByRules = false;
-
     applyRelayMapFromInputs(s_autoDefaultOffUnmapped);
     Serial.println(F("[LOGIC] AUTO: relayMap applied from inputs (no mode trigger)"));
     relayPrintStates(Serial);
@@ -1602,10 +1589,7 @@ void logicSetControlMode(ControlMode mode) {
     if (currentControlMode == ControlMode::AUTO) {
         Serial.println(F("[LOGIC] Control mode -> AUTO"));
         buzzerOnControlModeChanged(true);
-        // V AUTO: buď Rule Engine, nebo legacy mapování vstupů
-        if (!ruleEngineIsEnabled()) {
-            logicRecomputeFromInputs();
-        }
+        logicRecomputeFromInputs();
     } else {
         Serial.println(F("[LOGIC] Control mode -> MANUAL"));
         buzzerOnControlModeChanged(false);
@@ -1659,10 +1643,9 @@ void logicInit() {
     manualMode         = SystemMode::MODE1;
     currentMode        = manualMode;
 
-    s_autoStatus = AutoStatus{ false, 0, currentMode, false, false };
+    s_autoStatus = AutoStatus{ false, 0, currentMode, false };
 
     // V AUTO rovnou dopočítej výstupy podle vstupů (ať po bootu odpovídá skutečnému stavu).
-    // Rule Engine se inicializuje až po logicInit(), takže zde poběží legacy AUTO.
     logicRecomputeFromInputs();
 
     Serial.print(F("[LOGIC] Init, control=AUTO, mode="));
@@ -1742,7 +1725,7 @@ void logicUpdate() {
         updateTuvModeState(nowMs);
     }
 
-    // Always enforce TUV request relay after mode/rules have run
+    // Always enforce TUV request relay after mode updates have run
     applyTuvRequest();
     applyNightModeRelay();
 }
@@ -1774,16 +1757,6 @@ void logicOnInputChanged(InputId id, bool newState) {
     applyNightModeRelay();
 
     if (currentControlMode != ControlMode::AUTO) {
-        return;
-    }
-
-    // Pokud je aktivní Rule Engine, vstupy si čte sám v ruleEngineUpdate()
-    if (ruleEngineIsEnabled()) {
-        s_autoStatus.triggered = false;
-        s_autoStatus.triggerInput = 0;
-        s_autoStatus.triggerMode = currentMode;
-        s_autoStatus.usingRelayMap = false;
-        s_autoStatus.blockedByRules = true;
         return;
     }
 

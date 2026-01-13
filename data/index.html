@@ -81,9 +81,6 @@
           <a class="navItem" href="#files" data-page="files">
             <span class="ico">⧉</span><span>LittleFS</span>
           </a>
-          <a class="navItem" href="#rules" data-page="rules">
-            <span class="ico">⟰</span><span>Rule engine</span>
-          </a>
           <a class="navItem" href="#system" data-page="system">
             <span class="ico">⟲</span><span>Síť / čas / systém</span>
           </a>
@@ -120,82 +117,6 @@
 
   <div id="toasts" class="toasts" aria-live="polite" aria-atomic="true"></div>
   <div id="modalRoot">
-    <div class="modal hidden" id="ruleModal">
-      <div class="modalBack" data-close="1"></div>
-      <div class="modalCard">
-        <div class="modalHead">
-          <div>
-            <div class="cardTitle" id="ruleModalTitle">Pravidlo</div>
-            <div class="muted">Základní editor pro nejčastější scénáře</div>
-          </div>
-          <button class="btn ghost" id="btnRuleClose">Zavřít</button>
-        </div>
-
-        <div class="form">
-          <div class="row">
-            <div class="field"><label>Název</label><input id="ruleName" /></div>
-            <div class="field"><label>Popis</label><input id="ruleDesc" /></div>
-          </div>
-
-          <div class="row">
-            <div class="field"><label>Enabled</label><select id="ruleEnabled"><option value="true">true</option><option value="false">false</option></select></div>
-            <div class="field"><label>Priority</label><input id="rulePriority" type="number" step="1" /></div>
-            <div class="field"><label>Stop on match</label><select id="ruleStopOnMatch"><option value="false">false</option><option value="true">true</option></select></div>
-          </div>
-
-          <div class="row">
-            <div class="field"><label>Debounce (ms)</label><input id="ruleDebounceMs" type="number" step="10" min="0" /></div>
-            <div class="field"><label>Min ON (ms)</label><input id="ruleMinOnMs" type="number" step="100" min="0" /></div>
-            <div class="field"><label>Min OFF (ms)</label><input id="ruleMinOffMs" type="number" step="100" min="0" /></div>
-          </div>
-
-          <hr class="sep" />
-
-          <div class="row">
-            <div class="field">
-              <label>WHEN (Podmínky)</label>
-
-              <div class="row" style="padding:0">
-                <div class="field">
-                  <label>Operátor</label>
-                  <select id="ruleWhenOp">
-                    <option value="AND">AND</option>
-                    <option value="OR">OR</option>
-                  </select>
-                </div>
-                <div class="field" style="display:flex;align-items:flex-end">
-                  <button class="btn" id="btnRuleAddCond">+ Podmínka</button>
-                </div>
-              </div>
-
-              <div id="ruleWhenList" class="kv" style="gap:10px"></div>
-              <div class="note">Podporované typy: Input, Time (HH:MM), MQTT (topic + hodnota). Kombinace přes AND/OR.</div>
-            </div>
-          </div>
-
-          <div class="row">
-            <div class="field">
-              <label>THEN (Akce)</label>
-
-              <div class="row" style="padding:0">
-                <div class="field" style="display:flex;align-items:flex-end">
-                  <button class="btn" id="btnRuleAddAction">+ Akce</button>
-                </div>
-              </div>
-
-              <div id="ruleThenList" class="kv" style="gap:10px"></div>
-              <div class="note">Podporované akce: Relay set. Ostatní typy jsou připravené v JSON (pulse / mqtt_publish).</div>
-            </div>
-          </div>
-
-          <div class="btnRow" style="padding: 0 14px 14px">
-            <button class="btn" id="btnRuleSave">Uložit do editoru</button>
-            <button class="btn bad" id="btnRuleDelete">Smazat</button>
-          </div>
-        </div>
-      </div>
-    </div>
-
     <div class="modal hidden" id="modalDays" aria-hidden="true">
       <div class="modalBack" data-close="1"></div>
       <div class="modalCard" style="width:min(520px, calc(100vw - 32px))">

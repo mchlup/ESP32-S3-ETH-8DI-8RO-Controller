@@ -18,7 +18,7 @@ bool mqttIsConnected();
 void mqttPublishFullState();
 // Republish Home Assistant discovery + full state (pokud je připojeno)
 void mqttRepublishDiscovery();
-// Vrátí poslední přijatou hodnotu pro daný topic (pokud existuje). Používá Rule engine (MQTT podmínky).
+// Vrátí poslední přijatou hodnotu pro daný topic (pokud existuje).
 bool mqttGetLastValue(const String& topic, String* outValue);
 
 // Jako mqttGetLastValue(), navíc vrací millis() timestamp posledního příjmu.

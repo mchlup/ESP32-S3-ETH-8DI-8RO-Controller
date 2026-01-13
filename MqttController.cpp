@@ -10,7 +10,7 @@
 #include "LogicController.h"
 #include "ThermometerController.h"
 
-// ===== Cache přijatých hodnot (pro Rule engine MQTT podmínky) =====
+// ===== Cache přijatých hodnot =====
 struct MqttCacheEntry {
     String topic;
     String value;
@@ -380,7 +380,7 @@ static void mqttCallback(char* topic, byte* payload, unsigned int length) {
     for (unsigned int i = 0; i < length; i++) p += (char)payload[i];
     p.trim();
 
-    // uložíme poslední hodnotu pro Rule engine (MQTT podmínky)
+    // uložíme poslední hodnotu (MQTT podmínky / diagnostika)
     cachePut(t, p);
 
     // externí MQTT teploměry (konfigurace "Teploměry")

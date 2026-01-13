@@ -26,7 +26,9 @@
 
 // ---------- Files ----------
 static const char* BLE_CFG_PATH = "/ble.json";
+static const char* BLE_CFG_BAK_PATH = "/ble.json.bak";
 static const char* BLE_PAIRED_PATH = "/ble_paired.json";
+static const char* BLE_PAIRED_BAK_PATH = "/ble_paired.json.bak";
 
 // ---------- UUIDs ----------
 static NimBLEUUID UUID_SVC_CTRL("7b7c0001-3a2b-4f2a-8bb0-8d2c2c1a0001");
@@ -104,11 +106,18 @@ static uint32_t g_meteoNextDiscoverMs = 0;
 static String g_meteoLastSeenMac = "";
 static String g_meteoLastSeenName = "";
 static int g_meteoLastSeenRssi = -999;
+static String g_meteoRuntimeMac = "";
+static uint32_t g_meteoLastFixMs = 0;
+static uint8_t g_meteoFailCount = 0;
+static bool g_meteoForceDiscover = false;
 
 // scan best candidate
 static String g_scanBestMac = "";
 static String g_scanBestName = "";
 static int g_scanBestRssi = -999;
+
+static const uint8_t METEO_FAILS_BEFORE_SCAN = 3;
+static const uint32_t METEO_STALE_MS = 180000;
 
 // ---------- Helpers ----------
 static String nowIso() {
@@ -130,12 +139,37 @@ static bool fsReadAll(const char* path, String& out) {
     return out.length() > 0;
 }
 
-static bool fsWriteAll(const char* path, const String& data) {
+static bool fsWriteAtomic(const char* path, const String& data, const char* bakPath) {
     if (!fsIsReady()) return false;
-    File f = LittleFS.open(path, "w");
+    String tmpPath = String(path) + ".tmp";
+
+    File f = LittleFS.open(tmpPath, "w");
     if (!f) return false;
-    f.print(data);
+
+    const size_t written = f.print(data);
+    f.flush();
     f.close();
+
+    if (written != data.length()) {
+        LittleFS.remove(tmpPath);
+        return false;
+    }
+
+    if (LittleFS.exists(bakPath)) LittleFS.remove(bakPath);
+    if (LittleFS.exists(path)) {
+        if (!LittleFS.rename(path, bakPath)) {
+            LittleFS.remove(tmpPath);
+            return false;
+        }
+    }
+
+    if (!LittleFS.rename(tmpPath, path)) {
+        if (LittleFS.exists(bakPath)) LittleFS.rename(bakPath, path);
+        LittleFS.remove(tmpPath);
+        return false;
+    }
+
+    if (LittleFS.exists(bakPath)) LittleFS.remove(bakPath);
     return true;
 }
 
@@ -143,6 +177,10 @@ static bool macEquals(const String& a, const String& b) {
     String A=a, B=b;
     A.toUpperCase(); B.toUpperCase();
     return A == B;
+}
+
+static const String& meteoTargetMac() {
+    return g_meteoRuntimeMac.length() ? g_meteoRuntimeMac : g_cfg.meteoMac;
 }
 
 static bool isInAllowlist(const String& mac) {
@@ -156,14 +194,21 @@ static void loadAllowlistDefaults() {
 
 static bool loadAllowlistFS() {
     String s;
+    bool restored = false;
     if (!fsReadAll(BLE_PAIRED_PATH, s)) {
-        loadAllowlistDefaults();
-        return false;
+        if (!fsReadAll(BLE_PAIRED_BAK_PATH, s)) {
+            loadAllowlistDefaults();
+            return false;
+        }
+        restored = true;
     }
     DynamicJsonDocument doc(8192);
     if (deserializeJson(doc, s)) {
-        loadAllowlistDefaults();
-        return false;
+        if (!fsReadAll(BLE_PAIRED_BAK_PATH, s) || deserializeJson(doc, s)) {
+            loadAllowlistDefaults();
+            return false;
+        }
+        restored = true;
     }
     g_allow.clear();
     JsonArray arr = doc["devices"].as<JsonArray>();
@@ -178,6 +223,9 @@ static bool loadAllowlistFS() {
         d.role = String(role);
         d.addedAt = (uint32_t)(o["addedAt"] | 0);
         if (d.mac.length()) g_allow.push_back(d);
+    }
+    if (restored) {
+        fsWriteAtomic(BLE_PAIRED_PATH, s, BLE_PAIRED_BAK_PATH);
     }
     return true;
 }
@@ -194,7 +242,7 @@ static bool saveAllowlistFS() {
     }
     String out;
     serializeJson(doc, out);
-    return fsWriteAll(BLE_PAIRED_PATH, out);
+    return fsWriteAtomic(BLE_PAIRED_PATH, out, BLE_PAIRED_BAK_PATH);
 }
 
 static void loadConfigDefaults() {
@@ -203,14 +251,21 @@ static void loadConfigDefaults() {
 
 static bool loadConfigFS() {
     String s;
+    bool restored = false;
     if (!fsReadAll(BLE_CFG_PATH, s)) {
-        loadConfigDefaults();
-        return false;
+        if (!fsReadAll(BLE_CFG_BAK_PATH, s)) {
+            loadConfigDefaults();
+            return false;
+        }
+        restored = true;
     }
     DynamicJsonDocument doc(4096);
     if (deserializeJson(doc, s)) {
-        loadConfigDefaults();
-        return false;
+        if (!fsReadAll(BLE_CFG_BAK_PATH, s) || deserializeJson(doc, s)) {
+            loadConfigDefaults();
+            return false;
+        }
+        restored = true;
     }
 
     g_cfg.enabled = doc["enabled"] | true;
@@ -228,6 +283,9 @@ static bool loadConfigFS() {
     g_cfg.meteoDiscoverIntervalMs = (uint32_t)(doc["meteoDiscoverIntervalMs"] | 10000);
     g_cfg.meteoScanMs = (uint32_t)(doc["meteoScanMs"] | 4000);
     g_cfg.meteoReconnectMs = (uint32_t)(doc["meteoReconnectMs"] | 8000);
+    if (restored) {
+        fsWriteAtomic(BLE_CFG_PATH, s, BLE_CFG_BAK_PATH);
+    }
     return true;
 }
 
@@ -255,7 +313,7 @@ static bool saveConfigFS() {
 
     String out;
     serializeJson(doc, out);
-    return fsWriteAll(BLE_CFG_PATH, out);
+    return fsWriteAtomic(BLE_CFG_PATH, out, BLE_CFG_BAK_PATH);
 }
 
 static void setAck(const String& json) {
@@ -283,11 +341,9 @@ static void meteoScanFinalize() {
         Serial.printf("[BLE] Meteo auto-discovery: found %s (RSSI %d, name=%s)\n",
                       g_scanBestMac.c_str(), g_scanBestRssi, g_scanBestName.c_str());
 
-        // adopt
-        g_cfg.meteoMac = g_scanBestMac;
-
-        // auto-save: config + allowlist
         if (g_cfg.meteoAutoSave) {
+            g_cfg.meteoMac = g_scanBestMac;
+            g_meteoRuntimeMac = "";
             if (!isInAllowlist(g_scanBestMac)) {
                 PairedDevice d;
                 d.mac = g_scanBestMac;
@@ -298,7 +354,11 @@ static void meteoScanFinalize() {
                 saveAllowlistFS();
             }
             saveConfigFS();
+        } else {
+            g_meteoRuntimeMac = g_scanBestMac;
         }
+        g_meteoFailCount = 0;
+        g_meteoForceDiscover = false;
 
         // try connect ASAP
         g_meteoNextActionMs = millis() + 200;
@@ -344,7 +404,7 @@ static MeteoScanCallbacks g_meteoScanCbs;
 static bool meteoStartScanIfNeeded() {
     if (!g_cfg.meteoEnabled) return false;
     if (!g_cfg.meteoAutoDiscover) return false;
-    if (g_cfg.meteoMac.length()) return false; // already set
+    if (!g_meteoForceDiscover && meteoTargetMac().length()) return false; // prefer stored/runtime MAC
     if (g_meteoScanning) return false;
 
     const uint32_t now = millis();
@@ -465,9 +525,29 @@ static void updateBleLed() {
         return;
     }
 
-    const bool connected = (g_server && g_server->getConnectedCount() > 0);
-    if (connected) rgbLedSetMode(RgbLedMode::BLE_CONNECTED);
-    else rgbLedSetMode(RgbLedMode::BLE_IDLE);
+    const bool serverConnected = (g_server && g_server->getConnectedCount() > 0);
+    const bool meteoConnected = (g_meteoClient && g_meteoClient->isConnected());
+    const bool meteoError = g_cfg.meteoEnabled
+        && !meteoConnected
+        && !g_meteoScanning
+        && g_meteoFailCount >= METEO_FAILS_BEFORE_SCAN;
+
+    if (serverConnected || meteoConnected) {
+        rgbLedSetMode(RgbLedMode::BLE_CONNECTED);
+        return;
+    }
+
+    if (g_meteoScanning) {
+        rgbLedSetColor(0, 32, 32); // cyan while scanning
+        return;
+    }
+
+    if (meteoError) {
+        rgbLedSetMode(RgbLedMode::ERROR);
+        return;
+    }
+
+    rgbLedSetMode(RgbLedMode::BLE_IDLE);
 }
 
 // ---------- BLE Server callbacks ----------
@@ -547,6 +627,9 @@ static void meteoOnNotify(NimBLERemoteCharacteristic* ch, uint8_t* data, size_t 
     g_meteoTrend = tr;
     g_meteoFix = true;
     g_meteoLastMs = millis();
+    g_meteoLastFixMs = g_meteoLastMs;
+    g_meteoFailCount = 0;
+    g_meteoForceDiscover = false;
 
     // externí BLE teploměr (konfigurace "Teploměry")
     thermometersBleOnReading("meteo.tempC", (float)g_meteoTempX10 / 10.0f);
@@ -554,7 +637,8 @@ static void meteoOnNotify(NimBLERemoteCharacteristic* ch, uint8_t* data, size_t 
 
 static bool meteoConnectIfNeeded() {
     if (!g_cfg.meteoEnabled) return false;
-    if (!g_cfg.meteoMac.length()) return false;
+    const String& targetMac = meteoTargetMac();
+    if (!targetMac.length()) return false;
 
     const uint32_t now = millis();
     if ((int32_t)(now - g_meteoNextActionMs) < 0) return false;
@@ -573,11 +657,11 @@ static bool meteoConnectIfNeeded() {
     // short timeouts
     g_meteoClient->setConnectTimeout(4);
 
-    Serial.printf("[BLE] Meteo connect -> %s\n", g_cfg.meteoMac.c_str());
+    Serial.printf("[BLE] Meteo connect -> %s\n", targetMac.c_str());
 
     auto tryConnect = [&](uint8_t addrType) -> bool {
         // NimBLE-Arduino 2.x requires address type; most peripherals use public or random static.
-        NimBLEAddress addr(std::string(g_cfg.meteoMac.c_str()), addrType);
+        NimBLEAddress addr(std::string(targetMac.c_str()), addrType);
         return g_meteoClient->connect(addr);
     };
 
@@ -586,15 +670,26 @@ static bool meteoConnectIfNeeded() {
         if (!tryConnect(BLE_ADDR_RANDOM)) {
             Serial.println("[BLE] Meteo connect failed");
             g_meteoNextActionMs = now + g_cfg.meteoReconnectMs;
+            g_meteoFailCount = (uint8_t)min(255, g_meteoFailCount + 1);
+            if (g_cfg.meteoAutoDiscover && g_meteoFailCount >= METEO_FAILS_BEFORE_SCAN) {
+                g_meteoForceDiscover = true;
+                g_meteoNextDiscoverMs = 0;
+            }
             return false;
         }
     }
+    g_meteoFailCount = 0;
 
     NimBLERemoteService* svc = g_meteoClient->getService(UUID_SVC_METEO);
     if (!svc) {
         Serial.println("[BLE] Meteo service not found");
         g_meteoClient->disconnect();
         g_meteoNextActionMs = now + g_cfg.meteoReconnectMs;
+        g_meteoFailCount = (uint8_t)min(255, g_meteoFailCount + 1);
+        if (g_cfg.meteoAutoDiscover && g_meteoFailCount >= METEO_FAILS_BEFORE_SCAN) {
+            g_meteoForceDiscover = true;
+            g_meteoNextDiscoverMs = 0;
+        }
         return false;
     }
 
@@ -603,6 +698,11 @@ static bool meteoConnectIfNeeded() {
         Serial.println("[BLE] Meteo char not found");
         g_meteoClient->disconnect();
         g_meteoNextActionMs = now + g_cfg.meteoReconnectMs;
+        g_meteoFailCount = (uint8_t)min(255, g_meteoFailCount + 1);
+        if (g_cfg.meteoAutoDiscover && g_meteoFailCount >= METEO_FAILS_BEFORE_SCAN) {
+            g_meteoForceDiscover = true;
+            g_meteoNextDiscoverMs = 0;
+        }
         return false;
     }
 
@@ -616,6 +716,10 @@ static bool meteoConnectIfNeeded() {
         if (v.size() >= 6) {
             meteoOnNotify(g_meteoRemoteCh, (uint8_t*)v.data(), v.size(), false);
         }
+    }
+
+    if (!g_meteoLastFixMs) {
+        g_meteoLastFixMs = millis();
     }
 
     g_meteoNextActionMs = now + 15000; // další pokus o akci nejdříve za 15s
@@ -694,10 +798,8 @@ void bleLoop() {
     // pairing window timeout
     if (g_pairingWindow && (int32_t)(now - g_pairingUntilMs) >= 0) {
         g_pairingWindow = false;
-    updateBleLed();
         g_pairingRoleHint = "";
         Serial.println(F("[BLE] Pairing window closed"));
-        updateBleLed();
     }
 
     // periodic status notify (1 Hz)
@@ -714,10 +816,19 @@ void bleLoop() {
 
     if (g_meteoClient && g_meteoClient->isConnected()) {
         // if stale -> mark no fix (does not disconnect)
-        if (g_meteoFix && (now - g_meteoLastMs) > 120000) {
+        if (g_meteoFix && (now - g_meteoLastMs) > METEO_STALE_MS) {
             g_meteoFix = false;
         }
     }
+
+    if (g_cfg.meteoEnabled && g_cfg.meteoAutoDiscover) {
+        if (g_meteoLastFixMs && (now - g_meteoLastFixMs) > METEO_STALE_MS) {
+            g_meteoForceDiscover = true;
+            g_meteoNextDiscoverMs = 0;
+        }
+    }
+
+    updateBleLed();
 }
 
 String bleGetStatusJson() {
@@ -728,18 +839,22 @@ String bleGetStatusJson() {
 
     doc["pairingWindow"] = g_pairingWindow;
     doc["pairingRoleHint"] = g_pairingRoleHint;
-    doc["pairingRemainingSec"] = g_pairingWindow ? (uint32_t)((g_pairingUntilMs - millis())/1000) : 0;
+    int32_t remainingMs = (int32_t)(g_pairingUntilMs - millis());
+    doc["pairingRemainingSec"] = (g_pairingWindow && remainingMs > 0) ? (uint32_t)(remainingMs / 1000) : 0;
 
     doc["meteoEnabled"] = g_cfg.meteoEnabled;
     doc["meteoAutoDiscover"] = g_cfg.meteoAutoDiscover;
     doc["meteoAutoSave"] = g_cfg.meteoAutoSave;
     doc["meteoScanning"] = g_meteoScanning;
     doc["meteoMac"] = g_cfg.meteoMac;
+    doc["meteoActiveMac"] = meteoTargetMac();
+    doc["meteoActiveSource"] = meteoTargetMac().length() ? (g_meteoRuntimeMac.length() ? "runtime" : "config") : "none";
     doc["meteoLastSeenMac"] = g_meteoLastSeenMac;
     doc["meteoLastSeenName"] = g_meteoLastSeenName;
     doc["meteoLastSeenRssi"] = g_meteoLastSeenRssi;
     doc["meteoConnected"] = (g_meteoClient && g_meteoClient->isConnected());
     doc["meteoFix"] = g_meteoFix;
+    doc["meteoFailCount"] = g_meteoFailCount;
 
     if (g_meteoFix) {
         JsonObject m = doc.createNestedObject("meteo");
@@ -799,6 +914,17 @@ bool bleSetConfigJson(const String& json) {
     g_cfg.meteoDiscoverIntervalMs = (uint32_t)(doc["meteoDiscoverIntervalMs"] | g_cfg.meteoDiscoverIntervalMs);
     g_cfg.meteoScanMs = (uint32_t)(doc["meteoScanMs"] | g_cfg.meteoScanMs);
     g_cfg.meteoReconnectMs = (uint32_t)(doc["meteoReconnectMs"] | g_cfg.meteoReconnectMs);
+
+    if (doc.containsKey("meteoMac")) {
+        g_meteoRuntimeMac = "";
+        g_meteoForceDiscover = false;
+        g_meteoFailCount = 0;
+    }
+    if (!g_cfg.meteoEnabled) {
+        g_meteoRuntimeMac = "";
+        g_meteoForceDiscover = false;
+        g_meteoFailCount = 0;
+    }
 
     return saveConfigFS();
 }

@@ -100,7 +100,6 @@ struct AutoStatus {
     uint8_t   triggerInput;    // 1..8, 0 = žádný
     SystemMode triggerMode;    // platí jen při triggered=true
     bool      usingRelayMap;   // true = bez triggeru (použito relayMap)
-    bool      blockedByRules;  // true = Rule engine je povolený (legacy AUTO se neaplikuje)
 };
 
 AutoStatus logicGetAutoStatus();
