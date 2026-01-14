@@ -17,6 +17,7 @@
     btnUseRoleOutdoor: $("btnEqUseRoleOutdoor"),
     btnUseRoleFlow: $("btnEqUseRoleFlow"),
     enabled: $("eqEnabled"),
+    expertMode: $("eqExpertMode"),
 
     outdoorSource: $("eqOutdoorSource"),
     outdoorDallasRow: $("eqOutdoorDallasRow"),
@@ -123,6 +124,8 @@
 
   let lastDash = null;
   let lastStatus = null;
+  let expertModeEnabled = false;
+  const expertModeKey = "ekviterm_expert_mode";
 
   const roleOnlyEls = [
     el.outdoorSource, el.outdoorDallas, el.outdoorMqttPreset, el.outdoorTopic, el.outdoorJsonKey, el.outdoorBle,
@@ -133,11 +136,36 @@
     el.akuBottomSource, el.akuBottomDallas, el.akuBottomMqttPreset, el.akuBottomTopic, el.akuBottomJsonKey, el.akuBottomBle,
   ].filter(Boolean);
 
+  const roleHiddenRows = Array.from(document.querySelectorAll("#page-ekviterm .role-hidden"));
+
   const setRoleOnly = () => {
     roleOnlyEls.forEach((node) => {
       node.disabled = true;
       node.classList.add("readOnly");
     });
+  };
+
+  const setRoleEditable = () => {
+    roleOnlyEls.forEach((node) => {
+      node.disabled = false;
+      node.classList.remove("readOnly");
+    });
+  };
+
+  const applyExpertMode = (enabled) => {
+    expertModeEnabled = !!enabled;
+    if (el.expertMode) el.expertMode.checked = expertModeEnabled;
+    roleHiddenRows.forEach((node) => node.classList.toggle("role-hidden", !expertModeEnabled));
+    if (expertModeEnabled) {
+      setRoleEditable();
+    } else {
+      setRoleOnly();
+    }
+    try {
+      localStorage.setItem(expertModeKey, expertModeEnabled ? "1" : "0");
+    } catch (err) {
+      // ignore storage errors (e.g., private mode)
+    }
   };
 
   const applyTempRole = (role, target) => {
@@ -681,7 +709,7 @@
     // Spadnout na cfg.equitherm je horší než použít aktuální App config.
     cfg = cfg || (App.getConfig?.() || {});
     App.ensureConfigShape?.(cfg);
-    syncRolesToEquitherm(cfg);
+    if (!expertModeEnabled) syncRolesToEquitherm(cfg);
     const e = cfg.equitherm || {};
     el.enabled.checked = !!e.enabled;
 
@@ -858,7 +886,11 @@
 
     updateSourceRows();
     renderRoleList();
-    setRoleOnly();
+    if (expertModeEnabled) {
+      setRoleEditable();
+    } else {
+      setRoleOnly();
+    }
   }
 
   function saveToConfig(cfg) {
@@ -1025,7 +1057,7 @@
     e.refs.night.tout2  = readNumber(el.nightTout2.value, e.refs.night.tout2 ?? 15);
     e.refs.night.tflow2 = readNumber(el.nightTflow2.value, e.refs.night.tflow2 ?? 25);
 
-    syncRolesToEquitherm(cfg);
+    if (!expertModeEnabled) syncRolesToEquitherm(cfg);
   }
 
   function updateValveOptions(dash, cfg, keep) {
@@ -1069,6 +1101,7 @@
     try {
       const dash = await App.apiGetJson("/api/dash");
       lastDash = dash;
+      const allowApply = !App.isDirty?.();
 
       // Pokud už uživatel používá nové MQTT teploměry ("Teploměry"),
       // odebereme z výběru zdrojů ekvitermu legacy TEMP1..TEMP8.
@@ -1121,31 +1154,31 @@
           const res = buildMqttPresetOptions(cfg, outCurIdx, outCurTopic, outCurKey);
           setSelectOptions(el.outdoorMqttPreset, res.options, false);
           el.outdoorMqttPreset.value = res.selectedValue;
-          applyMqttPresetToInputs(res.selectedValue, cfg, el.outdoorTopic, el.outdoorJsonKey);
+          if (allowApply) applyMqttPresetToInputs(res.selectedValue, cfg, el.outdoorTopic, el.outdoorJsonKey);
         }
         if (el.flowMqttPreset) {
           const res = buildMqttPresetOptions(cfg, flowCurIdx, flowCurTopic, flowCurKey);
           setSelectOptions(el.flowMqttPreset, res.options, false);
           el.flowMqttPreset.value = res.selectedValue;
-          applyMqttPresetToInputs(res.selectedValue, cfg, el.flowTopic, el.flowJsonKey);
+          if (allowApply) applyMqttPresetToInputs(res.selectedValue, cfg, el.flowTopic, el.flowJsonKey);
         }
         if (el.akuTopMqttPreset) {
           const res = buildMqttPresetOptions(cfg, akuTopCurIdx, akuTopCurTopic, akuTopCurKey);
           setSelectOptions(el.akuTopMqttPreset, res.options, false);
           el.akuTopMqttPreset.value = res.selectedValue;
-          applyMqttPresetToInputs(res.selectedValue, cfg, el.akuTopTopic, el.akuTopJsonKey);
+          if (allowApply) applyMqttPresetToInputs(res.selectedValue, cfg, el.akuTopTopic, el.akuTopJsonKey);
         }
         if (el.akuMidMqttPreset) {
           const res = buildMqttPresetOptions(cfg, akuMidCurIdx, akuMidCurTopic, akuMidCurKey);
           setSelectOptions(el.akuMidMqttPreset, res.options, false);
           el.akuMidMqttPreset.value = res.selectedValue;
-          applyMqttPresetToInputs(res.selectedValue, cfg, el.akuMidTopic, el.akuMidJsonKey);
+          if (allowApply) applyMqttPresetToInputs(res.selectedValue, cfg, el.akuMidTopic, el.akuMidJsonKey);
         }
         if (el.akuBottomMqttPreset) {
           const res = buildMqttPresetOptions(cfg, akuBottomCurIdx, akuBottomCurTopic, akuBottomCurKey);
           setSelectOptions(el.akuBottomMqttPreset, res.options, false);
           el.akuBottomMqttPreset.value = res.selectedValue;
-          applyMqttPresetToInputs(res.selectedValue, cfg, el.akuBottomTopic, el.akuBottomJsonKey);
+          if (allowApply) applyMqttPresetToInputs(res.selectedValue, cfg, el.akuBottomTopic, el.akuBottomJsonKey);
         }
       }
 
@@ -1229,6 +1262,15 @@
       });
     }
 
+    if (el.expertMode) {
+      el.expertMode.addEventListener("change", () => {
+        applyExpertMode(el.expertMode.checked);
+        if (!expertModeEnabled) {
+          loadFromConfig(App.getConfig());
+        }
+      });
+    }
+
     // MQTT presets (záložka "Teploměry")
     if (el.outdoorMqttPreset) {
       el.outdoorMqttPreset.addEventListener("change", () => {
@@ -1288,6 +1330,14 @@
   App.onConfigLoaded = (cfg) => {
     if (typeof prevOnConfigLoaded === "function") prevOnConfigLoaded(cfg);
     bindEvents();
+    const saved = (() => {
+      try {
+        return localStorage.getItem(expertModeKey);
+      } catch (err) {
+        return null;
+      }
+    })();
+    applyExpertMode(saved === "1");
     loadFromConfig(cfg);
     refreshDash(cfg, true);
     // po prvním renderu layoutu dej šanci layoutu dopočítat velikosti

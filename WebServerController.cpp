@@ -119,10 +119,19 @@ static bool loadFileToString(const char* path, String& out) {
     return true;
 }
 
+static size_t configJsonCapacityForSize(size_t jsonSize) {
+    const size_t minCap = 4096;
+    const size_t maxCap = 32768;
+    size_t cap = (jsonSize * 13) / 10 + 1024;
+    if (cap < minCap) cap = minCap;
+    if (cap > maxCap) cap = maxCap;
+    return cap;
+}
+
 static bool isValidJsonObject(const String& json) {
     // Validace konfigurace – musí to být JSON objekt.
     // Pozor: pro jistotu necháváme větší buffer, aby validní config nebyl odmítnut jen kvůli velikosti.
-    DynamicJsonDocument doc(32768);
+    DynamicJsonDocument doc(configJsonCapacityForSize(json.length()));
     DeserializationError err = deserializeJson(doc, json);
     return (!err) && doc.is<JsonObject>();
 }
@@ -598,11 +607,12 @@ void handleApiConfigPost() {
         return;
     }
 
-    StaticJsonDocument<512> filter;
+    DynamicJsonDocument filter(2048);
     filter["iofunc"] = true;
     filter["equitherm"] = true;
     filter["tuv"] = true;
     filter["dhwRecirc"] = true;
+    filter["akuHeater"] = true;
     filter["system"] = true;
     filter["sensors"] = true;
     filter["schedules"] = true;
@@ -616,10 +626,14 @@ void handleApiConfigPost() {
     filter["inputs"] = true;
     filter["relayMap"] = true;
     filter["modes"] = true;
+    filter["modeNames"] = true;
+    filter["modeDescriptions"] = true;
+    filter["mode_names"] = true;
+    filter["mode_descriptions"] = true;
     filter["autoDefaultOffUnmapped"] = true;
     filter["auto_default_off_unmapped"] = true;
 
-    DynamicJsonDocument doc(32768);
+    DynamicJsonDocument doc(configJsonCapacityForSize(body.length()));
     DeserializationError err = deserializeJson(doc, body, DeserializationOption::Filter(filter));
     if (err) {
         server.send(400, "application/json", "{\"error\":\"invalid json\"}");
