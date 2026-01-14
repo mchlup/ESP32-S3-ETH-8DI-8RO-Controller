@@ -18,6 +18,7 @@ void bleLoop();
 String bleGetStatusJson();
 String bleGetConfigJson();
 bool bleSetConfigJson(const String& json, String* errorCode = nullptr);
+bool bleMeteoRetryNow();
 
 // Párování / správa zařízení
 String bleGetPairedJson();                 // {"devices":[{mac,name,role,addedAt}]}

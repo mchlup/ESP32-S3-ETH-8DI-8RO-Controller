@@ -748,6 +748,15 @@ void handleApiBleStopPairPost() {
     server.send(200, "application/json", "{\"status\":\"ok\"}");
 }
 
+void handleApiBleMeteoRetryPost() {
+    const bool enabled = bleMeteoRetryNow();
+    if (!enabled) {
+        server.send(200, "application/json", "{\"status\":\"ok\",\"meteoEnabled\":false}");
+        return;
+    }
+    server.send(200, "application/json", "{\"status\":\"ok\",\"meteoEnabled\":true}");
+}
+
 void handleApiBleRemovePost() {
     String body = server.arg("plain");
     body.trim();
@@ -1120,6 +1129,8 @@ void webserverInit() {
     server.on("/api/ble/paired", HTTP_GET, handleApiBlePairedGet);
     server.on("/api/ble/pair", HTTP_POST, handleApiBlePairPost);
     server.on("/api/ble/pair/stop", HTTP_POST, handleApiBleStopPairPost);
+    server.on("/api/ble/meteo/retry", HTTP_GET, handleApiBleMeteoRetryPost);
+    server.on("/api/ble/meteo/retry", HTTP_POST, handleApiBleMeteoRetryPost);
     server.on("/api/ble/remove", HTTP_POST, handleApiBleRemovePost);
 
     server.on("/api/mode_ctrl", HTTP_GET, handleApiModeCtrlGet);
