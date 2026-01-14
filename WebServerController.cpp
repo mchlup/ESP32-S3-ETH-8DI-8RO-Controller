@@ -687,7 +687,9 @@ void handleApiBleConfigPost() {
         server.send(400, "application/json", "{\"error\":\"empty body\"}");
         return;
     }
-    if (!bleSetConfigJson(body)) {
+    const bool ok = bleSetConfigJson(body);
+    Serial.printf("[API] BLE config POST len=%u result=%s\n", (unsigned)body.length(), ok ? "ok" : "fail");
+    if (!ok) {
         server.send(500, "application/json", "{\"error\":\"save/apply failed\"}");
         return;
     }
