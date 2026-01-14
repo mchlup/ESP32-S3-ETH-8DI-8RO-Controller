@@ -658,11 +658,11 @@ static void meteoCommitAutoSaveIfPending(const String& connectedMac) {
 }
 
 class MeteoClientCallbacks : public NimBLEClientCallbacks {
-    void onDisconnect(NimBLEClient* pClient) override {
+    void handleDisconnect(NimBLEClient* pClient, int reason) {
         (void)pClient;
         g_meteoFix = false;
         g_meteoRemoteCh = nullptr;
-        g_meteoLastDisconnectReason = -1;
+        g_meteoLastDisconnectReason = reason;
         g_meteoConnectFails = (uint8_t)min(255, g_meteoConnectFails + 1);
         const uint32_t now = millis();
         g_meteoNextActionMs = now + 250;
@@ -672,6 +672,14 @@ class MeteoClientCallbacks : public NimBLEClientCallbacks {
         }
         updateBleLed();
     }
+
+public:
+    // NimBLE-Arduino API changed across versions:
+    // - older: onDisconnect(NimBLEClient*)
+    // - newer: onDisconnect(NimBLEClient*, int reason)
+    // Implement both (without 'override') so it compiles and works with either.
+    void onDisconnect(NimBLEClient* pClient) { handleDisconnect(pClient, -1); }
+    void onDisconnect(NimBLEClient* pClient, int reason) { handleDisconnect(pClient, reason); }
 };
 
 static MeteoClientCallbacks g_meteoClientCbs;
