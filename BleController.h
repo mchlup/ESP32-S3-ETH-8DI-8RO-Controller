@@ -17,7 +17,7 @@ void bleLoop();
 // JSON pro WebUI/API
 String bleGetStatusJson();
 String bleGetConfigJson();
-bool bleSetConfigJson(const String& json);
+bool bleSetConfigJson(const String& json, String* errorCode = nullptr);
 
 // Párování / správa zařízení
 String bleGetPairedJson();                 // {"devices":[{mac,name,role,addedAt}]}

@@ -7,10 +7,20 @@ static SemaphoreHandle_t s_fsMutex = nullptr;
 
 bool fsInit() {
     if (s_fsReady) return true;
+    bool formatted = false;
     if (!LittleFS.begin()) {
-        s_fsReady = false;
-        Serial.println(F("[FS] LittleFS mount failed."));
-        return false;
+        Serial.println(F("[FS] LittleFS mount failed, trying format..."));
+        if (!LittleFS.format()) {
+            s_fsReady = false;
+            Serial.println(F("[FS] LittleFS format failed."));
+            return false;
+        }
+        formatted = true;
+        if (!LittleFS.begin()) {
+            s_fsReady = false;
+            Serial.println(F("[FS] LittleFS mount failed after format."));
+            return false;
+        }
     }
     if (!s_fsMutex) {
         s_fsMutex = xSemaphoreCreateMutex();
@@ -19,6 +29,9 @@ bool fsInit() {
         }
     }
     s_fsReady = true;
+    if (formatted) {
+        Serial.println(F("[FS] LittleFS formatted."));
+    }
     Serial.println(F("[FS] LittleFS mounted."));
     return true;
 }
