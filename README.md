@@ -105,6 +105,18 @@ ESP-HeatAndDomesticController
 
 ---
 
+## 📡 BLE meteostanice (ověření adresy)
+
+Pokud používáš ESP32-C3 meteostanici, ověř si, že v S3 zařízení ukládáš správnou BLE adresu:
+
+1. V serial logu meteostanice hledej řádek ve tvaru `[BLE] Address: AA:BB:CC:DD:EE:FF`.
+2. V S3 (config `meteoMac`) musí být **stejná** adresa.
+3. Pokud se liší, v S3 použij **Rescan/Pair** nebo vymaž uložený `meteoMac` a nech zařízení znovu objevit.
+
+Tím se vyhneš situaci, kdy je uložená Wi-Fi MAC nebo stará BLE adresa a připojení pak vždy selže.
+
+---
+
 ## 🌡️ Ekvitermní regulace
 
 * Aktivní pouze v režimu **AUTO**

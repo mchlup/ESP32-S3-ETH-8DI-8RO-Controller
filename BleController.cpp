@@ -61,6 +61,8 @@ struct BleConfig {
     uint32_t meteoDiscoverIntervalMs = 10000; // jak často opakovat scan, když se nedaří nic najít
     uint32_t meteoScanMs = 4000;     // délka scan okna
     uint32_t meteoReconnectMs = 8000;
+    int meteoMaxConnectFails = 3;    // 0 = unlimited
+    uint32_t meteoCooldownMs = 300000;
     uint32_t schemaVersion = 1;
 };
 
@@ -112,18 +114,24 @@ static String g_meteoLastSeenMac = "";
 static String g_meteoLastSeenName = "";
 static int g_meteoLastSeenRssi = -999;
 static int g_meteoLastSeenAddrType = -1;
+static uint32_t g_meteoLastSeenMs = 0;
 static String g_meteoRuntimeMac = "";
 static int g_meteoRuntimeAddrType = -1;
 static uint32_t g_meteoLastFixMs = 0;
 static uint8_t g_meteoFailCount = 0;
 static uint8_t g_meteoConnectFails = 0;
 static bool g_meteoDiscoverRequested = false;
+static bool g_meteoRefreshOnlyRequested = false;
+static bool g_meteoRefreshOnlyActive = false;
+static String g_meteoRefreshTargetMac = "";
 static bool g_meteoConnecting = false;
 static uint32_t g_meteoLastConnectAttemptMs = 0;
 static int g_meteoLastDisconnectReason = -1;
 static bool g_meteoAutoSavePending = false;
 static String g_meteoAutoSaveMac = "";
 static String g_meteoAutoSaveName = "";
+static uint32_t g_meteoSuspendUntilMs = 0;
+static uint32_t g_meteoLastSuspendLogMs = 0;
 
 // scan best candidate
 static String g_scanBestMac = "";
@@ -134,6 +142,8 @@ static int g_scanBestAddrType = -1;
 static const uint8_t METEO_FAILS_BEFORE_SCAN = 3;
 static const uint32_t METEO_STALE_MS = 180000;
 static const uint32_t METEO_MIN_CONNECT_INTERVAL_MS = 2500;
+static const uint32_t METEO_SUSPEND_LOG_INTERVAL_MS = 5000;
+static const char* METEO_NAME_PREFIX = "ESP-Meteostanice";
 
 // ---------- Helpers ----------
 static String nowIso() {
@@ -177,6 +187,41 @@ static bool meteoDiscoverAllowed() {
 
 static bool meteoAutoDiscoverOnFailAllowed() {
     return g_cfg.meteoAutoDiscover && !g_cfg.meteoMac.length();
+}
+
+static bool meteoCooldownActive(uint32_t now) {
+    return g_meteoSuspendUntilMs != 0 && (int32_t)(now - g_meteoSuspendUntilMs) < 0;
+}
+
+static void meteoResetRetryState(const char* reason) {
+    g_meteoSuspendUntilMs = 0;
+    g_meteoLastSuspendLogMs = 0;
+    g_meteoConnectFails = 0;
+    g_meteoFailCount = 0;
+    g_meteoNextActionMs = 0;
+    g_meteoLastConnectAttemptMs = 0;
+    g_meteoDiscoverRequested = false;
+    g_meteoRefreshOnlyRequested = false;
+    g_meteoRefreshOnlyActive = false;
+    g_meteoRefreshTargetMac = "";
+    if (reason && strlen(reason)) {
+        Serial.printf("[BLE] Meteo retry state reset (%s)\n", reason);
+    }
+}
+
+static bool meteoSuspendIfNeeded(uint32_t now, uint8_t failCount) {
+    if (g_cfg.meteoMaxConnectFails <= 0) return false;
+    if (failCount < g_cfg.meteoMaxConnectFails) return false;
+    g_meteoSuspendUntilMs = now + g_cfg.meteoCooldownMs;
+    g_meteoNextActionMs = g_meteoSuspendUntilMs;
+    g_meteoDiscoverRequested = false;
+    g_meteoRefreshOnlyRequested = false;
+    g_meteoRefreshOnlyActive = false;
+    g_meteoRefreshTargetMac = "";
+    Serial.printf("[BLE] Meteo suspended for %lus after %u fails\n",
+                  (unsigned long)(g_cfg.meteoCooldownMs / 1000UL),
+                  failCount);
+    return true;
 }
 
 static bool isInAllowlist(const String& mac) {
@@ -280,6 +325,8 @@ static bool loadConfigFS() {
     g_cfg.meteoDiscoverIntervalMs = (uint32_t)(doc["meteoDiscoverIntervalMs"] | 10000);
     g_cfg.meteoScanMs = (uint32_t)(doc["meteoScanMs"] | 4000);
     g_cfg.meteoReconnectMs = (uint32_t)(doc["meteoReconnectMs"] | 8000);
+    g_cfg.meteoMaxConnectFails = (int)(doc["meteoMaxConnectFails"] | 3);
+    g_cfg.meteoCooldownMs = (uint32_t)(doc["meteoCooldownMs"] | 300000);
     g_cfg.schemaVersion = (uint32_t)(doc["schemaVersion"] | 1);
     if (restored) {
         fsWriteAtomicKeepBak(BLE_CFG_PATH, s, BLE_CFG_BAK_PATH, true);
@@ -308,6 +355,8 @@ static bool saveConfigFS() {
     doc["meteoDiscoverIntervalMs"] = g_cfg.meteoDiscoverIntervalMs;
     doc["meteoScanMs"] = g_cfg.meteoScanMs;
     doc["meteoReconnectMs"] = g_cfg.meteoReconnectMs;
+    doc["meteoMaxConnectFails"] = g_cfg.meteoMaxConnectFails;
+    doc["meteoCooldownMs"] = g_cfg.meteoCooldownMs;
     doc["schemaVersion"] = g_cfg.schemaVersion;
 
     String out;
@@ -344,35 +393,56 @@ static void meteoScanFinalize() {
         g_meteoLastSeenName = g_scanBestName;
         g_meteoLastSeenRssi = g_scanBestRssi;
         g_meteoLastSeenAddrType = g_scanBestAddrType;
+        g_meteoLastSeenMs = millis();
 
-        Serial.printf("[BLE] Meteo auto-discovery: found %s (RSSI %d, name=%s)\n",
+        const char* scanMode = g_meteoRefreshOnlyActive ? "refresh" : "auto-discovery";
+        Serial.printf("[BLE] Meteo %s: found %s (RSSI %d, name=%s)\n",
+                      scanMode,
                       g_scanBestMac.c_str(), g_scanBestRssi, g_scanBestName.c_str());
-        Serial.printf("[BLE] Meteo auto-discovery: addrType=%s\n", addrTypeToStr(g_scanBestAddrType));
+        Serial.printf("[BLE] Meteo %s: addrType=%s\n", scanMode, addrTypeToStr(g_scanBestAddrType));
 
-        g_meteoRuntimeMac = g_scanBestMac;
-        g_meteoRuntimeAddrType = g_scanBestAddrType;
-        if (g_cfg.meteoAutoSave) {
-            g_meteoAutoSavePending = true;
-            g_meteoAutoSaveMac = g_scanBestMac;
-            g_meteoAutoSaveName = g_scanBestName;
-        } else {
-            g_meteoAutoSavePending = false;
-            g_meteoAutoSaveMac = "";
-            g_meteoAutoSaveName = "";
+        if (!g_meteoRefreshOnlyActive) {
+            g_meteoRuntimeMac = g_scanBestMac;
+            g_meteoRuntimeAddrType = g_scanBestAddrType;
+            if (g_cfg.meteoAutoSave) {
+                g_meteoAutoSavePending = true;
+                g_meteoAutoSaveMac = g_scanBestMac;
+                g_meteoAutoSaveName = g_scanBestName;
+            } else {
+                g_meteoAutoSavePending = false;
+                g_meteoAutoSaveMac = "";
+                g_meteoAutoSaveName = "";
+            }
+            g_meteoFailCount = 0;
+            g_meteoConnectFails = 0;
         }
-        g_meteoFailCount = 0;
-        g_meteoConnectFails = 0;
 
         // try connect ASAP
         g_meteoNextActionMs = millis() + 200;
         g_meteoNextDiscoverMs = 0;
     } else {
-        Serial.println(F("[BLE] Meteo auto-discovery: nothing found"));
-        const uint32_t now = millis();
-        g_meteoNextDiscoverMs = now + (g_cfg.meteoDiscoverIntervalMs ? g_cfg.meteoDiscoverIntervalMs : 10000);
+        if (g_meteoRefreshOnlyActive) {
+            const uint32_t now = millis();
+            g_meteoConnectFails = (uint8_t)min(255, g_meteoConnectFails + 1);
+            const bool suspended = meteoSuspendIfNeeded(now, g_meteoConnectFails);
+            if (!suspended) {
+                g_meteoNextActionMs = now + g_cfg.meteoReconnectMs;
+            }
+            Serial.printf("[BLE] Meteo refresh: target %s not seen (fails=%u, next=%lums)\n",
+                          g_meteoRefreshTargetMac.c_str(),
+                          g_meteoConnectFails,
+                          (unsigned long)g_meteoNextActionMs);
+        } else {
+            Serial.println(F("[BLE] Meteo auto-discovery: nothing found"));
+            const uint32_t now = millis();
+            g_meteoNextDiscoverMs = now + (g_cfg.meteoDiscoverIntervalMs ? g_cfg.meteoDiscoverIntervalMs : 10000);
+        }
     }
 
     g_meteoDiscoverRequested = false;
+    g_meteoRefreshOnlyRequested = false;
+    g_meteoRefreshOnlyActive = false;
+    g_meteoRefreshTargetMac = "";
 
     // reset best candidate
     g_scanBestMac = "";
@@ -388,13 +458,20 @@ public:
     void onResult(const NimBLEAdvertisedDevice* dev) override {
         if (!dev) return;
 
-        if (!dev->isAdvertisingService(UUID_SVC_METEO)) return;
+        const bool matchesService = dev->isAdvertisingService(UUID_SVC_METEO);
+        const String name = String(dev->getName().c_str());
+        const bool matchesName = name.startsWith(METEO_NAME_PREFIX);
+        if (!matchesService && !matchesName) return;
 
         const int rssi = dev->getRSSI();
+        const String mac = macToString(dev->getAddress());
+        if (g_meteoRefreshOnlyActive && !macEquals(mac, g_meteoRefreshTargetMac)) {
+            return;
+        }
         if (rssi > g_scanBestRssi) {
             g_scanBestRssi = rssi;
-            g_scanBestMac = macToString(dev->getAddress());
-            g_scanBestName = String(dev->getName().c_str());
+            g_scanBestMac = mac;
+            g_scanBestName = name;
             g_scanBestAddrType = dev->getAddressType();
         }
     }
@@ -410,15 +487,19 @@ static MeteoScanCallbacks g_meteoScanCbs;
 
 static bool meteoStartScanIfNeeded() {
     if (!g_cfg.meteoEnabled) return false;
-    if (!meteoDiscoverAllowed()) return false;
-    if (!g_meteoDiscoverRequested && meteoTargetMac().length()) return false; // prefer stored/runtime MAC
+    const bool refreshOnly = g_meteoRefreshOnlyRequested;
+    if (!refreshOnly && !meteoDiscoverAllowed()) return false;
+    if (!refreshOnly && !g_meteoDiscoverRequested && meteoTargetMac().length()) return false; // prefer stored/runtime MAC
     if (g_meteoScanning) return false;
 
     const uint32_t now = millis();
+    if (meteoCooldownActive(now)) return false;
     if (g_meteoNextDiscoverMs && (int32_t)(now - g_meteoNextDiscoverMs) < 0) return false;
 
     NimBLEScan* scan = NimBLEDevice::getScan();
     if (!scan) return false;
+
+    if (refreshOnly && !meteoTargetMac().length()) return false;
 
     g_scanBestMac = "";
     g_scanBestName = "";
@@ -432,23 +513,29 @@ static bool meteoStartScanIfNeeded() {
     scan->setInterval(97);
     scan->setWindow(37);
 
-    const uint32_t requestMs = g_cfg.meteoScanMs;
+    const uint32_t requestMs = refreshOnly ? min(g_cfg.meteoScanMs, 3000UL) : g_cfg.meteoScanMs;
     uint32_t durSec = (requestMs + 999) / 1000;
     if (durSec < 2) durSec = 2;
     if (durSec > 30) durSec = 30;
 
     const bool scanActive = scan->isScanning() || g_meteoScanning;
-    Serial.printf("[BLE] Meteo auto-discovery: scan request %lums, used %lus, active=%s\n",
-                  (unsigned long)requestMs, (unsigned long)durSec, scanActive ? "yes" : "no");
+    const char* scanMode = refreshOnly ? "refresh" : "auto-discovery";
+    Serial.printf("[BLE] Meteo %s: scan request %lums, used %lus, active=%s\n",
+                  scanMode, (unsigned long)requestMs, (unsigned long)durSec, scanActive ? "yes" : "no");
     if (scanActive) {
         g_meteoScanning = true;
         return false;
     }
 
+    g_meteoRefreshOnlyActive = refreshOnly;
+    g_meteoRefreshTargetMac = normalizeMac(meteoTargetMac());
+
     g_meteoScanning = scan->start(durSec, false, true);
     if (!g_meteoScanning) {
         // failed to start scan -> retry later
         g_meteoNextDiscoverMs = now + (g_cfg.meteoDiscoverIntervalMs ? g_cfg.meteoDiscoverIntervalMs : 10000);
+        g_meteoRefreshOnlyActive = false;
+        g_meteoRefreshTargetMac = "";
         return false;
     }
 
@@ -680,6 +767,7 @@ static void meteoOnNotify(NimBLERemoteCharacteristic* ch, uint8_t* data, size_t 
     g_meteoLastFixMs = g_meteoLastMs;
     g_meteoFailCount = 0;
     g_meteoConnectFails = 0;
+    g_meteoSuspendUntilMs = 0;
     g_meteoDiscoverRequested = false;
 
     // externí BLE teploměr (konfigurace "Teploměry")
@@ -718,7 +806,8 @@ class MeteoClientCallbacks : public NimBLEClientCallbacks {
         g_meteoConnectFails = (uint8_t)min(255, g_meteoConnectFails + 1);
         const uint32_t now = millis();
         g_meteoNextActionMs = now + 250;
-        if (meteoAutoDiscoverOnFailAllowed() && g_meteoConnectFails >= METEO_FAILS_BEFORE_SCAN) {
+        const bool suspended = meteoSuspendIfNeeded(now, g_meteoConnectFails);
+        if (!suspended && meteoAutoDiscoverOnFailAllowed() && g_meteoConnectFails >= METEO_FAILS_BEFORE_SCAN) {
             g_meteoDiscoverRequested = true;
             g_meteoNextDiscoverMs = 0;
         }
@@ -749,16 +838,52 @@ static void logMeteoFailure(const char* step, uint8_t failCount, uint32_t nextAc
                   willDiscover ? "yes" : "no");
 }
 
+static void logMeteoConnectDiagnostics(uint32_t now, int usedAddrType) {
+    const bool deviceSeen = g_meteoLastSeenMs > 0;
+    const uint32_t ageMs = deviceSeen ? (uint32_t)(now - g_meteoLastSeenMs) : 0;
+    Serial.printf("[BLE] Meteo connect failed: deviceSeenRecently=%s ageMs=%lums lastRssi=%d lastAddrType=%s usedAddrType=%s lastReason=%d\n",
+                  deviceSeen ? "yes" : "no",
+                  (unsigned long)ageMs,
+                  g_meteoLastSeenRssi,
+                  addrTypeToStr(g_meteoLastSeenAddrType),
+                  addrTypeToStr(usedAddrType),
+                  g_meteoLastDisconnectReason);
+}
+
 static bool meteoConnectIfNeeded() {
     if (!g_cfg.meteoEnabled) return false;
     const String& targetMac = meteoTargetMac();
     if (!targetMac.length()) return false;
 
     const uint32_t now = millis();
+    if (meteoCooldownActive(now)) {
+        if (!g_meteoLastSuspendLogMs || (now - g_meteoLastSuspendLogMs) > METEO_SUSPEND_LOG_INTERVAL_MS) {
+            g_meteoLastSuspendLogMs = now;
+            const uint32_t remainingMs = (uint32_t)max<int32_t>(0, (int32_t)(g_meteoSuspendUntilMs - now));
+            Serial.printf("[BLE] Meteo suspended (remaining %lums)\n", (unsigned long)remainingMs);
+        }
+        return false;
+    }
     if ((int32_t)(now - g_meteoNextActionMs) < 0) return false;
     if (g_meteoLastConnectAttemptMs && (now - g_meteoLastConnectAttemptMs) < METEO_MIN_CONNECT_INTERVAL_MS) return false;
 
     if (g_meteoClient && g_meteoClient->isConnected()) return true;
+
+    const bool needsRefresh = (g_meteoLastSeenAddrType != BLE_ADDR_PUBLIC
+        && g_meteoLastSeenAddrType != BLE_ADDR_RANDOM)
+        || g_meteoLastSeenRssi == -999;
+    if (needsRefresh) {
+        if (!g_meteoRefreshOnlyRequested) {
+            g_meteoRefreshOnlyRequested = true;
+            g_meteoDiscoverRequested = true;
+            g_meteoNextDiscoverMs = 0;
+            Serial.printf("[BLE] Meteo refresh needed for %s (addrType=%s rssi=%d)\n",
+                          targetMac.c_str(),
+                          addrTypeToStr(g_meteoLastSeenAddrType),
+                          g_meteoLastSeenRssi);
+        }
+        return false;
+    }
 
     NimBLEScan* scan = NimBLEDevice::getScan();
     const bool scanRunning = (scan && scan->isScanning()) || g_meteoScanning;
@@ -825,13 +950,17 @@ static bool meteoConnectIfNeeded() {
 
     if (!connected) {
         g_meteoConnectFails = (uint8_t)min(255, g_meteoConnectFails + 1);
-        const bool willDiscover = meteoAutoDiscoverOnFailAllowed() && g_meteoConnectFails >= METEO_FAILS_BEFORE_SCAN;
-        g_meteoNextActionMs = now + g_cfg.meteoReconnectMs;
-        if (willDiscover) {
-            g_meteoDiscoverRequested = true;
-            g_meteoNextDiscoverMs = 0;
+        const bool suspended = meteoSuspendIfNeeded(now, g_meteoConnectFails);
+        const bool willDiscover = !suspended && meteoAutoDiscoverOnFailAllowed() && g_meteoConnectFails >= METEO_FAILS_BEFORE_SCAN;
+        if (!suspended) {
+            g_meteoNextActionMs = now + g_cfg.meteoReconnectMs;
+            if (willDiscover) {
+                g_meteoDiscoverRequested = true;
+                g_meteoNextDiscoverMs = 0;
+            }
         }
         logMeteoFailure("connect failed", g_meteoConnectFails, g_meteoNextActionMs, willDiscover);
+        logMeteoConnectDiagnostics(now, preferredType);
         g_meteoConnecting = false;
         g_meteoAutoSavePending = false;
         g_meteoAutoSaveMac = "";
@@ -839,6 +968,7 @@ static bool meteoConnectIfNeeded() {
         return false;
     }
     g_meteoConnectFails = 0;
+    g_meteoSuspendUntilMs = 0;
     if (connectedType >= 0) {
         g_meteoLastSeenAddrType = connectedType;
         if (g_meteoRuntimeMac.length()) g_meteoRuntimeAddrType = connectedType;
@@ -849,8 +979,9 @@ static bool meteoConnectIfNeeded() {
         g_meteoClient->disconnect();
         g_meteoNextActionMs = now + g_cfg.meteoReconnectMs;
         g_meteoFailCount = (uint8_t)min(255, g_meteoFailCount + 1);
-        const bool willDiscover = meteoAutoDiscoverOnFailAllowed() && g_meteoFailCount >= METEO_FAILS_BEFORE_SCAN;
-        if (willDiscover) {
+        const bool suspended = meteoSuspendIfNeeded(now, g_meteoFailCount);
+        const bool willDiscover = !suspended && meteoAutoDiscoverOnFailAllowed() && g_meteoFailCount >= METEO_FAILS_BEFORE_SCAN;
+        if (!suspended && willDiscover) {
             g_meteoDiscoverRequested = true;
             g_meteoNextDiscoverMs = 0;
         }
@@ -867,8 +998,9 @@ static bool meteoConnectIfNeeded() {
         g_meteoClient->disconnect();
         g_meteoNextActionMs = now + g_cfg.meteoReconnectMs;
         g_meteoFailCount = (uint8_t)min(255, g_meteoFailCount + 1);
-        const bool willDiscover = meteoAutoDiscoverOnFailAllowed() && g_meteoFailCount >= METEO_FAILS_BEFORE_SCAN;
-        if (willDiscover) {
+        const bool suspended = meteoSuspendIfNeeded(now, g_meteoFailCount);
+        const bool willDiscover = !suspended && meteoAutoDiscoverOnFailAllowed() && g_meteoFailCount >= METEO_FAILS_BEFORE_SCAN;
+        if (!suspended && willDiscover) {
             g_meteoDiscoverRequested = true;
             g_meteoNextDiscoverMs = 0;
         }
@@ -885,8 +1017,9 @@ static bool meteoConnectIfNeeded() {
             g_meteoClient->disconnect();
             g_meteoNextActionMs = now + g_cfg.meteoReconnectMs;
             g_meteoFailCount = (uint8_t)min(255, g_meteoFailCount + 1);
-            const bool willDiscover = meteoAutoDiscoverOnFailAllowed() && g_meteoFailCount >= METEO_FAILS_BEFORE_SCAN;
-            if (willDiscover) {
+            const bool suspended = meteoSuspendIfNeeded(now, g_meteoFailCount);
+            const bool willDiscover = !suspended && meteoAutoDiscoverOnFailAllowed() && g_meteoFailCount >= METEO_FAILS_BEFORE_SCAN;
+            if (!suspended && willDiscover) {
                 g_meteoDiscoverRequested = true;
                 g_meteoNextDiscoverMs = 0;
             }
@@ -1049,15 +1182,19 @@ String bleGetStatusJson() {
     meteoObj["lastSeenName"] = g_meteoLastSeenName;
     meteoObj["lastSeenRssi"] = g_meteoLastSeenRssi;
     meteoObj["lastRssi"] = g_meteoLastSeenRssi;
+    meteoObj["lastSeenMs"] = g_meteoLastSeenMs;
     meteoObj["connected"] = (g_meteoClient && g_meteoClient->isConnected());
     meteoObj["fix"] = g_meteoFix;
     meteoObj["failCount"] = g_meteoFailCount;
     meteoObj["connectFails"] = g_meteoConnectFails;
     meteoObj["lastAttemptMs"] = g_meteoLastConnectAttemptMs;
     meteoObj["lastDisconnectReason"] = g_meteoLastDisconnectReason;
+    meteoObj["suspendUntilMs"] = g_meteoSuspendUntilMs;
 
     if (!g_cfg.meteoEnabled) {
         meteoObj["state"] = "disabled";
+    } else if (meteoCooldownActive(millis())) {
+        meteoObj["state"] = "suspended";
     } else if (g_meteoClient && g_meteoClient->isConnected()) {
         meteoObj["state"] = "connected";
     } else if (g_meteoConnecting) {
@@ -1103,6 +1240,8 @@ String bleGetConfigJson() {
     doc["meteoDiscoverIntervalMs"] = g_cfg.meteoDiscoverIntervalMs;
     doc["meteoScanMs"] = g_cfg.meteoScanMs;
     doc["meteoReconnectMs"] = g_cfg.meteoReconnectMs;
+    doc["meteoMaxConnectFails"] = g_cfg.meteoMaxConnectFails;
+    doc["meteoCooldownMs"] = g_cfg.meteoCooldownMs;
     doc["schemaVersion"] = g_cfg.schemaVersion;
 
     String out;
@@ -1132,6 +1271,7 @@ bool bleSetConfigJson(const String& json, String* errorCode) {
     const bool prevEnabled = g_cfg.enabled;
     const bool prevAdvertise = g_cfg.advertise;
     const String prevName = g_cfg.deviceName;
+    const bool prevMeteoEnabled = g_cfg.meteoEnabled;
 
     g_cfg.enabled = doc["enabled"] | g_cfg.enabled;
     g_cfg.deviceName = String((const char*)(doc["deviceName"] | g_cfg.deviceName.c_str()));
@@ -1148,6 +1288,8 @@ bool bleSetConfigJson(const String& json, String* errorCode) {
     g_cfg.meteoDiscoverIntervalMs = (uint32_t)(doc["meteoDiscoverIntervalMs"] | g_cfg.meteoDiscoverIntervalMs);
     g_cfg.meteoScanMs = (uint32_t)(doc["meteoScanMs"] | g_cfg.meteoScanMs);
     g_cfg.meteoReconnectMs = (uint32_t)(doc["meteoReconnectMs"] | g_cfg.meteoReconnectMs);
+    g_cfg.meteoMaxConnectFails = (int)(doc["meteoMaxConnectFails"] | g_cfg.meteoMaxConnectFails);
+    g_cfg.meteoCooldownMs = (uint32_t)(doc["meteoCooldownMs"] | g_cfg.meteoCooldownMs);
     g_cfg.schemaVersion = (uint32_t)(doc["schemaVersion"] | g_cfg.schemaVersion);
 
     if (prevName != g_cfg.deviceName && g_bleInitialized) {
@@ -1161,6 +1303,12 @@ bool bleSetConfigJson(const String& json, String* errorCode) {
         g_meteoFailCount = 0;
         g_meteoConnectFails = 0;
         g_meteoAutoSavePending = false;
+        g_meteoLastSeenMac = "";
+        g_meteoLastSeenName = "";
+        g_meteoLastSeenRssi = -999;
+        g_meteoLastSeenAddrType = -1;
+        g_meteoLastSeenMs = 0;
+        meteoResetRetryState("meteoMac changed");
     }
     if (!g_cfg.meteoEnabled) {
         g_meteoRuntimeMac = "";
@@ -1169,6 +1317,10 @@ bool bleSetConfigJson(const String& json, String* errorCode) {
         g_meteoFailCount = 0;
         g_meteoConnectFails = 0;
         g_meteoAutoSavePending = false;
+        meteoResetRetryState("meteo disabled");
+    }
+    if (doc.containsKey("meteoEnabled") && g_cfg.meteoEnabled && !prevMeteoEnabled) {
+        meteoResetRetryState("meteoEnabled");
     }
 
     if ((doc["meteoDiscoverNow"] | false) && g_cfg.meteoEnabled) {
@@ -1222,6 +1374,12 @@ bool bleSetConfigJson(const String& json, String* errorCode) {
     }
 
     return true;
+}
+
+bool bleMeteoRetryNow() {
+    meteoResetRetryState("manual retry");
+    g_meteoNextActionMs = millis();
+    return g_cfg.meteoEnabled;
 }
 
 String bleGetPairedJson() {
