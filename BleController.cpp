@@ -111,7 +111,9 @@ static uint32_t g_meteoNextDiscoverMs = 0;
 static String g_meteoLastSeenMac = "";
 static String g_meteoLastSeenName = "";
 static int g_meteoLastSeenRssi = -999;
+static int g_meteoLastSeenAddrType = -1;
 static String g_meteoRuntimeMac = "";
+static int g_meteoRuntimeAddrType = -1;
 static uint32_t g_meteoLastFixMs = 0;
 static uint8_t g_meteoFailCount = 0;
 static uint8_t g_meteoConnectFails = 0;
@@ -127,6 +129,7 @@ static String g_meteoAutoSaveName = "";
 static String g_scanBestMac = "";
 static String g_scanBestName = "";
 static int g_scanBestRssi = -999;
+static int g_scanBestAddrType = -1;
 
 static const uint8_t METEO_FAILS_BEFORE_SCAN = 3;
 static const uint32_t METEO_STALE_MS = 180000;
@@ -253,7 +256,7 @@ static bool loadConfigFS() {
         }
         restored = true;
     }
-    DynamicJsonDocument doc(4096);
+    DynamicJsonDocument doc(8192);
     if (deserializeJson(doc, s)) {
         if (!fsReadAll(BLE_CFG_BAK_PATH, s) || deserializeJson(doc, s)) {
             loadConfigDefaults();
@@ -285,7 +288,7 @@ static bool loadConfigFS() {
 }
 
 static bool saveConfigFS() {
-    DynamicJsonDocument doc(4096);
+    DynamicJsonDocument doc(8192);
     doc["enabled"] = g_cfg.enabled;
     doc["deviceName"] = g_cfg.deviceName;
     doc["advertise"] = g_cfg.advertise;
@@ -324,6 +327,12 @@ static String macToString(const NimBLEAddress& a) {
     return String(a.toString().c_str());
 }
 
+static const char* addrTypeToStr(int addrType) {
+    if (addrType == BLE_ADDR_PUBLIC) return "public";
+    if (addrType == BLE_ADDR_RANDOM) return "random";
+    return "unknown";
+}
+
 
 // ---------- Meteo auto-discovery (scan) ----------
 static void meteoScanFinalize() {
@@ -334,11 +343,14 @@ static void meteoScanFinalize() {
         g_meteoLastSeenMac = g_scanBestMac;
         g_meteoLastSeenName = g_scanBestName;
         g_meteoLastSeenRssi = g_scanBestRssi;
+        g_meteoLastSeenAddrType = g_scanBestAddrType;
 
         Serial.printf("[BLE] Meteo auto-discovery: found %s (RSSI %d, name=%s)\n",
                       g_scanBestMac.c_str(), g_scanBestRssi, g_scanBestName.c_str());
+        Serial.printf("[BLE] Meteo auto-discovery: addrType=%s\n", addrTypeToStr(g_scanBestAddrType));
 
         g_meteoRuntimeMac = g_scanBestMac;
+        g_meteoRuntimeAddrType = g_scanBestAddrType;
         if (g_cfg.meteoAutoSave) {
             g_meteoAutoSavePending = true;
             g_meteoAutoSaveMac = g_scanBestMac;
@@ -365,6 +377,7 @@ static void meteoScanFinalize() {
     g_scanBestMac = "";
     g_scanBestName = "";
     g_scanBestRssi = -999;
+    g_scanBestAddrType = -1;
 }
 
 // NimBLE-Arduino 2.x: NimBLEAdvertisedDeviceCallbacks replaced by NimBLEScanCallbacks,
@@ -381,6 +394,7 @@ public:
             g_scanBestRssi = rssi;
             g_scanBestMac = macToString(dev->getAddress());
             g_scanBestName = String(dev->getName().c_str());
+            g_scanBestAddrType = dev->getAddressType();
         }
     }
 
@@ -408,6 +422,7 @@ static bool meteoStartScanIfNeeded() {
     g_scanBestMac = "";
     g_scanBestName = "";
     g_scanBestRssi = -999;
+    g_scanBestAddrType = -1;
 
     // callbacks-only scan (do not store results to save RAM)
     scan->setMaxResults(0);
@@ -541,6 +556,33 @@ static void updateBleLed() {
     }
 
     rgbLedSetMode(RgbLedMode::BLE_IDLE);
+}
+
+static void applyBleSecurityFromConfig(bool log = true) {
+    if (g_cfg.securityMode != "off") {
+        // bonding always for "bonding" and "passkey"
+        NimBLEDevice::setSecurityAuth(true, g_cfg.securityMode == "passkey", true); // bonding, MITM, SC
+        NimBLEDevice::setSecurityIOCap(g_cfg.securityMode == "passkey" ? BLE_HS_IO_DISPLAY_ONLY : BLE_HS_IO_NO_INPUT_OUTPUT);
+        NimBLEDevice::setSecurityPasskey(g_cfg.passkey);
+        NimBLEDevice::setSecurityInitKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);
+        NimBLEDevice::setSecurityRespKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);
+
+        if (log) {
+            Serial.printf("[BLE] Security: %s (passkey=%lu)\n", g_cfg.securityMode.c_str(), (unsigned long)g_cfg.passkey);
+        }
+    } else {
+        NimBLEDevice::setSecurityAuth(false, false, false);
+        NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);
+        if (log) {
+            Serial.println(F("[BLE] Security: off"));
+        }
+    }
+}
+
+static void applyBleSecurityRelaxedForMeteo() {
+    NimBLEDevice::setSecurityAuth(false, false, false);
+    NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);
+    Serial.println(F("[BLE] Meteo security: relaxed (no MITM/SC)"));
 }
 
 // ---------- BLE Server callbacks ----------
@@ -706,36 +748,59 @@ static bool meteoConnectIfNeeded() {
     g_meteoClient->setClientCallbacks(&g_meteoClientCbs, false);
 
     // short timeouts
-    g_meteoClient->setConnectTimeout(4);
+    g_meteoClient->setConnectTimeout(10);
 
-    Serial.printf("[BLE] Meteo connect -> %s\n", targetMac.c_str());
     g_meteoConnecting = true;
     g_meteoLastConnectAttemptMs = now;
 
+    const int preferredType = g_meteoRuntimeMac.length() ? g_meteoRuntimeAddrType : g_meteoLastSeenAddrType;
+    const bool relaxSecurity = (g_cfg.securityMode != "off");
+    if (relaxSecurity) applyBleSecurityRelaxedForMeteo();
+
     auto tryConnect = [&](uint8_t addrType) -> bool {
         // NimBLE-Arduino 2.x requires address type; most peripherals use public or random static.
+        Serial.printf("[BLE] Meteo connect -> %s (addrType=%s)\n", targetMac.c_str(), addrTypeToStr(addrType));
         NimBLEAddress addr(std::string(targetMac.c_str()), addrType);
         return g_meteoClient->connect(addr);
     };
 
-    if (!tryConnect(BLE_ADDR_PUBLIC)) {
-        // Retry as random static (common for many ESP/Nordic peripherals)
-        if (!tryConnect(BLE_ADDR_RANDOM)) {
-            Serial.println("[BLE] Meteo connect failed");
-            g_meteoNextActionMs = now + g_cfg.meteoReconnectMs;
-            g_meteoConnectFails = (uint8_t)min(255, g_meteoConnectFails + 1);
-            if (meteoAutoDiscoverOnFailAllowed() && g_meteoConnectFails >= METEO_FAILS_BEFORE_SCAN) {
-                g_meteoForceDiscover = true;
-                g_meteoNextDiscoverMs = 0;
-            }
-            g_meteoConnecting = false;
-            g_meteoAutoSavePending = false;
-            g_meteoAutoSaveMac = "";
-            g_meteoAutoSaveName = "";
-            return false;
+    bool connected = false;
+    int connectedType = -1;
+
+    if (preferredType == BLE_ADDR_PUBLIC || preferredType == BLE_ADDR_RANDOM) {
+        connected = tryConnect(static_cast<uint8_t>(preferredType));
+        if (connected) connectedType = preferredType;
+    }
+    if (!connected && preferredType != BLE_ADDR_PUBLIC) {
+        connected = tryConnect(BLE_ADDR_PUBLIC);
+        if (connected) connectedType = BLE_ADDR_PUBLIC;
+    }
+    if (!connected && preferredType != BLE_ADDR_RANDOM) {
+        connected = tryConnect(BLE_ADDR_RANDOM);
+        if (connected) connectedType = BLE_ADDR_RANDOM;
+    }
+
+    if (relaxSecurity) applyBleSecurityFromConfig(false);
+
+    if (!connected) {
+        Serial.println("[BLE] Meteo connect failed");
+        g_meteoNextActionMs = now + g_cfg.meteoReconnectMs;
+        g_meteoConnectFails = (uint8_t)min(255, g_meteoConnectFails + 1);
+        if (meteoAutoDiscoverOnFailAllowed() && g_meteoConnectFails >= METEO_FAILS_BEFORE_SCAN) {
+            g_meteoForceDiscover = true;
+            g_meteoNextDiscoverMs = 0;
         }
+        g_meteoConnecting = false;
+        g_meteoAutoSavePending = false;
+        g_meteoAutoSaveMac = "";
+        g_meteoAutoSaveName = "";
+        return false;
     }
     g_meteoConnectFails = 0;
+    if (connectedType >= 0) {
+        g_meteoLastSeenAddrType = connectedType;
+        if (g_meteoRuntimeMac.length()) g_meteoRuntimeAddrType = connectedType;
+    }
 
     NimBLERemoteService* svc = g_meteoClient->getService(UUID_SVC_METEO);
     if (!svc) {
@@ -831,18 +896,7 @@ void bleInit() {
     NimBLEDevice::setOwnAddrType(BLE_OWN_ADDR_PUBLIC);
 
     // Security setup
-    if (g_cfg.securityMode != "off") {
-        // bonding always for "bonding" and "passkey"
-        NimBLEDevice::setSecurityAuth(true, g_cfg.securityMode == "passkey", true); // bonding, MITM, SC
-        NimBLEDevice::setSecurityIOCap(g_cfg.securityMode == "passkey" ? BLE_HS_IO_DISPLAY_ONLY : BLE_HS_IO_NO_INPUT_OUTPUT);
-        NimBLEDevice::setSecurityPasskey(g_cfg.passkey);
-        NimBLEDevice::setSecurityInitKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);
-        NimBLEDevice::setSecurityRespKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);
-
-        Serial.printf("[BLE] Security: %s (passkey=%lu)\n", g_cfg.securityMode.c_str(), (unsigned long)g_cfg.passkey);
-    } else {
-        Serial.println(F("[BLE] Security: off"));
-    }
+    applyBleSecurityFromConfig(true);
 
     // Server
     g_server = NimBLEDevice::createServer();
@@ -1012,8 +1066,20 @@ String bleGetConfigJson() {
 }
 
 bool bleSetConfigJson(const String& json) {
-    DynamicJsonDocument doc(4096);
-    if (deserializeJson(doc, json)) return false;
+    size_t capacity = json.length();
+    capacity = capacity + (capacity / 5) + 512;
+    if (capacity < 2048) capacity = 2048;
+    if (capacity > 16384) capacity = 16384;
+    DynamicJsonDocument doc(capacity);
+    DeserializationError err = deserializeJson(doc, json);
+    if (err) {
+        Serial.printf("[BLE] Config JSON parse failed: %s (len=%u)\n", err.c_str(), (unsigned)json.length());
+        const String preview = json.substring(0, 200);
+        if (preview.length()) {
+            Serial.printf("[BLE] Config JSON preview: %s\n", preview.c_str());
+        }
+        return false;
+    }
 
     const bool prevEnabled = g_cfg.enabled;
     const bool prevAdvertise = g_cfg.advertise;
@@ -1042,6 +1108,7 @@ bool bleSetConfigJson(const String& json) {
 
     if (doc.containsKey("meteoMac")) {
         g_meteoRuntimeMac = "";
+        g_meteoRuntimeAddrType = -1;
         g_meteoForceDiscover = false;
         g_meteoFailCount = 0;
         g_meteoConnectFails = 0;
@@ -1049,13 +1116,19 @@ bool bleSetConfigJson(const String& json) {
     }
     if (!g_cfg.meteoEnabled) {
         g_meteoRuntimeMac = "";
+        g_meteoRuntimeAddrType = -1;
         g_meteoForceDiscover = false;
         g_meteoFailCount = 0;
         g_meteoConnectFails = 0;
         g_meteoAutoSavePending = false;
     }
 
-    if (!saveConfigFS()) return false;
+    if (!saveConfigFS()) {
+        Serial.printf("[BLE] saveConfigFS failed (fsReady=%s, exists=%s)\n",
+                      fsIsReady() ? "yes" : "no",
+                      LittleFS.exists(BLE_CFG_PATH) ? "yes" : "no");
+        return false;
+    }
 
     if (g_cfg.enabled && !g_bleInitialized) {
         bleInit();

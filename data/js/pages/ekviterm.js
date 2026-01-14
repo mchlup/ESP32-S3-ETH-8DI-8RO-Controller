@@ -287,6 +287,10 @@
     return n;
   }
 
+  function warnMissingElement(id) {
+    console.warn(`[Ekviterm] Chybí DOM prvek #${id}; přeskočeno.`);
+  }
+
   function fmtAge(ms) {
     if (!Number.isFinite(ms)) return "--";
     if (ms < 1000) return `${Math.round(ms)} ms`;
@@ -854,8 +858,16 @@
     el.noFlowDetectEnabled.checked = (typeof e.noFlowDetectEnabled === "boolean") ? e.noFlowDetectEnabled : true;
     el.noFlowTimeoutS.value = Math.round(((typeof e.noFlowTimeoutMs === "number") ? e.noFlowTimeoutMs : 180000) / 1000);
     el.noFlowTestPeriodS.value = Math.round(((typeof e.noFlowTestPeriodMs === "number") ? e.noFlowTestPeriodMs : 180000) / 1000);
-    el.akuSupportEnabled.checked = (typeof e.akuSupportEnabled === "boolean") ? e.akuSupportEnabled : true;
-    el.akuNoSupportBehavior.value = e.akuNoSupportBehavior || "close";
+    if (el.akuSupportEnabled) {
+      el.akuSupportEnabled.checked = (typeof e.akuSupportEnabled === "boolean") ? e.akuSupportEnabled : true;
+    } else {
+      warnMissingElement("eqAkuSupportEnabled");
+    }
+    if (el.akuNoSupportBehavior) {
+      el.akuNoSupportBehavior.value = e.akuNoSupportBehavior || "close";
+    } else {
+      warnMissingElement("eqAkuNoSupportBehavior");
+    }
     el.akuMinTopCDay.value = (typeof e.akuMinTopC_day === "number") ? e.akuMinTopC_day : 42;
     el.akuMinTopCNight.value = (typeof e.akuMinTopC_night === "number") ? e.akuMinTopC_night : 45;
     el.akuMinDeltaToTargetCDay.value = (typeof e.akuMinDeltaToTargetC_day === "number") ? e.akuMinDeltaToTargetC_day : 2;
@@ -1024,8 +1036,18 @@
     e.noFlowDetectEnabled = !!el.noFlowDetectEnabled.checked;
     e.noFlowTimeoutMs = Math.max(10000, readNumber(el.noFlowTimeoutS.value, (e.noFlowTimeoutMs ?? 180000) / 1000) * 1000);
     e.noFlowTestPeriodMs = Math.max(10000, readNumber(el.noFlowTestPeriodS.value, (e.noFlowTestPeriodMs ?? 180000) / 1000) * 1000);
-    e.akuSupportEnabled = !!el.akuSupportEnabled.checked;
-    e.akuNoSupportBehavior = String(el.akuNoSupportBehavior.value || "close");
+    if (el.akuSupportEnabled) {
+      e.akuSupportEnabled = !!el.akuSupportEnabled.checked;
+    } else {
+      warnMissingElement("eqAkuSupportEnabled");
+      e.akuSupportEnabled = (typeof e.akuSupportEnabled === "boolean") ? e.akuSupportEnabled : true;
+    }
+    if (el.akuNoSupportBehavior) {
+      e.akuNoSupportBehavior = String(el.akuNoSupportBehavior.value || "close");
+    } else {
+      warnMissingElement("eqAkuNoSupportBehavior");
+      e.akuNoSupportBehavior = String(e.akuNoSupportBehavior || "close");
+    }
     e.akuMinTopC_day = readNumber(el.akuMinTopCDay.value, e.akuMinTopC_day ?? 42);
     e.akuMinTopC_night = readNumber(el.akuMinTopCNight.value, e.akuMinTopC_night ?? 45);
     e.akuMinDeltaToTargetC_day = readNumber(el.akuMinDeltaToTargetCDay.value, e.akuMinDeltaToTargetC_day ?? 2);

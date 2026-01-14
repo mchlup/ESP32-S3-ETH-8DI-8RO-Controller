@@ -117,9 +117,11 @@ void setup() {
         digitalWrite(FORCE_LOW_PIN, LOW);
     #endif
 
-    // Relé + vstupy + logika
+    // Relé + vstupy + FS
     relayInit();
     inputInit();
+    fsInit();           // LittleFS
+    webserverLoadConfigFromFS();
 
     inputSetCallback([](InputId id, bool state){
         Serial.printf("Zmena vstupu %d -> %s\n", id + 1, state ? "ACTIVE" : "INACTIVE");
@@ -130,8 +132,6 @@ void setup() {
     rgbLedInit();       // RGB LED (pokud používáš)
     thermometersInit(); // MQTT/BLE teploměry (konfigurace)
     openthermInit();    // OpenTherm (boiler) - zatím stub/placeholder
-    fsInit();           // LittleFS
-    webserverLoadConfigFromFS();
     networkInit();
     DallasController::begin();
     DallasController::configureGpio(0, TEMP_INPUT_AUTO);

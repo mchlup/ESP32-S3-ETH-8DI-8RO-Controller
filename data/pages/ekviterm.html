@@ -320,6 +320,20 @@
             <div class="row2 mt8">
               <div><label class="mini">No-flow test (s)</label><input id="eqNoFlowTestPeriodS" type="number" step="1"></div>
             </div>
+            <div class="row2 mt8">
+              <div>
+                <label class="mini">AKU podpora</label>
+                <label class="switch"><input id="eqAkuSupportEnabled" type="checkbox"><span class="slider"></span></label>
+              </div>
+              <div>
+                <label class="mini">Chování bez podpory</label>
+                <select id="eqAkuNoSupportBehavior">
+                  <option value="close">Zavřít ventil</option>
+                  <option value="hold">Držet polohu</option>
+                  <option value="open">Otevřít ventil</option>
+                </select>
+              </div>
+            </div>
           </div>
         </div>
 
