@@ -48,7 +48,27 @@ static void applyAllConfig(const String& json){
 
 // ===== Pomocné funkce pro FS =====
 
+static void sendWebUiFallback() {
+    const String html =
+        "<!doctype html><html lang=\"cs\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        "<title>WebUI není ve FS</title>"
+        "<style>"
+        "body{font-family:Arial,Helvetica,sans-serif;background:#0f172a;color:#e2e8f0;padding:24px;}"
+        "a{color:#38bdf8;text-decoration:none}a:hover{text-decoration:underline}"
+        ".card{max-width:720px;margin:0 auto;background:#111827;border:1px solid #1f2937;"
+        "border-radius:12px;padding:20px}"
+        ".muted{color:#94a3b8}"
+        "</style></head><body><div class=\"card\">"
+        "<h1>WebUI není ve FS</h1>"
+        "<p class=\"muted\">Nahraj LittleFS image s UI soubory (např. index.html a /js/app.js).</p>"
+        "<p><a href=\"/api/fs/list\">/api/fs/list</a> &middot; <a href=\"/api/status\">/api/status</a></p>"
+        "</div></body></html>";
+    server.send(200, "text/html", html);
+}
+
 static bool handleFileRead(const String& path) {
+    if (!fsIsReady()) return false;
     String p = path;
     if (p.endsWith("/")) p += "index.html";
 
@@ -687,10 +707,16 @@ void handleApiBleConfigPost() {
         server.send(400, "application/json", "{\"error\":\"empty body\"}");
         return;
     }
-    const bool ok = bleSetConfigJson(body);
-    Serial.printf("[API] BLE config POST len=%u result=%s\n", (unsigned)body.length(), ok ? "ok" : "fail");
+    String errCode;
+    const bool ok = bleSetConfigJson(body, &errCode);
+    Serial.printf("[API] BLE config POST len=%u result=%s err=%s\n",
+                  (unsigned)body.length(), ok ? "ok" : "fail",
+                  errCode.length() ? errCode.c_str() : "-");
     if (!ok) {
-        server.send(500, "application/json", "{\"error\":\"save/apply failed\"}");
+        if (!errCode.length()) errCode = "save/apply_failed";
+        String out = String("{\"error\":\"") + errCode + "\"}";
+        const int status = (errCode == "bad_json") ? 400 : 500;
+        server.send(status, "application/json", out);
         return;
     }
     server.send(200, "application/json", "{\"status\":\"ok\"}");
@@ -1043,6 +1069,10 @@ void webserverInit() {
     }
 
     server.on("/", HTTP_GET, []() {
+        if (!fsIsReady() || !LittleFS.exists("/index.html")) {
+            sendWebUiFallback();
+            return;
+        }
         if (!handleFileRead("/index.html")) {
             server.send(404, "text/plain", "index.html not found");
         }

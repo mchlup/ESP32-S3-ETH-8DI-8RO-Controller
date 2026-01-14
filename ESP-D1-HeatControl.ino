@@ -15,6 +15,7 @@
 #include "FsController.h"
 #include "ThermometerController.h"
 #include "OpenThermController.h"
+#include <LittleFS.h>
 
 String inputBuffer;
 
@@ -120,7 +121,20 @@ void setup() {
     // Relé + vstupy + FS
     relayInit();
     inputInit();
-    fsInit();           // LittleFS
+    const bool fsOk = fsInit();           // LittleFS
+    Serial.printf("[FS] init result: %s\n", fsOk ? "ok" : "fail");
+    if (fsOk) {
+        const bool indexOk = LittleFS.exists("/index.html");
+        const bool appOk = LittleFS.exists("/js/app.js");
+        Serial.printf("[FS] /index.html exists: %s\n", indexOk ? "yes" : "no");
+        Serial.printf("[FS] /js/app.js exists: %s\n", appOk ? "yes" : "no");
+        if (!indexOk) {
+            Serial.println(F("[FS] WebUI není ve FS - nahraj LittleFS data (UI)."));
+            Serial.println(F("[FS] Tip: otevři /api/fs/list pro kontrolu souborů."));
+        }
+    } else {
+        Serial.println(F("[FS] LittleFS není připravený, WebUI nebude dostupné."));
+    }
     webserverLoadConfigFromFS();
 
     inputSetCallback([](InputId id, bool state){

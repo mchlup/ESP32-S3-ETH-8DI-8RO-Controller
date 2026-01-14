@@ -560,8 +560,9 @@ static void updateBleLed() {
 
 static void applyBleSecurityFromConfig(bool log = true) {
     if (g_cfg.securityMode != "off") {
-        // bonding always for "bonding" and "passkey"
-        NimBLEDevice::setSecurityAuth(true, g_cfg.securityMode == "passkey", true); // bonding, MITM, SC
+        // bonding always for "bonding" and "passkey", SC only when passkey/MITM is used
+        const bool usePasskey = (g_cfg.securityMode == "passkey");
+        NimBLEDevice::setSecurityAuth(true, usePasskey, usePasskey); // bonding, MITM, SC
         NimBLEDevice::setSecurityIOCap(g_cfg.securityMode == "passkey" ? BLE_HS_IO_DISPLAY_ONLY : BLE_HS_IO_NO_INPUT_OUTPUT);
         NimBLEDevice::setSecurityPasskey(g_cfg.passkey);
         NimBLEDevice::setSecurityInitKey(BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID);
@@ -722,6 +723,11 @@ public:
     // Implement both (without 'override') so it compiles and works with either.
     void onDisconnect(NimBLEClient* pClient) { handleDisconnect(pClient, -1); }
     void onDisconnect(NimBLEClient* pClient, int reason) { handleDisconnect(pClient, reason); }
+    void onConnectFail(NimBLEClient* pClient, int reason) {
+        (void)pClient;
+        g_meteoLastDisconnectReason = reason;
+        Serial.printf("[BLE] Meteo connect failed (reason=%d)\n", reason);
+    }
 };
 
 static MeteoClientCallbacks g_meteoClientCbs;
@@ -1065,7 +1071,9 @@ String bleGetConfigJson() {
     return out;
 }
 
-bool bleSetConfigJson(const String& json) {
+bool bleSetConfigJson(const String& json, String* errorCode) {
+    if (errorCode) *errorCode = "";
+    Serial.printf("[BLE] Config JSON len=%u\n", (unsigned)json.length());
     size_t capacity = json.length();
     capacity = capacity + (capacity / 5) + 512;
     if (capacity < 2048) capacity = 2048;
@@ -1078,6 +1086,7 @@ bool bleSetConfigJson(const String& json) {
         if (preview.length()) {
             Serial.printf("[BLE] Config JSON preview: %s\n", preview.c_str());
         }
+        if (errorCode) *errorCode = "bad_json";
         return false;
     }
 
@@ -1127,6 +1136,7 @@ bool bleSetConfigJson(const String& json) {
         Serial.printf("[BLE] saveConfigFS failed (fsReady=%s, exists=%s)\n",
                       fsIsReady() ? "yes" : "no",
                       LittleFS.exists(BLE_CFG_PATH) ? "yes" : "no");
+        if (errorCode) *errorCode = "fs_write_failed";
         return false;
     }
 
