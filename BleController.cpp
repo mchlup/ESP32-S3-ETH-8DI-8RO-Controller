@@ -156,11 +156,19 @@ static String nowIso() {
 
 static bool fsReadAll(const char* path, String& out) {
     if (!fsIsReady()) return false;
-    if (!LittleFS.exists(path)) return false;
+    fsLock();
+    if (!LittleFS.exists(path)) {
+        fsUnlock();
+        return false;
+    }
     File f = LittleFS.open(path, "r");
-    if (!f) return false;
+    if (!f) {
+        fsUnlock();
+        return false;
+    }
     out = f.readString();
     f.close();
+    fsUnlock();
     out.trim();
     return out.length() > 0;
 }
@@ -1330,9 +1338,12 @@ bool bleSetConfigJson(const String& json, String* errorCode) {
     }
 
     if (!saveConfigFS()) {
+        fsLock();
+        const bool hasCfg = LittleFS.exists(BLE_CFG_PATH);
+        fsUnlock();
         Serial.printf("[BLE] saveConfigFS failed (fsReady=%s, exists=%s)\n",
                       fsIsReady() ? "yes" : "no",
-                      LittleFS.exists(BLE_CFG_PATH) ? "yes" : "no");
+                      hasCfg ? "yes" : "no");
         if (errorCode) *errorCode = "fs_write_failed";
         return false;
     }

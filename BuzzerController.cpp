@@ -276,8 +276,12 @@ void buzzerUpdateFromJson(const JsonObject& cfg) {
 
 bool buzzerSaveToFS() {
   if (!fsIsReady()) return false;
+  fsLock();
   File f = LittleFS.open(CFG_PATH, "w");
-  if (!f) return false;
+  if (!f) {
+    fsUnlock();
+    return false;
+  }
   StaticJsonDocument<512> doc;
   doc["enabled"] = g_cfg.enabled;
   doc["activeHigh"] = g_cfg.activeHigh;
@@ -293,17 +297,26 @@ bool buzzerSaveToFS() {
   ev["error"] = g_cfg.ev_error;
   serializeJson(doc, f);
   f.close();
+  fsUnlock();
   return true;
 }
 
 bool buzzerLoadFromFS() {
   if (!fsIsReady()) return false;
-  if (!LittleFS.exists(CFG_PATH)) return false;
+  fsLock();
+  if (!LittleFS.exists(CFG_PATH)) {
+    fsUnlock();
+    return false;
+  }
   File f = LittleFS.open(CFG_PATH, "r");
-  if (!f) return false;
+  if (!f) {
+    fsUnlock();
+    return false;
+  }
   StaticJsonDocument<768> doc;
   DeserializationError err = deserializeJson(doc, f);
   f.close();
+  fsUnlock();
   if (err) return false;
   JsonObject cfg = doc.as<JsonObject>();
   buzzerUpdateFromJson(cfg);

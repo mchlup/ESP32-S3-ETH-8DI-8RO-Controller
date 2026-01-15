@@ -124,8 +124,10 @@ void setup() {
     const bool fsOk = fsInit();           // LittleFS
     Serial.printf("[FS] init result: %s\n", fsOk ? "ok" : "fail");
     if (fsOk) {
+        fsLock();
         const bool indexOk = LittleFS.exists("/index.html");
         const bool appOk = LittleFS.exists("/js/app.js");
+        fsUnlock();
         Serial.printf("[FS] /index.html exists: %s\n", indexOk ? "yes" : "no");
         Serial.printf("[FS] /js/app.js exists: %s\n", appOk ? "yes" : "no");
         if (!indexOk) {

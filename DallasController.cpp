@@ -6,14 +6,12 @@
 // Ensure 1-Wire line has a pull-up even if the external resistor is missing.
 // (External ~4.7k to 3V3 is still strongly recommended for reliability.)
 #include <driver/gpio.h>
+#include <memory>
+#include <new>
 
-// IMPORTANT (ESP32-S3 / IDF5+):
-// OneWire32 allocates RMT TX+RX channels in its constructor.
-// Keeping one instance per GPIO quickly exhausts available channels
-// (and conflicts with other RMT users like RGB, IR, etc.).
-// To prevent "no free tx channels" and subsequent crashes, we create
-// OneWire32 instances only transiently (one at a time) and destroy them
-// immediately after the operation.
+// NOTE:
+// For runtime stability we keep persistent OneWire32 instances per GPIO.
+// This avoids repeated new/delete and heap/RMT churn in the fast path.
 
 namespace {
 
@@ -40,6 +38,7 @@ struct InternalDallas {
 };
 
 InternalDallas g_bus[GPIO_MAX + 1];
+std::unique_ptr<OneWire32> s_oneWire[GPIO_MAX + 1];
 
 // Global scheduler: keep OneWire/RMT usage strictly sequential (1 GPIO at a time)
 static uint8_t s_rrGpio = 0;
@@ -54,6 +53,14 @@ static inline void ensureDallasPullup(uint8_t gpio) {
     // Internal pull-up helps in short runs / diagnostics, but is too weak for long cables.
     // We keep it enabled as a safety net.
     gpio_set_pull_mode((gpio_num_t)gpio, GPIO_PULLUP_ONLY);
+}
+
+static OneWire32* getOneWireBus(uint8_t gpio) {
+    if (!gpioSupportsDallas(gpio)) return nullptr;
+    if (!s_oneWire[gpio]) {
+        s_oneWire[gpio].reset(new (std::nothrow) OneWire32(gpio));
+    }
+    return s_oneWire[gpio].get();
 }
 
 static void clearBus(uint8_t gpio) {
@@ -76,13 +83,11 @@ static void invalidateTemps(uint8_t gpio) {
 static bool probeAndDiscover(uint8_t gpio) {
     ensureDallasPullup(gpio);
 
-    // transient OneWire32 instance (allocates/free RMT channels)
-    OneWire32* ow = new OneWire32(gpio);
+    OneWire32* ow = getOneWireBus(gpio);
     if (!ow) return false;
 
     // reset() == false usually means "no presence" (no sensor), not a hard error.
     if (!ow->reset()) {
-        delete ow;
         g_bus[gpio].devices.clear();
         g_bus[gpio].status = TEMP_STATUS_NO_SENSOR;
         return true;
@@ -90,8 +95,6 @@ static bool probeAndDiscover(uint8_t gpio) {
 
     uint64_t addrs[MAX_DEVICES_PER_GPIO] = {0};
     uint8_t found = ow->search(addrs, MAX_DEVICES_PER_GPIO);
-
-    delete ow;
 
     g_bus[gpio].devices.clear();
     if (found == 0) {
@@ -140,7 +143,7 @@ static bool startConversion(uint8_t gpio) {
     }
 
     ensureDallasPullup(gpio);
-    OneWire32* ow = new OneWire32(gpio);
+    OneWire32* ow = getOneWireBus(gpio);
     if (!ow) {
         g_bus[gpio].status = TEMP_STATUS_ERROR;
         invalidateTemps(gpio);
@@ -148,7 +151,6 @@ static bool startConversion(uint8_t gpio) {
     }
 
     if (!ow->reset()) {
-        delete ow;
         g_bus[gpio].status = TEMP_STATUS_NO_SENSOR;
         g_bus[gpio].devices.clear(); // drop stale ROMs after disconnect
         return false;
@@ -157,8 +159,6 @@ static bool startConversion(uint8_t gpio) {
     // Skip ROM + Convert T
     ow->write(0xCC);
     ow->write(0x44);
-
-    delete ow;
 
     g_bus[gpio].converting = true;
     g_bus[gpio].convertStartMs = millis();
@@ -172,7 +172,7 @@ static void readTemperatures(uint8_t gpio) {
     }
 
     ensureDallasPullup(gpio);
-    OneWire32* ow = new OneWire32(gpio);
+    OneWire32* ow = getOneWireBus(gpio);
     if (!ow) {
         g_bus[gpio].status = TEMP_STATUS_ERROR;
         invalidateTemps(gpio);
@@ -193,8 +193,6 @@ static void readTemperatures(uint8_t gpio) {
             dev.temperature = NAN; // IMPORTANT: prevent stale tempC in JSON
         }
     }
-
-    delete ow;
 
     g_bus[gpio].lastReadMs = millis();
     g_bus[gpio].status = anyOk ? TEMP_STATUS_OK : TEMP_STATUS_ERROR;
