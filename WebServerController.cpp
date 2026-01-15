@@ -33,6 +33,8 @@ static uint32_t g_rebootAtMs    = 0;
 // Globální JSON konfigurace (popisy + mapování relé + režimy)
 static String g_configJson;
 static bool g_configLoaded = false;
+static DynamicJsonDocument g_dashDoc(32768);
+static DynamicJsonDocument g_statusDoc(12288);
 
 static void applyAllConfig(const String& json){
     networkApplyConfig(json);
@@ -82,10 +84,17 @@ static bool handleFileRead(const String& path) {
     else if (p.endsWith(".svg")) contentType = "image/svg+xml";
     else if (p.endsWith(".ico")) contentType = "image/x-icon";
 
-    if (!LittleFS.exists(p)) return false;
+    fsLock();
+    if (!LittleFS.exists(p)) {
+        fsUnlock();
+        return false;
+    }
 
     File f = LittleFS.open(p, "r");
-    if (!f) return false;
+    if (!f) {
+        fsUnlock();
+        return false;
+    }
 
     // UI soubory nechceme cachovat – typicky řeší "změny se neprojevily".
     // (index.html / app.js / styles.css / případně json configy)
@@ -100,6 +109,7 @@ static bool handleFileRead(const String& path) {
 
     server.streamFile(f, contentType);
     f.close();
+    fsUnlock();
     return true;
 }
 
@@ -108,12 +118,22 @@ static bool handleFileUploadWrite() {
     if (up.status == UPLOAD_FILE_START) {
         String filename = up.filename;
         if (!filename.startsWith("/")) filename = "/" + filename;
+        fsLock();
         uploadFile = LittleFS.open(filename, "w");
+        fsUnlock();
         if (!uploadFile) return false;
     } else if (up.status == UPLOAD_FILE_WRITE) {
-        if (uploadFile) uploadFile.write(up.buf, up.currentSize);
+        if (uploadFile) {
+            fsLock();
+            uploadFile.write(up.buf, up.currentSize);
+            fsUnlock();
+        }
     } else if (up.status == UPLOAD_FILE_END) {
-        if (uploadFile) uploadFile.close();
+        if (uploadFile) {
+            fsLock();
+            uploadFile.close();
+            fsUnlock();
+        }
     }
     return true;
 }
@@ -121,8 +141,12 @@ static bool handleFileUploadWrite() {
 // ===== Konfigurace (config.json) =====
 
 static bool loadFileToString(const char* path, String& out) {
+    fsLock();
     File f = LittleFS.open(path, "r");
-    if (!f) return false;
+    if (!f) {
+        fsUnlock();
+        return false;
+    }
 
     const size_t sz = (size_t)f.size();
     out = "";
@@ -136,6 +160,7 @@ static bool loadFileToString(const char* path, String& out) {
     }
 
     f.close();
+    fsUnlock();
     return true;
 }
 
@@ -161,7 +186,10 @@ static void loadConfigFromFS() {
     const char* bakPath = "/config.json.bak";
     bool restoredFromBak = false;
 
-    if (!LittleFS.exists(cfgPath)) {
+    fsLock();
+    const bool hasCfg = LittleFS.exists(cfgPath);
+    fsUnlock();
+    if (!hasCfg) {
         g_configJson = "{}";
         Serial.println(F("[CFG] No config.json, using {}"));
         applyAllConfig(g_configJson);
@@ -182,7 +210,10 @@ static void loadConfigFromFS() {
     // Pokud je config poškozený, zkusíme obnovu ze zálohy.
     if (!isValidJsonObject(cfg)) {
         Serial.println(F("[CFG] config.json invalid, trying .bak"));
-        if (LittleFS.exists(bakPath)) {
+        fsLock();
+        const bool hasBak = LittleFS.exists(bakPath);
+        fsUnlock();
+        if (hasBak) {
             String bak;
             if (loadFileToString(bakPath, bak)) {
                 bak.trim();
@@ -240,7 +271,8 @@ static void loadConfigFromFS() {
 
 // ===== API dash (Dashboard V2) =====
 static void handleApiDash() {
-    DynamicJsonDocument doc(32768);
+    DynamicJsonDocument& doc = g_dashDoc;
+    doc.clear();
 
     JsonArray temps = doc.createNestedArray("temps");
     JsonArray tempsValid = doc.createNestedArray("tempsValid");
@@ -355,7 +387,8 @@ static bool saveConfigToFS() {
 
 void handleApiStatus() {
     // Stabilní status přes ArduinoJson (bez ručního skládání Stringů)
-    DynamicJsonDocument doc(12288);
+    DynamicJsonDocument& doc = g_statusDoc;
+    doc.clear();
 
     // --- mode/control ---
     doc["systemMode"]  = logicModeToString(logicGetMode());
@@ -922,8 +955,10 @@ void handleApiFsList() {
         server.send(500, "application/json", "{\"error\":\"fs not mounted\"}");
         return;
     }
+    fsLock();
     File root = LittleFS.open("/");
     if (!root) {
+        fsUnlock();
         server.send(500, "application/json", "{\"error\":\"fs open failed\"}");
         return;
     }
@@ -941,6 +976,8 @@ void handleApiFsList() {
         // pokud je FS větší a dojdeme na limit, raději vrať částečný výpis než spadnout
         if (doc.memoryUsage() > 1900) break;
     }
+    root.close();
+    fsUnlock();
 
     String out;
     serializeJson(arr, out);
@@ -955,15 +992,19 @@ void handleApiFsDelete() {
     String path = server.arg("path");
     if (!path.startsWith("/")) path = "/" + path;
 
+    fsLock();
     if (!LittleFS.exists(path)) {
+        fsUnlock();
         server.send(404, "application/json", "{\"error\":\"not found\"}");
         return;
     }
 
     if (!LittleFS.remove(path)) {
+        fsUnlock();
         server.send(500, "application/json", "{\"error\":\"remove failed\"}");
         return;
     }
+    fsUnlock();
 
     server.send(200, "application/json", "{\"status\":\"ok\"}");
 }
@@ -1078,7 +1119,14 @@ void webserverInit() {
     }
 
     server.on("/", HTTP_GET, []() {
-        if (!fsIsReady() || !LittleFS.exists("/index.html")) {
+        if (!fsIsReady()) {
+            sendWebUiFallback();
+            return;
+        }
+        fsLock();
+        const bool hasIndex = LittleFS.exists("/index.html");
+        fsUnlock();
+        if (!hasIndex) {
             sendWebUiFallback();
             return;
         }
