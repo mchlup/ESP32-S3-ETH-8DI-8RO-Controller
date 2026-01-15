@@ -48,12 +48,19 @@ const rmt_receive_config_t owrxconf = {
 };
 
 IRAM_ATTR bool owrxdone(rmt_channel_handle_t ch, const rmt_rx_done_event_data_t *edata, void *udata) {
+  (void)ch;
+  OneWire32* self = (OneWire32*)udata;
+  if (!self) return false;
+  if (!self->isAlive()) return false;
+  // queue can be deleted during cleanup; alive=false protects us
   BaseType_t h = pdFALSE;
-  xQueueSendFromISR((QueueHandle_t)udata, edata, &h);
+  // NOTE: send to the instance queue
+  xQueueSendFromISR(self->owqueue, edata, &h);
   return (h == pdTRUE);
 }
 
 void OneWire32::cleanup() {
+  alive = false;
   // order matters: disable -> delete
   if (owbenc) {
     rmt_del_encoder(owbenc);
@@ -136,11 +143,13 @@ OneWire32::OneWire32(uint8_t pin) {
     return;
   }
 
+  alive = true;
+
   rmt_rx_event_callbacks_t rx_callbacks = {
     .on_recv_done = owrxdone
   };
 
-  if (rmt_rx_register_event_callbacks(owrx, &rx_callbacks, owqueue) != ESP_OK) {
+  if (rmt_rx_register_event_callbacks(owrx, &rx_callbacks, this) != ESP_OK) {
     cleanup();
     return;
   }
@@ -205,6 +214,9 @@ bool OneWire32::reset() {
     if (rmt_tx_wait_all_done(owtx, OW_TIMEOUT) != ESP_OK) {
       found = false;
     }
+    } else {
+    // Timeout: ensure TX is finished before destructor can free RMT objects
+    rmt_tx_wait_all_done(owtx, OW_TIMEOUT);
   }
   return found;
 }

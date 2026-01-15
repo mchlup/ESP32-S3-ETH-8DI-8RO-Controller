@@ -62,7 +62,7 @@ struct BleConfig {
     uint32_t meteoScanMs = 4000;     // délka scan okna
     uint32_t meteoReconnectMs = 8000;
     int meteoMaxConnectFails = 3;    // 0 = unlimited
-    uint32_t meteoCooldownMs = 300000;
+    uint32_t meteoCooldownMs = 30000;
     uint32_t schemaVersion = 1;
 };
 
@@ -140,10 +140,10 @@ static int g_scanBestRssi = -999;
 static int g_scanBestAddrType = -1;
 
 static const uint8_t METEO_FAILS_BEFORE_SCAN = 3;
-static const uint32_t METEO_STALE_MS = 180000;
+static const uint32_t METEO_STALE_MS = 60000;
 static const uint32_t METEO_MIN_CONNECT_INTERVAL_MS = 2500;
 static const uint32_t METEO_SUSPEND_LOG_INTERVAL_MS = 5000;
-static const char* METEO_NAME_PREFIX = "ESP-Meteostanice";
+static const char* METEO_NAME_PREFIX = "ESP-Meteostanice-Outdoor";
 
 // ---------- Helpers ----------
 static String nowIso() {
@@ -334,7 +334,7 @@ static bool loadConfigFS() {
     g_cfg.meteoScanMs = (uint32_t)(doc["meteoScanMs"] | 4000);
     g_cfg.meteoReconnectMs = (uint32_t)(doc["meteoReconnectMs"] | 8000);
     g_cfg.meteoMaxConnectFails = (int)(doc["meteoMaxConnectFails"] | 3);
-    g_cfg.meteoCooldownMs = (uint32_t)(doc["meteoCooldownMs"] | 300000);
+    g_cfg.meteoCooldownMs = (uint32_t)(doc["meteoCooldownMs"] | 60000);
     g_cfg.schemaVersion = (uint32_t)(doc["schemaVersion"] | 1);
     if (restored) {
         fsWriteAtomicKeepBak(BLE_CFG_PATH, s, BLE_CFG_BAK_PATH, true);
@@ -347,15 +347,11 @@ static bool saveConfigFS() {
     doc["enabled"] = g_cfg.enabled;
     doc["deviceName"] = g_cfg.deviceName;
     doc["advertise"] = g_cfg.advertise;
-
     doc["securityMode"] = g_cfg.securityMode;
     doc["passkey"] = g_cfg.passkey;
     doc["allowlistEnforced"] = g_cfg.allowlistEnforced;
-
     doc["serverConnectedCount"] = (uint32_t)(g_server ? g_server->getConnectedCount() : g_serverConnCount);
     doc["serverConnected"] = ((g_server ? g_server->getConnectedCount() : g_serverConnCount) > 0);
-
-
     doc["meteoEnabled"] = g_cfg.meteoEnabled;
     doc["meteoMac"] = g_cfg.meteoMac;
     doc["meteoAutoDiscover"] = g_cfg.meteoAutoDiscover;
@@ -913,8 +909,10 @@ static bool meteoConnectIfNeeded() {
     g_meteoClient->setClientCallbacks(&g_meteoClientCbs, false);
 
     // short timeouts
-    const uint32_t connectTimeoutSec = 10;
-    g_meteoClient->setConnectTimeout(connectTimeoutSec);
+    // NimBLEClient::setConnectTimeout expects **milliseconds** (default 30s).
+    // Using seconds here causes near-immediate failures (e.g. 10 -> 10ms).
+    const uint32_t connectTimeoutMs = 10UL * 1000UL;
+    g_meteoClient->setConnectTimeout(connectTimeoutMs);
 
     g_meteoConnecting = true;
     g_meteoLastConnectAttemptMs = now;
@@ -928,7 +926,7 @@ static bool meteoConnectIfNeeded() {
                   addrTypeToStr(preferredType),
                   g_meteoLastSeenRssi,
                   scanRunning ? "yes" : "no",
-                  (unsigned long)connectTimeoutSec,
+                  (unsigned long)(connectTimeoutMs / 1000UL),
                   relaxSecurity ? "relaxed" : "strict");
 
     auto tryConnect = [&](uint8_t addrType) -> bool {

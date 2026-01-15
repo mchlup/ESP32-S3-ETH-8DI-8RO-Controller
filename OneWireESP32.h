@@ -18,9 +18,13 @@ https://github.com/junkfix/esp32-ds18b20
 #define MAX_BLOCKS 48
 #endif
 
+class OneWire32;
+
+// NOTE: udata bude ukazatel na OneWire32 (ne QueueHandle_t)
 IRAM_ATTR bool owrxdone(rmt_channel_handle_t ch, const rmt_rx_done_event_data_t *edata, void *udata);
 
 class OneWire32 {
+  friend IRAM_ATTR bool owrxdone(rmt_channel_handle_t ch, const rmt_rx_done_event_data_t *edata, void *udata);
   private:
     gpio_num_t owpin;
 
@@ -31,6 +35,9 @@ class OneWire32 {
     rmt_encoder_handle_t owbenc = nullptr;
     rmt_symbol_word_t owbuf[MAX_BLOCKS];
     QueueHandle_t owqueue = nullptr;
+
+    // Guard against ISR callback firing after cleanup/free
+    volatile bool alive = false;
 
     uint8_t drv = 0;
 
@@ -48,4 +55,7 @@ class OneWire32 {
     uint8_t search(uint64_t *addresses, uint8_t total);
     bool read(uint8_t &data, uint8_t len = 8);
     bool write(const uint8_t data, uint8_t len = 8);
+
+    // for ISR guard
+    inline bool isAlive() const { return alive; }
 };

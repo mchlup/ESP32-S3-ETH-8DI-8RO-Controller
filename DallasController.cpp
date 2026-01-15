@@ -38,7 +38,8 @@ struct InternalDallas {
 };
 
 InternalDallas g_bus[GPIO_MAX + 1];
-std::unique_ptr<OneWire32> s_oneWire[GPIO_MAX + 1];
+std::unique_ptr<OneWire32> s_oneWire;
+static uint8_t s_oneWireGpio = 255;
 
 // Global scheduler: keep OneWire/RMT usage strictly sequential (1 GPIO at a time)
 static uint8_t s_rrGpio = 0;
@@ -57,10 +58,25 @@ static inline void ensureDallasPullup(uint8_t gpio) {
 
 static OneWire32* getOneWireBus(uint8_t gpio) {
     if (!gpioSupportsDallas(gpio)) return nullptr;
-    if (!s_oneWire[gpio]) {
-        s_oneWire[gpio].reset(new (std::nothrow) OneWire32(gpio));
+
+    // Reuse current bus if it matches requested GPIO
+    if (s_oneWire && s_oneWireGpio == gpio) {
+        return s_oneWire.get();
     }
-    return s_oneWire[gpio].get();
+
+    // Switch active bus (ESP32-S3 has limited RMT channels; keep only one bus alive)
+    s_oneWire.reset();
+    s_oneWireGpio = 255;
+
+    s_oneWire.reset(new (std::nothrow) OneWire32(gpio));
+    if (!s_oneWire) return nullptr;
+    if (!s_oneWire->ready()) {
+        s_oneWire.reset();
+        return nullptr;
+    }
+
+    s_oneWireGpio = gpio;
+    return s_oneWire.get();
 }
 
 static void clearBus(uint8_t gpio) {
@@ -205,6 +221,8 @@ bool DallasController::gpioSupportsDallas(uint8_t gpio) {
 }
 
 void DallasController::begin() {
+    s_oneWire.reset();
+    s_oneWireGpio = 255;
     for (uint8_t i = GPIO_MIN; i <= GPIO_MAX; i++) {
         g_bus[i].gpio = i;
         g_bus[i].type = TEMP_INPUT_NONE;
@@ -220,18 +238,22 @@ void DallasController::configureGpio(uint8_t gpio, TempInputType type) {
     if (!gpioSupportsDallas(gpio)) return;
 
     g_bus[gpio].type = type;
-    g_bus[gpio].status = (type == TEMP_INPUT_NONE) ? TEMP_STATUS_DISABLED : TEMP_STATUS_NO_SENSOR;
     clearBus(gpio);
 
-    if (type == TEMP_INPUT_NONE) return;
-
-    if (type == TEMP_INPUT_AUTO) {
-        autodetect(gpio);
-    } else if (type == TEMP_INPUT_DALLAS) {
-        if (!probeAndDiscover(gpio)) {
-            g_bus[gpio].status = TEMP_STATUS_ERROR;
-        }
+    if (type == TEMP_INPUT_NONE) {
+        g_bus[gpio].status = TEMP_STATUS_DISABLED;
+        return;
     }
+
+    // IMPORTANT:
+    // Do NOT run RMT/OneWire discovery inside configure. This function is called during boot
+    // (setup + config apply) and creating multiple RMT channels here can crash ESP32-S3.
+    // Discovery/reading is handled non-blocking in DallasController::loop().
+    g_bus[gpio].status = TEMP_STATUS_NO_SENSOR;
+    g_bus[gpio].lastDiscoverMs = 0; // 0 => discover ASAP in loop
+    g_bus[gpio].lastCycleMs = 0;
+    g_bus[gpio].converting = false;
+    g_bus[gpio].convertStartMs = 0;
 }
 
 void DallasController::loop() {
@@ -262,7 +284,7 @@ void DallasController::loop() {
 
         // If no devices, occasionally probe/discover (hot-plug + AUTO)
         if (g_bus[gpio].devices.empty() || g_bus[gpio].status == TEMP_STATUS_NO_SENSOR) {
-            if (now - g_bus[gpio].lastDiscoverMs >= 3000) {
+            if (g_bus[gpio].lastDiscoverMs == 0 || now - g_bus[gpio].lastDiscoverMs >= 3000) {
                 g_bus[gpio].lastDiscoverMs = now;
                 if (!probeAndDiscover(gpio)) {
                     g_bus[gpio].status = TEMP_STATUS_ERROR;
