@@ -1,8 +1,6 @@
 #include <Arduino.h>
 #include <Wire.h>
-
 #include <NimBLEDevice.h>
-
 #include <Adafruit_HTU21DF.h>
 #include <BH1750.h>
 #include <Adafruit_BMP085.h>
@@ -41,6 +39,30 @@ static NimBLEService* g_svc = nullptr;
 static NimBLECharacteristic* g_chMeteo = nullptr;
 
 static volatile bool g_connected = false;
+static volatile bool g_advRestartPending = false;
+
+// BLE housekeeping (bez delay):
+// - po disconnectu NESPOUŠTĚT advertising přímo z callbacku (v praxi se občas stává,
+//   že startAdvertising() z callback kontextu neproběhne spolehlivě a zařízení přestane
+//   být nalezitelné, dokud se nerestartuje).
+// - v loopu pravidelně "hlídat" že když není klient připojený, tak periferie opravdu inzeruje.
+static const uint32_t ADV_ENSURE_PERIOD_MS = 4000;
+static uint32_t g_nextAdvEnsureMs = 0;
+static uint32_t g_lastAdvStartMs = 0;
+
+static void bleRequestAdvRestart() {
+  g_advRestartPending = true;
+}
+
+static void bleEnsureAdvertising(uint32_t now, const char* reason) {
+  // jednoduchý debounce, aby se to nespouštělo 100× za sekundu
+  if ((int32_t)(now - g_lastAdvStartMs) < 500) return;
+  g_lastAdvStartMs = now;
+  NimBLEDevice::startAdvertising();
+  if (reason) {
+    Serial.printf("[BLE] Advertising ensure/start (%s)\n", reason);
+  }
+}
 
 // Payload přesně 6B dle S3 meteoOnNotify():
 // int16 temp_x10 LE, uint8 hum, uint16 press_hPa LE, int8 trend
@@ -121,6 +143,9 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     (void)s; (void)connInfo;
     g_connected = true;
 
+    // kdyby byl pending restart advertisingu, tak ho po connectu zahodíme
+    g_advRestartPending = false;
+
     // klient se právě připojil -> dovolíme jednorázový "kick" po connectu
     g_kickSentAfterConnect = false;
 
@@ -132,8 +157,8 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     Serial.printf("[BLE] Client disconnected (reason=%d)\n", reason);
     g_connected = false;
 
-    // po disconnectu znovu inzerovat
-    NimBLEDevice::startAdvertising();
+    // po disconnectu znovu inzerovat (odloženo do loopu pro stabilitu)
+    bleRequestAdvRestart();
   }
 };
 
@@ -244,7 +269,7 @@ static void bleInit() {
   adv->setAdvertisementData(advData);
   adv->setScanResponseData(scanData);
 
-  NimBLEDevice::startAdvertising();
+  bleEnsureAdvertising(millis(), "init");
   Serial.println("[BLE] Advertising started");
 }
 
@@ -254,7 +279,7 @@ static uint32_t g_nextNotifyMs = 0;
 
 void setup() {
   Serial.begin(115200);
-  delay(50);
+  // žádné zbytečné delay - necháme to naběhnout neblokujícím způsobem
   Serial.println();
   Serial.println("ESP32-C3 BLE Meteo Sensor starting...");
 
@@ -279,6 +304,9 @@ void setup() {
   const uint32_t now = millis();
   g_nextSensorMs = now + 200;
   g_nextNotifyMs = now + NOTIFY_PERIOD_MS; // první periodický notify až za interval
+
+  // watchdog inzerce
+  g_nextAdvEnsureMs = now + 500;
 }
 
 void loop() {
@@ -323,6 +351,35 @@ void loop() {
     if (g_connected && g_haveReading && g_chMeteo) {
       meteoNotifyNow("periodic");
     }
+  }
+
+  // --- BLE housekeeping (stabilita "nalezení" periferie) ---
+  // 0) Ošetření případného "rozjetí" stavu: callback mohl být vynechán,
+  //    ale server ví, kolik klientů je skutečně připojeno.
+  if (g_server) {
+    const bool actualConn = (g_server->getConnectedCount() > 0);
+    if (g_connected && !actualConn) {
+      g_connected = false;
+      bleRequestAdvRestart();
+      Serial.println("[BLE] Connection state corrected -> disconnected");
+    } else if (!g_connected && actualConn) {
+      g_connected = true;
+      g_advRestartPending = false;
+      Serial.println("[BLE] Connection state corrected -> connected");
+    }
+  }
+
+  // 1) Pokud přišel požadavek na restart inzerce (např. po disconnectu), proveď ho tady.
+  if (g_advRestartPending) {
+    g_advRestartPending = false;
+    bleEnsureAdvertising(now, "pending_restart");
+  }
+
+  // 2) Pravidelně hlídej, že když není klient připojený, tak stále inzerujeme.
+  //    (když se NimBLE stack dostane do stavu, kdy advertising neběží, S3 ho nenajde.)
+  if (!g_connected && (int32_t)(now - g_nextAdvEnsureMs) >= 0) {
+    g_nextAdvEnsureMs = now + ADV_ENSURE_PERIOD_MS;
+    bleEnsureAdvertising(now, "periodic_ensure");
   }
 
   // žádné delay()

@@ -426,15 +426,13 @@ static void meteoScanFinalize() {
         g_meteoNextDiscoverMs = 0;
     } else {
         if (g_meteoRefreshOnlyActive) {
+            // Do NOT treat a scan miss as a connection failure.
+            // The target may simply not have advertised during this short window.
+            // We will try to connect anyway (client connect tries both PUBLIC and RANDOM addr types).
             const uint32_t now = millis();
-            g_meteoConnectFails = (uint8_t)min(255, g_meteoConnectFails + 1);
-            const bool suspended = meteoSuspendIfNeeded(now, g_meteoConnectFails);
-            if (!suspended) {
-                g_meteoNextActionMs = now + g_cfg.meteoReconnectMs;
-            }
-            Serial.printf("[BLE] Meteo refresh: target %s not seen (fails=%u, next=%lums)\n",
+            g_meteoNextActionMs = now + 250;
+            Serial.printf("[BLE] Meteo refresh: target %s not seen (next=%lums)\n",
                           g_meteoRefreshTargetMac.c_str(),
-                          g_meteoConnectFails,
                           (unsigned long)g_meteoNextActionMs);
         } else {
             Serial.println(F("[BLE] Meteo auto-discovery: nothing found"));
@@ -873,21 +871,9 @@ static bool meteoConnectIfNeeded() {
 
     if (g_meteoClient && g_meteoClient->isConnected()) return true;
 
-    const bool needsRefresh = (g_meteoLastSeenAddrType != BLE_ADDR_PUBLIC
-        && g_meteoLastSeenAddrType != BLE_ADDR_RANDOM)
-        || g_meteoLastSeenRssi == -999;
-    if (needsRefresh) {
-        if (!g_meteoRefreshOnlyRequested) {
-            g_meteoRefreshOnlyRequested = true;
-            g_meteoDiscoverRequested = true;
-            g_meteoNextDiscoverMs = 0;
-            Serial.printf("[BLE] Meteo refresh needed for %s (addrType=%s rssi=%d)\n",
-                          targetMac.c_str(),
-                          addrTypeToStr(g_meteoLastSeenAddrType),
-                          g_meteoLastSeenRssi);
-        }
-        return false;
-    }
+    // NOTE: Connection should not be blocked by missing scan-derived addrType/RSSI.
+    // We can always attempt to connect by trying both PUBLIC and RANDOM address types.
+    // Scanning is only required for auto-discovery when MAC is not configured.
 
     NimBLEScan* scan = NimBLEDevice::getScan();
     const bool scanRunning = (scan && scan->isScanning()) || g_meteoScanning;
