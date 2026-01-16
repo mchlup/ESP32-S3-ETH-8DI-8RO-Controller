@@ -730,6 +730,7 @@ void handleApiConfigPost() {
     filter["mqtt"] = true;
     filter["time"] = true;
     filter["thermometers"] = true;
+    filter["tempRoles"] = true;
     filter["opentherm"] = true;
     filter["relayNames"] = true;
     filter["inputNames"] = true;

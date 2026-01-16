@@ -40,6 +40,11 @@ const outputRoleOptions = [
   "valve_3way_spring",
   "valve_3way_tuv",
   "valve_3way_dhw",
+  "boiler_enable_dhw",
+  "boiler_enable_nm",
+  "dhw_recirc_pump",
+  "circ_pump",
+  "heater_aku",
 ];
 
 const inputRoleOptions = [
@@ -49,6 +54,16 @@ const inputRoleOptions = [
   "thermostat",
   "heat_call",
   "recirc_demand",
+];
+
+const thermoRoleOptions = [
+  "",
+  "outdoor",
+  "tank",
+  "return",
+  "supply",
+  "boiler_in",
+  "boiler_out",
 ];
 
 const $ = (id) => document.getElementById(id);
@@ -146,14 +161,14 @@ function ensureConfigDefaults() {
     state.config.inputNames = state.config.inputs.map((input) => input.name || "");
   }
   if (!state.config.inputActiveLevels && Array.isArray(state.config.inputs)) {
-    state.config.inputActiveLevels = state.config.inputs.map((input) => (input.activeLevel ?? 1));
+    state.config.inputActiveLevels = state.config.inputs.map((input) => (input.activeLevel ?? 0));
   }
   if (!state.config.relayNames && Array.isArray(state.config.relays)) {
     state.config.relayNames = state.config.relays.map((relay) => relay.name || "");
   }
   state.config.inputNames = state.config.inputNames || Array(8).fill("");
   state.config.relayNames = state.config.relayNames || Array(8).fill("");
-  state.config.inputActiveLevels = state.config.inputActiveLevels || Array(8).fill(1);
+  state.config.inputActiveLevels = state.config.inputActiveLevels || Array(8).fill(0);
   state.config.relayMap = state.config.relayMap || Array.from({ length: 8 }, () => ({ input: 0, polarity: false }));
   state.config.iofunc = state.config.iofunc || { inputs: [], outputs: [] };
   state.config.iofunc.inputs = state.config.iofunc.inputs.length
@@ -166,6 +181,64 @@ function ensureConfigDefaults() {
   state.config.thermometers.mqtt = state.config.thermometers.mqtt || [{}, {}];
   if (state.config.thermometers.mqtt.length < 2) {
     state.config.thermometers.mqtt = [state.config.thermometers.mqtt[0] || {}, {}];
+  }
+  state.config.tempRoles = Array.isArray(state.config.tempRoles) ? state.config.tempRoles : [];
+  if (state.config.tempRoles.length < 8) {
+    state.config.tempRoles = state.config.tempRoles.concat(Array(8 - state.config.tempRoles.length).fill(""));
+  } else if (state.config.tempRoles.length > 8) {
+    state.config.tempRoles = state.config.tempRoles.slice(0, 8);
+  }
+
+  const relayNameDefaults = {
+    4: "Ohřev TUV",
+    5: "Heat-Call",
+    6: "Cirkulace TUV",
+    7: "Dohřev nádrže",
+  };
+  Object.entries(relayNameDefaults).forEach(([index, label]) => {
+    const idx = Number(index);
+    if (!state.config.relayNames[idx]) {
+      state.config.relayNames[idx] = label;
+    }
+  });
+
+  const inputRoleDefaults = ["dhw_enable", "heat_call", "recirc_demand", "", "", "", "", ""];
+  inputRoleDefaults.forEach((role, index) => {
+    if (!role) {
+      return;
+    }
+    if (!state.config.iofunc.inputs[index].role) {
+      state.config.iofunc.inputs[index].role = role;
+    }
+  });
+
+  const outputRoleDefaults = [
+    "valve_3way_mix",
+    "",
+    "valve_3way_dhw",
+    "",
+    "boiler_enable_dhw",
+    "boiler_enable_nm",
+    "dhw_recirc_pump",
+    "heater_aku",
+  ];
+  outputRoleDefaults.forEach((role, index) => {
+    if (!role) {
+      return;
+    }
+    if (!state.config.iofunc.outputs[index].role) {
+      state.config.iofunc.outputs[index].role = role;
+    }
+  });
+
+  if (!state.config.thermometers.ble.name && state.config.thermometers.ble.id) {
+    state.config.thermometers.ble.name = "Outdoor";
+  }
+  state.config.equitherm = state.config.equitherm || {};
+  state.config.equitherm.outdoor = state.config.equitherm.outdoor || {};
+  if (!state.config.equitherm.outdoor.source && state.config.thermometers.ble.id) {
+    state.config.equitherm.outdoor.source = "ble";
+    state.config.equitherm.outdoor.bleId = state.config.equitherm.outdoor.bleId || state.config.thermometers.ble.id;
   }
 }
 
@@ -300,6 +373,25 @@ function renderThermometers() {
     <div class="status-box" id="bleThermoLive">—</div>
   `;
   bindInputs(bleContainer, state.config);
+}
+
+function renderThermometerRoles() {
+  const container = $("thermometerRoles");
+  if (!container) {
+    return;
+  }
+  container.innerHTML = "";
+  state.config.tempRoles.forEach((role, index) => {
+    const row = document.createElement("div");
+    row.className = "form-grid";
+    row.innerHTML = `
+      <label class="field"><span>TEMP${index + 1} role</span>
+        <input list="thermoRoles" data-path="tempRoles.${index}" />
+      </label>
+    `;
+    container.appendChild(row);
+  });
+  bindInputs(container, state.config);
 }
 
 function renderDallasDiag() {
@@ -509,22 +601,23 @@ function updateStatusUI() {
   $("eqOutdoor").textContent = formatTemp(status.equitherm?.outdoorC);
   $("eqTarget").textContent = formatTemp(status.equitherm?.targetFlowC);
   $("eqFlow").textContent = formatTemp(status.equitherm?.flowC);
-  $("eqValve").textContent = status.equitherm?.valve ? `${status.equitherm.valve.posPct ?? "?"}%` : "—";
+  $("eqValve").textContent = status.equitherm?.valvePosPct !== undefined ? `${status.equitherm.valvePosPct}%` : "—";
   $("dashEquitherm").textContent = status.equitherm ? `${status.equitherm.enabled ? "ON" : "OFF"} / ${status.equitherm.active ? "active" : "idle"} / ${status.equitherm.reason || ""}` : "—";
 
   $("dashTuv").textContent = status.tuv ? `${status.tuv.enabled ? "ON" : "OFF"} / ${status.tuv.active ? "active" : "idle"} / ${status.tuv.reason || ""}` : "—";
   $("tuvDemand").textContent = status.tuv?.demandActive ? "active" : "inactive";
   $("tuvRelay").textContent = status.tuv?.boilerRelayOn ? "ON" : "OFF";
-  $("tuvValve").textContent = status.tuv?.valve ? `${status.tuv.valve.posPct ?? "?"}%` : "—";
+  $("tuvValve").textContent = status.tuv?.valvePosPct !== undefined ? `${status.tuv.valvePosPct}%` : "—";
 
   $("heapFree").textContent = status.heap?.free ?? "—";
   $("heapMin").textContent = status.heap?.minFree ?? "—";
   $("heapLargest").textContent = status.heap?.largest ?? "—";
 
-  renderRelayGrid(status.relays || []);
+  renderRelayGrid(status.relays || [], status.valvesList || []);
   renderInputGrid(status.inputs || []);
   renderTempGrid(status.temps || []);
   drawEquithermCurve();
+  drawDashEquithermCurve();
   $("eqStatus").textContent = JSON.stringify(status.equitherm || {}, null, 2);
   $("calStatus").textContent = JSON.stringify(status.valves || status.valvesList || {}, null, 2);
 }
@@ -559,15 +652,40 @@ function updateDashUI() {
   }
 }
 
-function renderRelayGrid(relays) {
+function renderRelayGrid(relays, valvesList) {
   const container = $("relayGrid");
   container.innerHTML = "";
+  const valves = Array.isArray(valvesList) ? valvesList : [];
+  const valveByMaster = new Map();
+  valves.forEach((valve) => {
+    if (Number.isFinite(valve?.master)) {
+      valveByMaster.set(Number(valve.master), valve);
+    }
+  });
+  const formatPct = (value) => (Number.isFinite(value) ? `${Math.round(value)}%` : "—");
+  const renderValveChip = (label, valve) => {
+    const chip = document.createElement("div");
+    chip.className = "relay-chip valve";
+    chip.textContent = `${label} ${formatPct(valve?.posPct)}`;
+    container.appendChild(chip);
+  };
   for (let i = 0; i < 8; i += 1) {
+    const relayId = i + 1;
+    const valve = valveByMaster.get(relayId);
+    if (relayId === 1 && valve && Number(valve.peer) === 2) {
+      renderValveChip("R1/2", valve);
+      i += 1;
+      continue;
+    }
+    if (relayId === 3 && valve && Number(valve.peer) === 3) {
+      renderValveChip("R3", valve);
+      continue;
+    }
     const active = Boolean(relays[i]);
     const chip = document.createElement("button");
     chip.className = `relay-chip ${active ? "active" : ""}`;
-    chip.textContent = `R${i + 1} ${active ? "ON" : "OFF"}`;
-    chip.addEventListener("click", () => toggleRelay(i + 1, !active));
+    chip.textContent = `R${relayId} ${active ? "ON" : "OFF"}`;
+    chip.addEventListener("click", () => toggleRelay(relayId, !active));
     container.appendChild(chip);
   }
 }
@@ -689,6 +807,70 @@ function drawEquithermCurve() {
   }
 }
 
+function drawDashEquithermCurve() {
+  const canvas = $("dashEqCurve");
+  if (!canvas || !state.config?.equitherm) {
+    return;
+  }
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const eq = state.config.equitherm;
+  const day = eq.refs?.day || {};
+  const night = eq.refs?.night || {};
+  const minFlow = Number(eq.minFlow ?? 20);
+  const maxFlow = Number(eq.maxFlow ?? 70);
+  const refPoints = [
+    { x: day.tout1, y: day.tflow1 },
+    { x: day.tout2, y: day.tflow2 },
+    { x: night.tout1, y: night.tflow1 },
+    { x: night.tout2, y: night.tflow2 },
+  ].filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+  const xs = refPoints.map((p) => p.x);
+  const minX = xs.length ? Math.min(...xs) : -20;
+  const maxX = xs.length ? Math.max(...xs) : 20;
+  const pad = 16;
+  const scaleX = (canvas.width - pad * 2) / (maxX - minX || 1);
+  const scaleY = (canvas.height - pad * 2) / (maxFlow - minFlow || 1);
+
+  ctx.strokeStyle = "#e2e8f0";
+  ctx.beginPath();
+  ctx.moveTo(pad, canvas.height - pad);
+  ctx.lineTo(canvas.width - pad, canvas.height - pad);
+  ctx.lineTo(canvas.width - pad, pad);
+  ctx.stroke();
+
+  const clampFlow = (value) => Math.min(maxFlow, Math.max(minFlow, value));
+  const isNight = Boolean(state.status?.equitherm?.night);
+  const slope = Number(isNight ? (eq.slopeNight ?? 0) : (eq.slopeDay ?? 0));
+  const shift = Number(isNight ? (eq.shiftNight ?? 0) : (eq.shiftDay ?? 0));
+
+  ctx.strokeStyle = isNight ? "#7e22ce" : "#2563eb";
+  ctx.beginPath();
+  for (let i = 0; i <= 40; i += 1) {
+    const tout = minX + ((maxX - minX) * i) / 40;
+    const flow = clampFlow(slope * tout + shift);
+    const x = pad + (tout - minX) * scaleX;
+    const y = canvas.height - pad - (flow - minFlow) * scaleY;
+    if (i === 0) {
+      ctx.moveTo(x, y);
+    } else {
+      ctx.lineTo(x, y);
+    }
+  }
+  ctx.stroke();
+
+  const currentTout = state.status?.equitherm?.outdoorC;
+  const currentFlow = state.status?.equitherm?.targetFlowC;
+  if (Number.isFinite(currentTout) && Number.isFinite(currentFlow)) {
+    const x = pad + (currentTout - minX) * scaleX;
+    const y = canvas.height - pad - (currentFlow - minFlow) * scaleY;
+    ctx.fillStyle = "#ef4444";
+    ctx.beginPath();
+    ctx.arc(x, y, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
 function setActiveSection(hash) {
   const page = (hash || "#dashboard").replace("#", "");
   const sections = Array.from(document.querySelectorAll(".section"));
@@ -727,6 +909,7 @@ async function loadAll() {
   renderIofuncRoles();
   renderValveConfig();
   renderThermometers();
+  renderThermometerRoles();
   renderEquithermSources();
   renderModeSelect();
   drawEquithermCurve();
@@ -846,6 +1029,7 @@ async function saveConfigSection(section) {
   }
   if (section === "thermometers") {
     payload.thermometers = state.config.thermometers;
+    payload.tempRoles = state.config.tempRoles;
     payload.mqtt = state.config.mqtt || {};
   }
   try {
@@ -1232,6 +1416,15 @@ function initRoleLists() {
     outputList.appendChild(option);
   });
   document.body.appendChild(outputList);
+
+  const thermoList = document.createElement("datalist");
+  thermoList.id = "thermoRoles";
+  thermoRoleOptions.forEach((role) => {
+    const option = document.createElement("option");
+    option.value = role;
+    thermoList.appendChild(option);
+  });
+  document.body.appendChild(thermoList);
 }
 
 document.addEventListener("DOMContentLoaded", async () => {

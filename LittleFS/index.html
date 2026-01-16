@@ -69,6 +69,9 @@
                 <div><span class="label">Flow</span><span id="eqFlow">—</span></div>
                 <div><span class="label">Ventil</span><span id="eqValve">—</span></div>
               </div>
+              <div class="chart-wrap">
+                <canvas id="dashEqCurve" width="300" height="150"></canvas>
+              </div>
             </div>
           </div>
           <div class="card">
@@ -326,6 +329,10 @@
             <h2>BLE teploměr</h2>
             <div id="bleThermometer" class="stack"></div>
           </div>
+        </div>
+        <div class="card">
+          <h2>Role teploměrů</h2>
+          <div id="thermometerRoles" class="stack"></div>
         </div>
         <div class="card">
           <h2>DS18B20 diagnostika</h2>
