@@ -124,9 +124,13 @@ function setInputValue(input, value) {
 function bindInputs(container, data) {
   container.querySelectorAll("[data-path]").forEach((input) => {
     const path = input.dataset.path;
+    const eventName = input.tagName === "SELECT" || input.type === "checkbox" ? "change" : "input";
     setInputValue(input, getPath(data, path));
-    input.addEventListener("change", () => {
+    input.addEventListener(eventName, () => {
       setPath(data, path, parseInputValue(input));
+      if (path.startsWith("equitherm")) {
+        drawEquithermCurve();
+      }
     });
   });
 }
@@ -360,8 +364,9 @@ function renderEquithermSources() {
     select.value = source.source || "";
     const fields = card.querySelectorAll("[data-source-field]");
     fields.forEach((field) => {
+      const eventName = field.tagName === "SELECT" || field.type === "checkbox" ? "change" : "input";
       field.value = source[field.dataset.sourceField] ?? "";
-      field.addEventListener("change", () => {
+      field.addEventListener(eventName, () => {
         updateEquithermSource(item.key, field.dataset.sourceField, parseInputValue(field));
       });
     });
@@ -505,6 +510,7 @@ function updateStatusUI() {
   renderRelayGrid(status.relays || []);
   renderInputGrid(status.inputs || []);
   renderTempGrid(status.temps || []);
+  drawEquithermCurve();
   $("eqStatus").textContent = JSON.stringify(status.equitherm || {}, null, 2);
   $("calStatus").textContent = JSON.stringify(status.valves || status.valvesList || {}, null, 2);
 }
@@ -524,6 +530,18 @@ function updateDashUI() {
   const bleLive = $("bleThermoLive");
   if (bleLive) {
     bleLive.textContent = bleEntry ? `${bleEntry.valid ? "valid" : "invalid"} • ${bleEntry.tempC ?? "—"} °C` : "—";
+  }
+  const bleMeteoTemp = $("bleMeteoTemp");
+  if (bleMeteoTemp) {
+    bleMeteoTemp.textContent = bleEntry ? formatTemp(bleEntry.tempC) : "—";
+  }
+  const bleMeteoFix = $("bleMeteoFix");
+  if (bleMeteoFix) {
+    bleMeteoFix.textContent = state.status?.ble?.meteoFix ?? bleEntry?.valid ?? "—";
+  }
+  const bleMeteoAge = $("bleMeteoAge");
+  if (bleMeteoAge) {
+    bleMeteoAge.textContent = bleEntry?.ageMs ? `${bleEntry.ageMs} ms` : "—";
   }
 }
 
@@ -585,28 +603,22 @@ function drawEquithermCurve() {
   const eq = state.config.equitherm;
   const day = eq.refs?.day || {};
   const night = eq.refs?.night || {};
-  const points = [
-    { x: day.tout1, y: day.tflow1, color: "#2563eb" },
-    { x: day.tout2, y: day.tflow2, color: "#1d4ed8" },
-    { x: night.tout1, y: night.tflow1, color: "#9333ea" },
-    { x: night.tout2, y: night.tflow2, color: "#7e22ce" },
+  const minFlow = Number(eq.minFlow ?? 20);
+  const maxFlow = Number(eq.maxFlow ?? 70);
+
+  const refPoints = [
+    { x: day.tout1, y: day.tflow1 },
+    { x: day.tout2, y: day.tflow2 },
+    { x: night.tout1, y: night.tflow1 },
+    { x: night.tout2, y: night.tflow2 },
   ].filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
 
-  if (!points.length) {
-    ctx.fillStyle = "#94a3b8";
-    ctx.fillText("Není k dispozici", 20, 20);
-    return;
-  }
-
-  const xs = points.map((p) => p.x);
-  const ys = points.map((p) => p.y);
-  const minX = Math.min(...xs);
-  const maxX = Math.max(...xs);
-  const minY = Math.min(...ys);
-  const maxY = Math.max(...ys);
+  const xs = refPoints.map((p) => p.x);
+  const minX = xs.length ? Math.min(...xs) : -20;
+  const maxX = xs.length ? Math.max(...xs) : 20;
   const pad = 20;
   const scaleX = (canvas.width - pad * 2) / (maxX - minX || 1);
-  const scaleY = (canvas.height - pad * 2) / (maxY - minY || 1);
+  const scaleY = (canvas.height - pad * 2) / (maxFlow - minFlow || 1);
 
   ctx.strokeStyle = "#cbd5f5";
   ctx.beginPath();
@@ -615,13 +627,60 @@ function drawEquithermCurve() {
   ctx.lineTo(canvas.width - pad, pad);
   ctx.stroke();
 
-  points.forEach((point) => {
+  const clampFlow = (value) => Math.min(maxFlow, Math.max(minFlow, value));
+  const daySlope = Number(eq.slopeDay ?? 0);
+  const dayShift = Number(eq.shiftDay ?? 0);
+  const nightSlope = Number(eq.slopeNight ?? 0);
+  const nightShift = Number(eq.shiftNight ?? 0);
+
+  const drawLine = (slope, shift, color) => {
+    ctx.strokeStyle = color;
+    ctx.beginPath();
+    for (let i = 0; i <= 40; i += 1) {
+      const tout = minX + ((maxX - minX) * i) / 40;
+      const flow = clampFlow(slope * tout + shift);
+      const x = pad + (tout - minX) * scaleX;
+      const y = canvas.height - pad - (flow - minFlow) * scaleY;
+      if (i === 0) {
+        ctx.moveTo(x, y);
+      } else {
+        ctx.lineTo(x, y);
+      }
+    }
+    ctx.stroke();
+  };
+
+  drawLine(daySlope, dayShift, "#2563eb");
+  drawLine(nightSlope, nightShift, "#7e22ce");
+
+  refPoints.forEach((point) => {
     const x = pad + (point.x - minX) * scaleX;
-    const y = canvas.height - pad - (point.y - minY) * scaleY;
-    ctx.fillStyle = point.color;
+    const y = canvas.height - pad - (point.y - minFlow) * scaleY;
+    ctx.fillStyle = "#0f172a";
+    ctx.beginPath();
+    ctx.arc(x, y, 3, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  const currentTout = state.status?.equitherm?.outdoorC;
+  const currentFlow = state.status?.equitherm?.targetFlowC;
+  if (Number.isFinite(currentTout) && Number.isFinite(currentFlow)) {
+    const x = pad + (currentTout - minX) * scaleX;
+    const y = canvas.height - pad - (currentFlow - minFlow) * scaleY;
+    ctx.fillStyle = "#ef4444";
     ctx.beginPath();
     ctx.arc(x, y, 4, 0, Math.PI * 2);
     ctx.fill();
+  }
+}
+
+function setActiveSection(hash) {
+  const page = (hash || "#dashboard").replace("#", "");
+  document.querySelectorAll(".section").forEach((section) => {
+    section.classList.toggle("hidden", section.id !== page);
+  });
+  document.querySelectorAll(".nav a").forEach((link) => {
+    link.classList.toggle("active", link.getAttribute("href") === `#${page}`);
   });
 }
 
@@ -1159,6 +1218,8 @@ function initRoleLists() {
 document.addEventListener("DOMContentLoaded", async () => {
   initRoleLists();
   setupEvents();
+  setActiveSection(window.location.hash);
+  window.addEventListener("hashchange", () => setActiveSection(window.location.hash));
   await loadAll();
   await loadBleStatus();
   await loadBlePaired();

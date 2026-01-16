@@ -105,12 +105,21 @@ body {
   outline: none;
 }
 
+.nav a.active {
+  background: #dbeafe;
+  color: #1e3a8a;
+}
+
 .content {
   padding: 24px 32px 60px;
 }
 
 .section {
   margin-bottom: 48px;
+}
+
+.section.hidden {
+  display: none;
 }
 
 .section h1 {
