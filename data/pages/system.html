@@ -145,6 +145,21 @@
                     </select>
                   </div>
                 </div>
+
+                <label class="check"><input type="checkbox" id="bzUsePwm"> <span>PWM (pasivní piezo)</span></label>
+                <div class="row" id="bzPwmBox" style="padding:0 14px 14px">
+                  <div class="row2">
+                    <div class="field">
+                      <label>Frekvence (Hz)</label>
+                      <input type="number" id="bzPwmFreqHz" min="100" max="20000" step="100" value="3000">
+                    </div>
+                    <div class="field">
+                      <label>Střída (%)</label>
+                      <input type="number" id="bzPwmDutyPct" min="0" max="100" step="1" value="50">
+                    </div>
+                  </div>
+                </div>
+
                 <div class="muted" style="padding:0 14px">Systémové události:</div>
                 <div class="table" id="bzEvents"></div>
               </div>
@@ -152,9 +167,13 @@
                 <div class="muted" style="padding:14px 14px 0">Test:</div>
                 <div class="row" style="gap:8px; flex-wrap:wrap">
                   <button class="btn" id="btnBeepShort">Krátké</button>
+                  <button class="btn" id="btnBeepChirp">Chirp</button>
+                  <button class="btn" id="btnBeepChirpDown">Chirp ↓</button>
+                  <button class="btn" id="btnBeepNotify">Notify</button>
                   <button class="btn" id="btnBeepLong">Dlouhé</button>
                   <button class="btn" id="btnBeepDouble">Dvojité</button>
                   <button class="btn" id="btnBeepTriple">Trojité</button>
+                  <button class="btn bad" id="btnBeepError">Error</button>
                   <button class="btn bad" id="btnBeepStop">Stop</button>
                 </div>
               </div>

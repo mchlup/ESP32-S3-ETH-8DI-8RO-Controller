@@ -98,18 +98,8 @@
 };
 
 
-  const fetchWithTimeout = async (url, opts = {}, timeoutMs = 8000) => {
-    const controller = new AbortController();
-    const t = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      return await fetch(url, { ...opts, signal: controller.signal });
-    } finally {
-      clearTimeout(t);
-    }
-  };
-
   const apiGet = async (url) => {
-    const r = await fetchWithTimeout(url, { cache: "no-store" });
+    const r = await fetch(url, { cache: "no-store" });
     if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
     const ct = r.headers.get("content-type") || "";
     if (ct.includes("application/json")) return await r.json();
@@ -117,7 +107,7 @@
   };
 
   const apiPostJson = async (url, obj) => {
-    const r = await fetchWithTimeout(url, {
+    const r = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(obj),
@@ -129,7 +119,7 @@
   };
 
   const apiPostText = async (url, text) => {
-    const r = await fetchWithTimeout(url, { method: "POST", headers: { "content-type":"application/json" }, body: text });
+    const r = await fetch(url, { method: "POST", headers: { "content-type":"application/json" }, body: text });
     const ct = r.headers.get("content-type") || "";
     const body = ct.includes("application/json") ? await r.json().catch(()=>null) : await r.text().catch(()=>null);
     if (!r.ok) throw new Error((body && body.error) ? body.error : `${r.status} ${r.statusText}`);
@@ -1790,56 +1780,36 @@ cfg.iofunc = (cfg.iofunc && typeof cfg.iofunc === "object") ? cfg.iofunc : {};
     const cfgRaw = await apiGet("/api/config").catch(() => null);
     const cfg = (typeof cfgRaw === "string") ? safeJson(cfgRaw) : cfgRaw;
     if (!cfg) return;
-
     const hash = stableStringify(cfg);
     const changed = hash !== state.lastConfigHash;
 
-    // If nothing changed (and not forced), do nothing.
-    if (!changed && !opts.force) return;
-
-    const userEditing = !!document.querySelector("input:focus, select:focus, textarea:focus");
-    const formDirty = !!state.ui?.dirty?.form;
-
-    // If the user is editing or has unsaved changes, do NOT overwrite the UI.
-    // Store the new config as pending and offer a manual reload.
-    if (changed && (formDirty || userEditing) && !opts.force) {
+    if (changed && state.ui?.dirty?.form && !opts.force) {
       state.pendingConfig = cfg;
-      state.pendingConfigHash = hash;
-
-      // Avoid spamming the same toast repeatedly.
-      if ((state.ui?.pendingToastHash || "") !== hash) {
-        state.ui = state.ui || {};
-        state.ui.pendingToastHash = hash;
-
-        toast("Konfigurace se změnila v zařízení – klikni pro reload.", "warn", {
-          actionLabel: "Obnovit",
-          onAction: () => {
-            const pc = state.pendingConfig;
-            if (pc) {
-              // Reset dirty flag (user explicitly agreed to reload)
-              if (state.ui?.dirty) state.ui.dirty.form = false;
-
-              applyConfig(pc);
-              state.lastConfigHash = stableStringify(pc);
-              state.pendingConfig = null;
-              state.pendingConfigHash = null;
-              if (state.ui) state.ui.pendingToastHash = null;
-            } else {
-              loadConfig({ force: true });
-            }
-          },
-        });
-      }
+      toast("Konfigurace se změnila v zařízení – klikni pro reload.", "warn", {
+        actionLabel: "Obnovit",
+        onAction: () => {
+          if (state.pendingConfig) {
+            state.ui.dirty.form = false;
+            state.lastConfigHash = const hash = stableStringify(cfg);
+            applyConfig(state.pendingConfig);
+            state.pendingConfig = null;
+          } else {
+            loadConfig({ force: true });
+          }
+        },
+      });
       return;
     }
 
-    // Apply immediately.
     state.pendingConfig = null;
-    state.pendingConfigHash = null;
-    if (state.ui) state.ui.pendingToastHash = null;
-
     state.lastConfigHash = hash;
     applyConfig(cfg);
+    const userEditing = !!document.querySelector("input:focus, select:focus, textarea:focus");
+    if (userEditing) {
+        state.pendingConfig = cfg;   // nebo jen ulož do pending
+        return;
+    }
+
   };
 
   const loadAll = async () => {

@@ -268,11 +268,6 @@
     }
     out.push(`</optgroup>`);
 
-    // Legacy TEMP1..8 (terminal inputs)
-    out.push(`<optgroup label="Vstupy TEMP (legacy)">`);
-    for (let i=1;i<=8;i++) out.push(`<option value="temp${i}">Vstup TEMP${i}</option>`);
-    out.push(`</optgroup>`);
-
     return out.join("");
   }
 
@@ -311,7 +306,17 @@
       host.appendChild(row);
       const sel = row.querySelector("select");
       sel.innerHTML = optsHtml;
-      sel.value = encodeRoleVal(cfg, role);
+      const curVal = encodeRoleVal(cfg, role);
+
+      // If configuration contains legacy TEMPx source, show it read-only (so it doesn't get lost on save).
+      if (/^temp[1-8]$/.test(curVal) && !sel.querySelector(`option[value="${curVal}"]`)) {
+      const opt = document.createElement("option");
+      opt.value = curVal;
+      opt.textContent = `${curVal.toUpperCase()} (legacy – jen zobrazení)`;
+      opt.disabled = true;
+      sel.insertBefore(opt, sel.firstChild);
+      }
+      sel.value = curVal;
     }
 
     updateRoleTempCells(cfg, lastDash);

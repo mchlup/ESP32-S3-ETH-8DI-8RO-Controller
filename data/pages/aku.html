@@ -1,82 +1,112 @@
 <section class="page" id="page-aku">
-        <div class="summaryBar">
-          <div class="summaryMain">
-            <div class="summaryTitle">
-              <span class="summaryIcon">⛁</span>
-              <div>
-                <div class="h2">Podpora AKU</div>
-                <div class="muted">Logika využití akumulační nádrže v rámci ekvitermu.</div>
-              </div>
-            </div>
-            <span class="chip" id="chip-aku">—</span>
-          </div>
-          <div class="summaryActions">
-            <span class="dirty" id="dirty-aku" hidden>Neuloženo</span>
-            <button class="btn" id="btnSaveAku" type="button">Uložit</button>
-            <button class="btn ghost" id="btnReloadAku" type="button">Obnovit</button>
+  <div class="summaryBar">
+    <div class="summaryMain">
+      <div class="summaryTitle">
+        <span class="summaryIcon">⛁</span>
+        <div>
+          <div class="h2">Podpora AKU</div>
+          <div class="muted">Logika využití akumulační nádrže v rámci ekvitermu.</div>
+        </div>
+      </div>
+      <span class="chip" id="chip-aku">—</span>
+    </div>
+    <div class="summaryActions">
+      <span class="dirty" id="dirty-aku" hidden>Neuloženo</span>
+      <button class="btn" id="btnSaveAku" type="button">Uložit</button>
+      <button class="btn ghost" id="btnReloadAku" type="button">Obnovit</button>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <details class="helpDrawer">
+      <summary>Nápověda</summary>
+      <div class="helpBody">
+        <ul class="helpList">
+          <li>Funkce běží <b>v rámci ekvitermu</b>. Pokud je ekviterm vypnutý, AKU podpora se neuplatní.</li>
+          <li>Vyžaduje role teploměrů: <b>tankTop/mid/bottom</b>. Pro porovnání se targetem se používá <b>flow</b> (boiler_in).</li>
+          <li>Směšovací ventil (3c) se bere z role výstupu <b>valve_3way_mix</b>.</li>
+        </ul>
+        <div class="btnRow">
+          <a class="btn ghost" href="#temps">Upravit v Teploměry</a>
+          <a class="btn ghost" href="#iofunc">Upravit ve Funkce I/O</a>
+          <a class="btn ghost" href="#ekviterm">Otevřít Ekviterm</a>
+        </div>
+      </div>
+    </details>
+
+    <div class="card">
+      <div class="cardHead">
+        <div>
+          <div class="cardTitle">Použité přiřazení</div>
+          <div class="muted">Role → konkrétní senzory a výstupy</div>
+        </div>
+      </div>
+      <div class="pad">
+        <ul class="roleList" id="akuRoleList"></ul>
+      </div>
+    </div>
+  </div>
+
+  <details class="accordion" open>
+    <summary>Základní parametry</summary>
+    <div class="pad" id="mount-aku">
+      <div class="card">
+        <div class="cardHead">
+          <div>
+            <div class="cardTitle">Parametry AKU podpory</div>
+            <div class="muted">Prahy pro využití tepla z akumulace + chování při nedostupné podpoře.</div>
           </div>
         </div>
-        <div class="grid2">
-          <details class="helpDrawer">
-            <summary>Nápověda</summary>
-            <div class="helpBody">
-              <ul class="helpList">
-                <li>Funkce využívá teplotní role <b>tankTop/mid/bottom</b>.</li>
-                <li>Chování při nedostatku tepla z AKU nastavíš v parametrech níže.</li>
-              </ul>
-              <div class="btnRow">
-                <a class="btn ghost" href="#temps">Upravit v Teploměry</a>
-              </div>
-            </div>
-          </details>
-          <div class="card">
-            <div class="cardHead">
-              <div>
-                <div class="cardTitle">Použité přiřazení</div>
-                <div class="muted">Role → konkrétní senzory</div>
-              </div>
-            </div>
-            <div class="pad">
-              <ul class="roleList" id="akuRoleList"></ul>
-            </div>
-          </div>
-        </div>
-        <details class="accordion" open>
-          <summary>Základní parametry</summary>
-          <div class="pad">
-            <div class="card">
-              <div class="cardHead">
-                <div>
-                  <div class="cardTitle">Parametry AKU podpory</div>
-                  <div class="muted">Nastavení prahů a chování při využití akumulace.</div>
+        <div class="pad">
+          <div class="ioGrid">
+            <div class="ioRow" id="eqAkuSupportRow">
+              <div class="ioLabel">AKU podpora</div>
+              <div class="ioValue">
+                <div class="row2">
+                  <div>
+                    <label class="mini">Povolit</label>
+                    <label class="switch"><input id="eqAkuSupportEnabled" type="checkbox"><span class="slider"></span></label>
+                  </div>
+                  <div>
+                    <label class="mini">Chování bez podpory</label>
+                    <select id="eqAkuNoSupportBehavior">
+                      <option value="close">Zavřít ventil</option>
+                      <option value="hold">Držet polohu</option>
+                      <option value="open">Otevřít ventil</option>
+                    </select>
+                  </div>
                 </div>
-              </div>
-              <div class="pad">
-                <div class="eqCurveGrid" id="akuParamGrid">
-<div class="ioRow" id="eqAkuSupportRow">
-          <div class="ioLabel">AKU podpora</div>
-          <div class="ioValue">
-            <div class="row2">
-              <div>
-                <label class="mini">Povolit</label>
-                <label class="switch"><input id="eqAkuSupportEnabled" type="checkbox"><span class="slider"></span></label>
-              </div>
-              <div>
-                <label class="mini">Chování když není výhodné</label>
-                <select id="eqAkuNoSupportBehavior">
-                  <option value="close">Zavřít V2</option>
-                  <option value="hold">Držet polohu</option>
-                </select>
+
+                <div class="row3 mt8">
+                  <div><label class="mini">Min AKU top °C (den)</label><input id="eqAkuMinTopCDay" type="number" step="0.1"></div>
+                  <div><label class="mini">Min Δ k target °C (den)</label><input id="eqAkuMinDeltaToTargetCDay" type="number" step="0.1"></div>
+                  <div><label class="mini">Min Δ k boiler_in °C (den)</label><input id="eqAkuMinDeltaToBoilerInCDay" type="number" step="0.1"></div>
+                </div>
+
+                <div class="row3 mt8">
+                  <div><label class="mini">Min AKU top °C (noc)</label><input id="eqAkuMinTopCNight" type="number" step="0.1"></div>
+                  <div><label class="mini">Min Δ k target °C (noc)</label><input id="eqAkuMinDeltaToTargetCNight" type="number" step="0.1"></div>
+                  <div><label class="mini">Min Δ k boiler_in °C (noc)</label><input id="eqAkuMinDeltaToBoilerInCNight" type="number" step="0.1"></div>
+                </div>
+
+                <div class="hint mt8">Target = požadovaná teplota ekvitermu. Boiler_in = vstupní teplota do kotle (role <b>flow</b>).</div>
               </div>
             </div>
-</div>
+
+            <div class="ioRow">
+              <div class="ioLabel">Stav</div>
+              <div class="ioValue">
+                <pre id="akuStatusBox" class="mono small"></pre>
               </div>
             </div>
-            <div id="mount-aku"></div>
           </div>
-        </details>
-        <details class="accordion">
-          <summary>Pokročilé</summary>
-          <div class="pad muted">Pokročilé parametry AKU podpory nejsou aktivní.</div>
-        </details>
-      </section>
+        </div>
+      </div>
+    </div>
+  </details>
+
+  <details class="accordion">
+    <summary>Pokročilé</summary>
+    <div class="pad muted">Pokročilé volby AKU podpory se odvíjí od ekvitermu a aktuálního režimu systému.</div>
+  </details>
+</section>

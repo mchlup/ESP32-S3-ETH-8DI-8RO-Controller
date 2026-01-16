@@ -66,7 +66,9 @@
           <div class="cardTitle">Ekviterm</div>
           <div class="cardSub">Dynamická volba teploměrů DS18B20 / MQTT / BLE + řízení 3c ventilu (AUTO)</div>
         </div>
-        <button class="btn" id="btnSaveEquitherm">Uložit</button>
+        <!-- Save button is mounted in the page header (summary bar) via data-mount="btnSaveEquitherm".
+             Keeping a second button with the same logical action here can lead to duplicate event wiring
+             or duplicate IDs if the mount system generates its own button element. -->
       </div>
 
       <div class="ioGrid">
@@ -85,14 +87,6 @@
           <div class="ioValue">
             <select id="eqOutdoorSource">
               <option value="dallas">DS18B20 (Dallas)</option>
-              <option value="temp1">Vstup TEMP1 (legacy)</option>
-              <option value="temp2">Vstup TEMP2 (legacy)</option>
-              <option value="temp3">Vstup TEMP3 (legacy)</option>
-              <option value="temp4">Vstup TEMP4 (legacy)</option>
-              <option value="temp5">Vstup TEMP5 (legacy)</option>
-              <option value="temp6">Vstup TEMP6 (legacy)</option>
-              <option value="temp7">Vstup TEMP7 (legacy)</option>
-              <option value="temp8">Vstup TEMP8 (legacy)</option>
               <option value="mqtt">MQTT</option>
               <option value="ble">BLE teploměr</option>
               <option value="none">Nepoužít</option>
@@ -126,14 +120,6 @@
           <div class="ioValue">
             <select id="eqFlowSource">
               <option value="dallas">DS18B20 (Dallas)</option>
-              <option value="temp1">Vstup TEMP1 (legacy)</option>
-              <option value="temp2">Vstup TEMP2 (legacy)</option>
-              <option value="temp3">Vstup TEMP3 (legacy)</option>
-              <option value="temp4">Vstup TEMP4 (legacy)</option>
-              <option value="temp5">Vstup TEMP5 (legacy)</option>
-              <option value="temp6">Vstup TEMP6 (legacy)</option>
-              <option value="temp7">Vstup TEMP7 (legacy)</option>
-              <option value="temp8">Vstup TEMP8 (legacy)</option>
               <option value="mqtt">MQTT</option>
               <option value="ble">BLE teploměr</option>
               <option value="none">Nepoužít</option>
@@ -314,6 +300,23 @@
               <div><label class="mini">No-flow timeout (s)</label><input id="eqNoFlowTimeoutS" type="number" step="1"></div>
             </div>
             <div class="row2 mt8">
+          <div>
+            <label class="mini">Vyžadovat heat_call</label>
+            <label class="switch">
+              <input id="eqRequireHeatCall" type="checkbox">
+              <span class="slider"></span>
+            </label>
+          </div>
+          <div>
+            <label class="mini">Chování bez heat_call</label>
+            <select id="eqNoHeatCallBehavior">
+              <option value="hold">Držet polohu</option>
+              <option value="close">Zavřít ventil</option>
+              <option value="open">Otevřít ventil</option>
+            </select>
+          </div>
+        </div>
+            <div class="row2 mt8">
               <div><label class="mini">Max % (den)</label><input id="eqMaxPctDay" type="number" step="1"></div>
               <div><label class="mini">Max % (noc)</label><input id="eqMaxPctNight" type="number" step="1"></div>
             </div>
@@ -423,15 +426,23 @@
               </div>
             </div>
           </div>
-        </details>
+            <div class="row2 mt8">
+                <button class="btn ghost" id="btnEqCopyDayToNight" type="button">Kopírovat Den → Noc</button>
+                <button class="btn ghost" id="btnEqCopyNightToDay" type="button">Kopírovat Noc → Den</button>
+            </div>
 
+            <div class="row2 mt8">
+                <button class="btn ghost" id="btnEqRefsToFormulaDay" type="button">Den: body → slope/shift</button>
+                <button class="btn ghost" id="btnEqFormulaToRefsDay" type="button">Den: slope/shift → body</button>
+            </div>
+
+            <div class="row2 mt8">
+                <button class="btn ghost" id="btnEqRefsToFormulaNight" type="button">Noc: body → slope/shift</button>
+                <button class="btn ghost" id="btnEqFormulaToRefsNight" type="button">Noc: slope/shift → body</button>
+            </div>
+        </details>
       </div>
     </div>
-  </div>
-</div>
-</div>
-
-
   </div>
         </details>
         <details class="accordion">

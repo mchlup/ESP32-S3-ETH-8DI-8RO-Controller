@@ -115,6 +115,17 @@
     statusBox: $("eqStatusBox"),
 
     curveCanvas: $("eqCurveCanvas"),
+
+    requireHeatCall: $("eqRequireHeatCall"),
+    noHeatCallBehavior: $("eqNoHeatCallBehavior"),
+
+    btnEqCopyDayToNight: $("btnEqCopyDayToNight"),
+    btnEqCopyNightToDay: $("btnEqCopyNightToDay"),
+    btnEqRefsToFormulaDay: $("btnEqRefsToFormulaDay"),
+    btnEqFormulaToRefsDay: $("btnEqFormulaToRefsDay"),
+    btnEqRefsToFormulaNight: $("btnEqRefsToFormulaNight"),
+    btnEqFormulaToRefsNight: $("btnEqFormulaToRefsNight"),
+
   };
 
     if (!window.App || !el.btnSave) {
@@ -305,124 +316,169 @@
   }
 
   function drawCurve(status) {
-    const c = el.curveCanvas;
-    if (!c || !c.getContext) return;
-    const ctx = c.getContext("2d");
+  const c = el.curveCanvas;
+  if (!c || !c.getContext) return;
+  const ctx = c.getContext("2d");
 
-    // Canvas je v DOM často škálovaný přes CSS. Při změně šířky okna (layout 1/2 sloupce)
-    // proto přepočítáme interní rozlišení na aktuální velikost v px, aby se nerozbilo vykreslení.
-    const rect = c.getBoundingClientRect();
-    const dpr = (window.devicePixelRatio || 1);
-    const cssW = Math.max(10, Math.round(rect.width));
-    const cssH = Math.max(10, Math.round(rect.height));
-    const needW = Math.round(cssW * dpr);
-    const needH = Math.round(cssH * dpr);
-    if (c.width !== needW || c.height !== needH) {
-      c.width = needW;
-      c.height = needH;
-    }
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const rect = c.getBoundingClientRect();
+  const dpr = (window.devicePixelRatio || 1);
+  const cssW = Math.max(10, Math.round(rect.width));
+  const cssH = Math.max(10, Math.round(rect.height));
+  const needW = Math.round(cssW * dpr);
+  const needH = Math.round(cssH * dpr);
+  if (c.width !== needW || c.height !== needH) {
+    c.width = needW;
+    c.height = needH;
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    // čti hodnoty z UI (i když nejsou uložené)
-    const slopeDay = parseFloat(el.slopeDay.value || "1");
-    const shiftDay = parseFloat(el.shiftDay.value || "0");
-    const slopeNight = parseFloat(el.slopeNight.value || "1");
-    const shiftNight = parseFloat(el.shiftNight.value || "0");
-    const minFlow = parseFloat(el.minFlow.value || "0");
-    const maxFlow = parseFloat(el.maxFlow.value || "100");
-    const offsetC = parseFloat(el.curveOffsetC.value || "0");
+  const W = cssW, H = cssH;
+  ctx.clearRect(0, 0, W, H);
 
-    const W = cssW, H = cssH;
-    const fg = (window.getComputedStyle ? getComputedStyle(c).color : "#000") || "#000";
-    ctx.clearRect(0, 0, W, H);
+  const fg = "rgba(255,255,255,0.85)";
+  const grid = "rgba(255,255,255,0.12)";
+  const axis = "rgba(255,255,255,0.28)";
+  const dayColor = "rgba(45,212,191,0.95)";
+  const nightColor = "rgba(147,197,253,0.95)";
 
-    // rozsah os
-    const xMin = -20, xMax = 20;              // venkovní teplota
-    let yMin = clamp(minFlow, -20, 120);
-    let yMax = clamp(maxFlow, -20, 120);
-    if (!isFinite(yMin)) yMin = 0;
-    if (!isFinite(yMax)) yMax = 100;
-    if (Math.abs(yMax - yMin) < 0.1) yMax = yMin + 1;
-    const padL = 44, padR = 14, padT = 14, padB = 28;
+  const minFlow = num(el.minFlow?.value, 25);
+  const maxFlow = num(el.maxFlow?.value, 55);
+  const slopeDay = num(el.slopeDay?.value, 0);
+  const shiftDay = num(el.shiftDay?.value, 0);
+  const slopeNight = num(el.slopeNight?.value, slopeDay);
+  const shiftNight = num(el.shiftNight?.value, shiftDay);
+  const offsetC = num(el.curveOffsetC?.value, 0);
 
-    const x2px = (x) => padL + ((x - xMin) / (xMax - xMin)) * (W - padL - padR);
-    const y2px = (y) => (H - padB) - ((y - yMin) / (yMax - yMin)) * (H - padT - padB);
+  const xMin = -20, xMax = 20;
+  let yMin = Math.min(minFlow, maxFlow);
+  let yMax = Math.max(minFlow, maxFlow);
+  if (!Number.isFinite(yMin)) yMin = 0;
+  if (!Number.isFinite(yMax)) yMax = 100;
+  if (Math.abs(yMax - yMin) < 0.1) yMax = yMin + 1;
 
-    // mřížka
-    ctx.globalAlpha = 0.35;
-    ctx.lineWidth = 1;
-    ctx.strokeStyle = fg;
-    ctx.beginPath();
-    for (let x = -20; x <= 20; x += 10) {
-      const px = x2px(x);
-      ctx.moveTo(px, padT);
-      ctx.lineTo(px, H - padB);
-    }
-    for (let y = Math.ceil(yMin/10)*10; y <= yMax; y += 10) {
-      const py = y2px(y);
-      ctx.moveTo(padL, py);
-      ctx.lineTo(W - padR, py);
-    }
-    ctx.stroke();
-    ctx.globalAlpha = 1;
+  // "nice" krok Y (cca 5 dílků)
+  const yRange = (yMax - yMin);
+  const rawStep = yRange / 5;
+  const steps = [1,2,5,10,15,20,25,30,40,50];
+  let yStep = steps[0];
+  for (const s of steps) { if (s >= rawStep) { yStep = s; break; } }
 
-    // osy
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(padL, padT);
-    ctx.lineTo(padL, H - padB);
-    ctx.lineTo(W - padR, H - padB);
-    ctx.stroke();
+  const padL = 52, padR = 14, padT = 14, padB = 34;
+  const x2px = (x) => padL + ((x - xMin) / (xMax - xMin)) * (W - padL - padR);
+  const y2px = (y) => (H - padB) - ((y - yMin) / (yMax - yMin)) * (H - padT - padB);
 
-    // popisky os
-    ctx.font = "12px system-ui, -apple-system, Segoe UI, Roboto, Arial";
-    ctx.fillStyle = fg;
-    ctx.fillText("Tout (°C)", W - padR - 70, H - 8);
-    ctx.save();
-    ctx.translate(12, padT + 90);
-    ctx.rotate(-Math.PI / 2);
-    ctx.fillText("Target Tflow (°C)", 0, 0);
-    ctx.restore();
+  // mřížka
+  ctx.strokeStyle = grid;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let x = -20; x <= 20; x += 10) {
+    const px = x2px(x);
+    ctx.moveTo(px, padT);
+    ctx.lineTo(px, H - padB);
+  }
+  const yStart = Math.ceil(yMin / yStep) * yStep;
+  for (let y = yStart; y <= yMax + 1e-6; y += yStep) {
+    const py = y2px(y);
+    ctx.moveTo(padL, py);
+    ctx.lineTo(W - padR, py);
+  }
+  ctx.stroke();
 
-    function plotLine(slope, shift, dashed) {
-      ctx.save();
-      if (dashed) ctx.setLineDash([6, 5]); else ctx.setLineDash([]);
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      let first = true;
-      for (let x = xMin; x <= xMax; x += 1) {
-        const y = computeTargetFlow(x, slope, shift, minFlow, maxFlow, offsetC);
-        const px = x2px(x);
-        const py = y2px(y);
-        if (first) { ctx.moveTo(px, py); first = false; }
-        else ctx.lineTo(px, py);
-      }
-      ctx.stroke();
-      ctx.restore();
-    }
+  // osy
+  ctx.strokeStyle = axis;
+  ctx.beginPath();
+  ctx.moveTo(padL, padT);
+  ctx.lineTo(padL, H - padB);
+  ctx.lineTo(W - padR, H - padB);
+  ctx.stroke();
 
-    // den (plná), noc (čárkovaná)
-    plotLine(slopeDay, shiftDay, false);
-    plotLine(slopeNight, shiftNight, true);
-
-    // aktuální bod z /api/status
-    const st = status && status.equitherm ? status.equitherm : null;
-    if (st && typeof st.outdoorC === "number" && isFinite(st.outdoorC)) {
-      const x = clamp(st.outdoorC, xMin, xMax);
-      const isNight = !!st.night;
-      const slope = isNight ? slopeNight : slopeDay;
-      const shift = isNight ? shiftNight : shiftDay;
-      const yCalc = computeTargetFlow(x, slope, shift, minFlow, maxFlow, offsetC);
-      const y = clamp(yCalc, yMin, yMax);
-      const px = x2px(x), py = y2px(y);
-
-      ctx.beginPath();
-      ctx.arc(px, py, 5, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillText(`${x.toFixed(1)} → ${y.toFixed(1)}${isNight ? " (noc)" : ""}`, px + 8, py - 8);
-    }
+  // tick labely X
+  ctx.fillStyle = fg;
+  ctx.font = "12px system-ui, -apple-system, Segoe UI, Roboto, Arial";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+  for (let x = -20; x <= 20; x += 10) {
+    ctx.fillText(String(x), x2px(x), H - padB + 6);
   }
 
+  // tick labely Y
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  for (let y = yStart; y <= yMax + 1e-6; y += yStep) {
+    ctx.fillText(String(Math.round(y)), padL - 6, y2px(y));
+  }
+
+  // popisky os
+  ctx.textAlign = "center";
+  ctx.textBaseline = "bottom";
+  ctx.fillText("Venkovní teplota Tout (°C)", (padL + (W - padR)) / 2, H - 2);
+
+  ctx.save();
+  ctx.translate(12, (padT + (H - padB)) / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+  ctx.fillText("Cílová teplota Tflow (°C)", 0, 0);
+  ctx.restore();
+
+  // křivky
+  const drawLine = (slope, shift, color, dashed) => {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.setLineDash(dashed ? [6, 4] : []);
+    ctx.beginPath();
+    let first = true;
+    for (let x = xMin; x <= xMax + 1e-6; x += 1) {
+      const y = computeTargetFlow(x, slope, shift, minFlow, maxFlow, offsetC);
+      const px = x2px(x), py = y2px(y);
+      if (first) { ctx.moveTo(px, py); first = false; }
+      else ctx.lineTo(px, py);
+    }
+    ctx.stroke();
+    ctx.setLineDash([]);
+  };
+
+  drawLine(slopeDay, shiftDay, dayColor, false);
+  drawLine(slopeNight, shiftNight, nightColor, true);
+
+  // legenda
+  ctx.fillStyle = fg;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  const lx = padL + 8, ly = padT + 6;
+  ctx.fillText("Den", lx + 18, ly);
+  ctx.fillText("Noc", lx + 18, ly + 16);
+
+  ctx.strokeStyle = dayColor;
+  ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(lx, ly + 6); ctx.lineTo(lx + 14, ly + 6); ctx.stroke();
+
+  ctx.strokeStyle = nightColor;
+  ctx.setLineDash([6, 4]);
+  ctx.beginPath(); ctx.moveTo(lx, ly + 22); ctx.lineTo(lx + 14, ly + 22); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // aktuální bod
+  const st = status?.equitherm;
+  if (st && typeof st.outdoorC === "number" && Number.isFinite(st.outdoorC)) {
+    const x = Math.max(xMin, Math.min(xMax, st.outdoorC));
+    const isNight = !!st.night;
+    const slope = isNight ? slopeNight : slopeDay;
+    const shift = isNight ? shiftNight : shiftDay;
+    const y = computeTargetFlow(x, slope, shift, minFlow, maxFlow, offsetC);
+
+    const px = x2px(x), py = y2px(y);
+    ctx.fillStyle = fg;
+    ctx.beginPath();
+    ctx.arc(px, py, 5, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.font = "12px system-ui, -apple-system, Segoe UI, Roboto, Arial";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "bottom";
+    ctx.fillText(`${x.toFixed(1)} → ${y.toFixed(1)}${isNight ? " (noc)" : ""}`, px + 8, py - 8);
+  }
+}
 
   function parseDallasValue(v) {
     // value = "dallas:<gpio>:<romHex>"
@@ -596,9 +652,7 @@
     const base = [
       { v: "dallas", t: "DS18B20 (Dallas)" },
     ];
-    if (allowLegacyTemps) {
-      for (let i = 1; i <= 8; i++) base.push({ v: `temp${i}`, t: `Vstup TEMP${i} (legacy)` });
-    }
+    
     base.push(
       { v: "mqtt", t: "MQTT" },
       { v: "opentherm_boiler", t: "OpenTherm – kotel (flow)" },
@@ -855,6 +909,8 @@
 
     el.curveOffsetC.value = (typeof e.curveOffsetC === "number") ? e.curveOffsetC : 0;
     el.maxBoilerInC.value = (typeof e.maxBoilerInC === "number") ? e.maxBoilerInC : 55;
+    el.requireHeatCall.checked = !!e.requireHeatCall;
+    el.noHeatCallBehavior.value = (e.noHeatCallBehavior || "hold");
     el.noFlowDetectEnabled.checked = (typeof e.noFlowDetectEnabled === "boolean") ? e.noFlowDetectEnabled : true;
     el.noFlowTimeoutS.value = Math.round(((typeof e.noFlowTimeoutMs === "number") ? e.noFlowTimeoutMs : 180000) / 1000);
     el.noFlowTestPeriodS.value = Math.round(((typeof e.noFlowTestPeriodMs === "number") ? e.noFlowTestPeriodMs : 180000) / 1000);
@@ -1033,6 +1089,8 @@
 
     e.curveOffsetC = readNumber(el.curveOffsetC.value, e.curveOffsetC ?? 0);
     e.maxBoilerInC = readNumber(el.maxBoilerInC.value, e.maxBoilerInC ?? 55);
+    e.requireHeatCall = !!el.requireHeatCall.checked;
+    e.noHeatCallBehavior = String(el.noHeatCallBehavior.value || "hold");
     e.noFlowDetectEnabled = !!el.noFlowDetectEnabled.checked;
     e.noFlowTimeoutMs = Math.max(10000, readNumber(el.noFlowTimeoutS.value, (e.noFlowTimeoutMs ?? 180000) / 1000) * 1000);
     e.noFlowTestPeriodMs = Math.max(10000, readNumber(el.noFlowTestPeriodS.value, (e.noFlowTestPeriodMs ?? 180000) / 1000) * 1000);
@@ -1253,7 +1311,104 @@
     drawCurve(status);
   }
 
+  function num(v, def) {
+  const x = Number(String(v ?? "").replace(",", "."));
+  return Number.isFinite(x) ? x : def;
+}
+
+function setInputValue(input, value) {
+  if (!input) return;
+  input.value = (Number.isFinite(value) ? String(Math.round(value * 1000) / 1000) : "");
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+function computeSlopeShiftFromRefs(tout1, tflow1, tout2, tflow2) {
+  const dx = tout2 - tout1;
+  if (!Number.isFinite(dx) || Math.abs(dx) < 1e-6) return null;
+  const slope = (tflow2 - tflow1) / dx;
+  const shift = tflow1 - slope * tout1;
+  return { slope, shift };
+}
+
+function computeRefsFromFormula(slope, shift, tout1, tout2, minFlow, maxFlow, offsetC) {
+  const t1 = computeTargetFlow(tout1, slope, shift, minFlow, maxFlow, offsetC);
+  const t2 = computeTargetFlow(tout2, slope, shift, minFlow, maxFlow, offsetC);
+  return { tflow1: t1, tflow2: t2 };
+}
+
   function bindEvents() {
+    function copyDayToNight() {
+  setInputValue(el.slopeNight, num(el.slopeDay.value, 0));
+  setInputValue(el.shiftNight, num(el.shiftDay.value, 0));
+  setInputValue(el.maxPctNight, num(el.maxPctDay.value, 100));
+  setInputValue(el.nightTout1, num(el.heatTout1.value, -10));
+  setInputValue(el.nightTflow1, num(el.heatTflow1.value, 0));
+  setInputValue(el.nightTout2, num(el.heatTout2.value, 15));
+  setInputValue(el.nightTflow2, num(el.heatTflow2.value, 0));
+  drawCurve(App.getStatus?.());
+}
+
+function copyNightToDay() {
+  setInputValue(el.slopeDay, num(el.slopeNight.value, 0));
+  setInputValue(el.shiftDay, num(el.shiftNight.value, 0));
+  setInputValue(el.maxPctDay, num(el.maxPctNight.value, 100));
+  setInputValue(el.heatTout1, num(el.nightTout1.value, -10));
+  setInputValue(el.heatTflow1, num(el.nightTflow1.value, 0));
+  setInputValue(el.heatTout2, num(el.nightTout2.value, 15));
+  setInputValue(el.heatTflow2, num(el.nightTflow2.value, 0));
+  drawCurve(App.getStatus?.());
+}
+
+    function refsToFormula(isNight) {
+      const tout1 = num(isNight ? el.nightTout1.value : el.heatTout1.value, -10);
+      const tflow1 = num(isNight ? el.nightTflow1.value : el.heatTflow1.value, 40);
+      const tout2 = num(isNight ? el.nightTout2.value : el.heatTout2.value, 15);
+      const tflow2 = num(isNight ? el.nightTflow2.value : el.heatTflow2.value, 30);
+
+      const res = computeSlopeShiftFromRefs(tout1, tflow1, tout2, tflow2);
+      if (!res) return;
+
+      if (isNight) {
+        setInputValue(el.slopeNight, res.slope);
+        setInputValue(el.shiftNight, res.shift);
+      } else {
+        setInputValue(el.slopeDay, res.slope);
+        setInputValue(el.shiftDay, res.shift);
+      }
+      drawCurve(App.getStatus?.());
+    }
+
+    function formulaToRefs(isNight) {
+      const slope = num(isNight ? el.slopeNight.value : el.slopeDay.value, 0);
+      const shift = num(isNight ? el.shiftNight.value : el.shiftDay.value, 0);
+
+      const tout1 = num(isNight ? el.nightTout1.value : el.heatTout1.value, -10);
+      const tout2 = num(isNight ? el.nightTout2.value : el.heatTout2.value, 15);
+
+      const minFlow = num(el.minFlow.value, 25);
+      const maxFlow = num(el.maxFlow.value, 55);
+      const offsetC = num(el.curveOffsetC.value, 0);
+
+      const refs = computeRefsFromFormula(slope, shift, tout1, tout2, minFlow, maxFlow, offsetC);
+
+      if (isNight) {
+        setInputValue(el.nightTflow1, refs.tflow1);
+        setInputValue(el.nightTflow2, refs.tflow2);
+      } else {
+        setInputValue(el.heatTflow1, refs.tflow1);
+        setInputValue(el.heatTflow2, refs.tflow2);
+      }
+      drawCurve(App.getStatus?.());
+    }
+
+    el.btnEqCopyDayToNight?.addEventListener("click", copyDayToNight);
+    el.btnEqCopyNightToDay?.addEventListener("click", copyNightToDay);
+    el.btnEqRefsToFormulaDay?.addEventListener("click", () => refsToFormula(false));
+    el.btnEqFormulaToRefsDay?.addEventListener("click", () => formulaToRefs(false));
+    el.btnEqRefsToFormulaNight?.addEventListener("click", () => refsToFormula(true));
+    el.btnEqFormulaToRefsNight?.addEventListener("click", () => formulaToRefs(true));
+
     el.outdoorSource.addEventListener("change", updateSourceRows);
     el.flowSource.addEventListener("change", updateSourceRows);
     el.akuTopSource.addEventListener("change", updateSourceRows);

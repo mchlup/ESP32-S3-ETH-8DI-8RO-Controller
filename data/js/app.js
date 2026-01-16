@@ -28,13 +28,21 @@
 
   if (router?.init) router.init();
 
+  // Polling startujeme až po prvním načtení dat.
+  // Jinak (při pomalém /api/status) vzniká „request storm“ a UI se může zablokovat.
+  const startPollingSafe = () => {
+    try { polling?.start?.(); } catch (_) {}
+  };
+
   if (legacy?.loadAll) {
     legacy.loadAll().then(() => {
       toast?.('Připraveno');
     }).catch((err) => {
       toast?.(`Načtení selhalo: ${err.message}`, 'bad');
+    }).finally(() => {
+      startPollingSafe();
     });
+  } else {
+    startPollingSafe();
   }
-
-  if (polling?.start) polling.start();
 })();

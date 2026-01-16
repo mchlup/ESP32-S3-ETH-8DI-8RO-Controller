@@ -19,6 +19,7 @@
     bypassInvert: $("tuvBypassInvert"),
     bypassPct: $("tuvBypassPct"),
     chPct: $("tuvChPct"),
+    valveTargetPct: $("tuvValveTargetPct"),
     restoreEqValve: $("tuvRestoreEqValve"),
     statusBox: $("tuvStatusBox"),
   };
@@ -168,6 +169,7 @@
     el.bypassInvert.checked = !!bv.invert;
     el.bypassPct.value = clampPct(bv.bypassPct ?? 100);
     el.chPct.value = clampPct(bv.chPct ?? 100);
+    if (el.valveTargetPct) el.valveTargetPct.value = clampPct(t.valveTargetPct ?? 0);
     el.restoreEqValve.checked = (typeof t.restoreEqValveAfter === "boolean") ? t.restoreEqValveAfter : true;
     updateEnableHint(cfg);
     renderRoleList();
@@ -201,6 +203,7 @@
     cfg.tuv.demandInput = readInt(el.demandInput.value, 0);
     cfg.tuv.requestRelay = readInt(el.requestRelay.value, 0);
     cfg.tuv.eqValveTargetPct = clampPct(el.eqValveTargetPct.value);
+    if (el.valveTargetPct) cfg.tuv.valveTargetPct = clampPct(el.valveTargetPct.value);
     cfg.tuv.valveMaster = readInt(el.valveMaster.value, 0);
     cfg.tuv.restoreEqValveAfter = !!el.restoreEqValve.checked;
     cfg.tuv.bypassValve = (cfg.tuv.bypassValve && typeof cfg.tuv.bypassValve === "object") ? cfg.tuv.bypassValve : {};
@@ -232,9 +235,10 @@
     if (tuvMaster > 0) {
       const pos = clampPct(st.valvePosPct ?? 0);
       const bv = cfg?.tuv?.bypassValve || {};
-      const tgt = clampPct(st.valveTargetPct ?? (active ? (bv.bypassPct ?? 100) : (bv.chPct ?? 100)));
+      const tgt = clampPct(st.valveTargetPct ?? (bv.enabled ? (active ? (bv.bypassPct ?? 100) : (bv.chPct ?? 100)) : (active ? (cfg?.tuv?.valveTargetPct ?? 0) : 0)));
       const moving = st.valveMoving ? " • pohyb" : "";
-      lines.push(`Bypass ventil: master ${tuvMaster} • ${pos}% → ${tgt}%${moving}`);
+      const lbl = bv.enabled ? "Bypass ventil" : "Ventil TUV";
+      lines.push(`${lbl}: master ${tuvMaster} • ${pos}% → ${tgt}%${moving}`);
     }
 
     el.statusBox.textContent = lines.join("\n");
