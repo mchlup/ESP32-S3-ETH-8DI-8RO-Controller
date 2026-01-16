@@ -676,11 +676,13 @@ function drawEquithermCurve() {
 
 function setActiveSection(hash) {
   const page = (hash || "#dashboard").replace("#", "");
-  document.querySelectorAll(".section").forEach((section) => {
-    section.classList.toggle("hidden", section.id !== page);
+  const sections = Array.from(document.querySelectorAll(".section"));
+  const active = sections.some((section) => section.id === page) ? page : "dashboard";
+  sections.forEach((section) => {
+    section.classList.toggle("hidden", section.id !== active);
   });
   document.querySelectorAll(".nav a").forEach((link) => {
-    link.classList.toggle("active", link.getAttribute("href") === `#${page}`);
+    link.classList.toggle("active", link.getAttribute("href") === `#${active}`);
   });
 }
 
@@ -929,10 +931,18 @@ async function stopBlePairing() {
 
 async function loadBlePaired() {
   try {
-    state.blePaired = await fetchJson("/api/ble/paired");
+    const response = await fetchJson("/api/ble/paired");
+    const paired = Array.isArray(response)
+      ? response
+      : Array.isArray(response?.paired)
+        ? response.paired
+        : Array.isArray(response?.devices)
+          ? response.devices
+          : [];
+    state.blePaired = paired;
     const container = $("blePaired");
     container.innerHTML = "";
-    (state.blePaired || []).forEach((device) => {
+    paired.forEach((device) => {
       const row = document.createElement("div");
       row.className = "inline";
       row.innerHTML = `
