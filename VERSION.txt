@@ -1,1 +1,1 @@
-v3.3.1 (BLE meteo reconnect fix; dynamic WebUI event wiring)
+v3.3.3 (stability: heap diagnostics in /api/status; BLE String reserves + case-insensitive MAC compare; prio1 retained)

@@ -7,6 +7,7 @@
 #include "FsController.h"
 #include <ArduinoJson.h>
 #include <WiFi.h>
+#include <esp_heap_caps.h>
 #include <math.h>
 #include "config_pins.h"
 #include <ctype.h>
@@ -34,7 +35,13 @@ static uint32_t g_rebootAtMs    = 0;
 static String g_configJson;
 static bool g_configLoaded = false;
 static DynamicJsonDocument g_dashDoc(32768);
-static DynamicJsonDocument g_statusDoc(12288);
+// /api/status narostlo (equitherm + TUV + recirc + opentherm + valves). 12k bývá na hraně a
+// vede k neúplným odpovědím (ArduinoJson při nedostatku kapacity tiše "ořeže" vnořené části).
+static DynamicJsonDocument g_statusDoc(24576);
+
+// Krátký cache pro /api/status (UI občas pošle více requestů těsně po sobě).
+static uint32_t g_statusCacheAtMs = 0;
+static bool     g_statusCacheValid = false;
 
 static void applyAllConfig(const String& json){
     networkApplyConfig(json);
@@ -47,6 +54,34 @@ static void applyAllConfig(const String& json){
     mqttApplyConfig(json);
 }
 
+// ===== Pomocné: streamované JSON odpovědi bez velkých String alokací =====
+static void sendJsonStreamed200(const JsonDocument& doc) {
+    WiFiClient client = server.client();
+
+    // Fallback (nemělo by nastat, ale radši bezpečně)
+    if (!client) {
+        String out;
+        serializeJson(doc, out);
+        server.send(200, "application/json", out);
+        return;
+    }
+
+    // Spočti délku bez alokace Stringu
+    const size_t len = measureJson(doc);
+
+    // Ručně odešli HTTP hlavičky + Content-Length, pak JSON přímo do socketu
+    client.print(F("HTTP/1.1 200 OK\r\n"));
+    client.print(F("Content-Type: application/json\r\n"));
+    client.print(F("Cache-Control: no-store, no-cache, must-revalidate, max-age=0\r\n"));
+    client.print(F("Pragma: no-cache\r\n"));
+    client.print(F("Expires: 0\r\n"));
+    client.print(F("Connection: close\r\n"));
+    client.print(F("Content-Length: "));
+    client.print(len);
+    client.print(F("\r\n\r\n"));
+
+    serializeJson(doc, client);
+}
 
 // ===== Pomocné funkce pro FS =====
 
@@ -84,6 +119,8 @@ static bool handleFileRead(const String& path) {
     else if (p.endsWith(".svg")) contentType = "image/svg+xml";
     else if (p.endsWith(".ico")) contentType = "image/x-icon";
 
+    // FS zámek drž jen krátce (open/exists). Streamování může trvat dlouho a blokovalo by
+    // paralelní FS operace (zápis konfigurace, upload atd.).
     fsLock();
     if (!LittleFS.exists(p)) {
         fsUnlock();
@@ -91,8 +128,8 @@ static bool handleFileRead(const String& path) {
     }
 
     File f = LittleFS.open(p, "r");
+    fsUnlock();
     if (!f) {
-        fsUnlock();
         return false;
     }
 
@@ -108,6 +145,7 @@ static bool handleFileRead(const String& path) {
     }
 
     server.streamFile(f, contentType);
+    fsLock();
     f.close();
     fsUnlock();
     return true;
@@ -283,6 +321,7 @@ static void handleApiDash() {
         if (isfinite(t)) temps.add(t);
         else temps.add(nullptr);
     }
+
     // --- Dallas diagnostics (GPIO0-3) ---
     JsonArray dallasArr = doc.createNestedArray("dallas");
     for (uint8_t gpio=0; gpio<=3; gpio++){
@@ -373,9 +412,8 @@ static void handleApiDash() {
         o["targetB"] = vs.targetB;
     }
 
-    String out;
-    serializeJson(doc, out);
-    server.send(200, "application/json", out);
+    // ✅ Stream JSON bez String out
+    sendJsonStreamed200(doc);
 }
 
 static bool saveConfigToFS() {
@@ -386,6 +424,15 @@ static bool saveConfigToFS() {
 // ===== API status =====
 
 void handleApiStatus() {
+    // Jednoduchý krátký cache: pokud je voláno příliš často, pošli poslední
+    // již sestavený JSON (bez znovu-skládání doc). Tím snížíš CPU/latenci při
+    // špičkách z WebUI.
+    const uint32_t nowMs = (uint32_t)millis();
+    if (g_statusCacheValid && (uint32_t)(nowMs - g_statusCacheAtMs) < 250) {
+        sendJsonStreamed200(g_statusDoc);
+        return;
+    }
+
     // Stabilní status přes ArduinoJson (bez ručního skládání Stringů)
     DynamicJsonDocument& doc = g_statusDoc;
     doc.clear();
@@ -436,7 +483,15 @@ void handleApiStatus() {
     }
 
     // --- uptime ---
-    doc["uptimeMs"] = (uint32_t)millis();
+    doc["uptimeMs"] = nowMs;
+
+    // --- heap diagnostics (stability) ---
+    {
+        JsonObject heap = doc.createNestedObject("heap");
+        heap["free"] = (uint32_t)ESP.getFreeHeap();
+        heap["minFree"] = (uint32_t)ESP.getMinFreeHeap();
+        heap["largest"] = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    }
 
     // --- wifi ---
     const bool netConn = networkIsConnected();
@@ -593,9 +648,12 @@ void handleApiStatus() {
         openthermFillJson(ot);
     }
 
-    String out;
-    serializeJson(doc, out);
-    server.send(200, "application/json", out);
+    // Aktualizuj cache timestamp pro případ, že UI pošle několik requestů těsně po sobě.
+    g_statusCacheAtMs = nowMs;
+    g_statusCacheValid = true;
+
+    // ✅ Stream JSON bez String out
+    sendJsonStreamed200(doc);
 }
 
 // ===== API relé =====

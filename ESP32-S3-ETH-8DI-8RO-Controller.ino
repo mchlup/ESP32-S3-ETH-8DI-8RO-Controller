@@ -179,25 +179,18 @@ void loop() {
         }
     }
 
-    // vstupy (debounce + callback)
-    inputUpdate();
-
-    // senzory (před logikou)
-    DallasController::loop();
-    //dallasLoop();
+    inputUpdate();              // vstupy (debounce + callback)
+    DallasController::loop();   // senzory (před logikou)
     networkLoop();
     mqttLoop();
-
-    // logika (AUTO/MANUAL + ventily + equitherm)
-    logicUpdate();
-
-    // OpenTherm (polling + setpoint)
-    openthermLoop();
-
+    // WebServer obsluž co nejdřív – BLE/NimBLE umí občas na chvíli zdržet loop.
+    // Dvojí volání je safe (server.handleClient() je neblokující) a výrazně zlepší latenci UI.
+    webserverLoop();
+    logicUpdate();              // logika (AUTO/MANUAL + ventily + equitherm)
+    openthermLoop();            // OpenTherm (polling + setpoint)
     bleLoop();
     rgbLedLoop();
     buzzerLoop();
-    // web server
-    webserverLoop();
+    webserverLoop();            // web server
     OTA::loop();
 }

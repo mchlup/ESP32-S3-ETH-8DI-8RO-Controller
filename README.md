@@ -16,6 +16,7 @@ Projekt je navržen jako mezičlánek mezi kotlem, ventily, čidly a nadřazený
 * ✅ Podpora více typů teploměrů:
 
   * DS18B20 (Dallas / OneWire)
+  * NTC (analogové vstupy)
   * MQTT teploměry (virtuální)
   * BLE (připraveno / rozšiřitelné)
 * ✅ Řízení relé a 3cestných ventilů (230 V) včetně kalibrace
@@ -36,6 +37,7 @@ Projekt je navržen jako mezičlánek mezi kotlem, ventily, čidly a nadřazený
 * Ovládání kotle pomocí relé / OpenTherm (rozšiřitelné)
 * Integrace chytrého termostatu (např. Nest) přes MQTT
 * Zobrazení a řízení přes Home Assistant
+* Univerzální I/O modul pro chytrou domácnost
 
 ---
 
@@ -53,6 +55,7 @@ Vlastnosti desky:
 * 8 digitálních vstupů
 * 8 reléových výstupů
 * Velká Flash (16 MB)
+* Vhodné pro průmyslovější nasazení
 
 ---
 
@@ -68,10 +71,13 @@ ESP-HeatAndDomesticController
 ├── FsController.*                # LittleFS
 ├── MqttController.*              # MQTT + Home Assistant
 ├── DallasController.*            # DS18B20
+├── NtcController.*               # NTC senzory
 ├── ThermometerController.*       # Abstrakce teploměrů
 ├── RelayController.*             # Relé
 ├── InputController.*             # Digitální vstupy
 ├── LogicController.*             # Hlavní logika
+├── ConditionEvaluator.*          # Vyhodnocování podmínek
+├── ActionExecutor.*              # Provádění akcí
 ├── OpenThermController.*         # OpenTherm (rozšiřitelné)
 ├── BleController.*               # BLE
 ├── RtcController.*               # RTC
@@ -88,6 +94,7 @@ ESP-HeatAndDomesticController
 
 * Dashboard se stavem systému
 * Konfigurace:
+
   * Síť (WiFi / MQTT)
   * Vstupy a výstupy
   * Teploměry
@@ -116,10 +123,12 @@ Tím se vyhneš situaci, kdy je uložená Wi-Fi MAC nebo stará BLE adresa a př
 * Dynamický výběr zdroje venkovní teploty:
 
   * DS18B20
+  * NTC
   * MQTT teploměr
 * Výpočet požadované teploty topné vody podle křivky
 * Vizualizace křivky v UI (včetně aktuálního bodu)
 * Navrženo tak, aby:
+
   * minimalizovalo cyklování kotle
   * šetřilo energii
   * bylo rozšiřitelné
@@ -132,10 +141,12 @@ Tím se vyhneš situaci, kdy je uložená Wi-Fi MAC nebo stará BLE adresa a př
 * Podpora až 2 MQTT teploměrů
 * Jednoduché JSON path parsování
 * Home Assistant auto-discovery:
+
   * teploměry
   * relé
   * režimy
   * stavové entity
+
 ---
 
 ## 🔧 Konfigurace & běh
@@ -148,3 +159,16 @@ Tím se vyhneš situaci, kdy je uložená Wi-Fi MAC nebo stará BLE adresa a př
 * Senzory jsou vždy zpracovány **před logikou**
 
 ---
+
+## 🚀 Stav projektu
+
+Projekt je **aktivně vyvíjen**.
+Některé části (např. OpenTherm, pokročilé BLE scénáře) jsou připravené k dalšímu rozšíření.
+
+
+Pokud chceš, můžu:
+
+* připravit **zkrácenou verzi README**
+* doplnit **schéma zapojení**
+* přidat **sekci Build / Flash / Partition scheme**
+* nebo README rovnou **vygenerovat jako soubor ke stažení**

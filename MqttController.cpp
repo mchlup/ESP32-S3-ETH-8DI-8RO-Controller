@@ -152,6 +152,7 @@ static void publishHaDiscovery(const String relayNames[RELAY_COUNT], const Strin
 
     String devId = mqttCfg.clientId.length() ? mqttCfg.clientId : String("esp-heatctrl");
     DynamicJsonDocument doc(512);
+    char payloadBuf[768];
 
     // --- Relé jako switch ---
     for (uint8_t i = 0; i < RELAY_COUNT; i++) {
@@ -179,9 +180,15 @@ static void publishHaDiscovery(const String relayNames[RELAY_COUNT], const Strin
         dev["mf"]     = "Custom";
         dev["mdl"]    = "ESP32-S3-POE-8DI8DO";
 
-        String payload;
-        serializeJson(doc, payload);
-        mqttClient.publish(cfgTopic.c_str(), payload.c_str(), true);
+        const size_t n = serializeJson(doc, payloadBuf, sizeof(payloadBuf));
+        if (n > 0 && n < sizeof(payloadBuf)) {
+            mqttClient.publish(cfgTopic.c_str(), payloadBuf, true);
+        } else {
+            // Fallback (nemělo by nastat, ale ať to nikdy nezkolabuje kvůli bufferu)
+            String payload;
+            serializeJson(doc, payload);
+            mqttClient.publish(cfgTopic.c_str(), payload.c_str(), true);
+        }
     }
 
     // --- Vstupy jako binary_sensor ---
@@ -207,9 +214,14 @@ static void publishHaDiscovery(const String relayNames[RELAY_COUNT], const Strin
         dev["mf"]     = "Custom";
         dev["mdl"]    = "ESP32-S3-POE-8DI8DO";
 
-        String payload;
-        serializeJson(doc, payload);
-        mqttClient.publish(cfgTopic.c_str(), payload.c_str(), true);
+        const size_t n = serializeJson(doc, payloadBuf, sizeof(payloadBuf));
+        if (n > 0 && n < sizeof(payloadBuf)) {
+            mqttClient.publish(cfgTopic.c_str(), payloadBuf, true);
+        } else {
+            String payload;
+            serializeJson(doc, payload);
+            mqttClient.publish(cfgTopic.c_str(), payload.c_str(), true);
+        }
     }
 
     // --- Control mode jako select ---
@@ -235,9 +247,14 @@ static void publishHaDiscovery(const String relayNames[RELAY_COUNT], const Strin
         dev["mf"]     = "Custom";
         dev["mdl"]    = "ESP32-S3-POE-8DI8DO";
 
-        String payload;
-        serializeJson(doc, payload);
-        mqttClient.publish(cfgTopic.c_str(), payload.c_str(), true);
+        const size_t n = serializeJson(doc, payloadBuf, sizeof(payloadBuf));
+        if (n > 0 && n < sizeof(payloadBuf)) {
+            mqttClient.publish(cfgTopic.c_str(), payloadBuf, true);
+        } else {
+            String payload;
+            serializeJson(doc, payload);
+            mqttClient.publish(cfgTopic.c_str(), payload.c_str(), true);
+        }
     }
 
     // --- Mode jako select ---
@@ -266,9 +283,14 @@ static void publishHaDiscovery(const String relayNames[RELAY_COUNT], const Strin
         dev["mf"]     = "Custom";
         dev["mdl"]    = "ESP32-S3-POE-8DI8DO";
 
-        String payload;
-        serializeJson(doc, payload);
-        mqttClient.publish(cfgTopic.c_str(), payload.c_str(), true);
+        const size_t n = serializeJson(doc, payloadBuf, sizeof(payloadBuf));
+        if (n > 0 && n < sizeof(payloadBuf)) {
+            mqttClient.publish(cfgTopic.c_str(), payloadBuf, true);
+        } else {
+            String payload;
+            serializeJson(doc, payload);
+            mqttClient.publish(cfgTopic.c_str(), payload.c_str(), true);
+        }
     }
 
     Serial.println(F("[MQTT] HA discovery published."));

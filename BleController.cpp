@@ -1058,6 +1058,18 @@ void bleInit() {
 
     if (g_bleInitialized) return;
 
+    // Pre-allocate frequently used Strings to reduce heap fragmentation
+    g_lastAck.reserve(256);
+    g_pairingRoleHint.reserve(24);
+    g_meteoLastSeenMac.reserve(24);
+    g_meteoLastSeenName.reserve(48);
+    g_meteoRuntimeMac.reserve(24);
+    g_meteoRefreshTargetMac.reserve(24);
+    g_meteoAutoSaveMac.reserve(24);
+    g_meteoAutoSaveName.reserve(48);
+    g_scanBestMac.reserve(24);
+    g_scanBestName.reserve(48);
+
     NimBLEDevice::init(g_cfg.deviceName.c_str());
     NimBLEDevice::setPower(ESP_PWR_LVL_P9); // max
 
