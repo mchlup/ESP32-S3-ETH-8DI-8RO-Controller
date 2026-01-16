@@ -310,6 +310,12 @@ pre.code-block {
   border-color: #93c5fd;
 }
 
+.relay-chip.valve {
+  cursor: default;
+  background: #fef9c3;
+  border-color: #facc15;
+}
+
 .input-chip.active {
   background: #dcfce7;
   border-color: #86efac;
