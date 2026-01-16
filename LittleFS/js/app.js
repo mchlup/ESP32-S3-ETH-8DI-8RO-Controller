@@ -63,15 +63,20 @@ function toast(message, variant = "info") {
 }
 
 async function fetchJson(url, options) {
-  const response = await fetch(url, options);
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`${response.status} ${response.statusText}: ${text}`);
-  }
-  if (response.status === 204) {
+  try {
+    const response = await fetch(url, options);
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`${response.status} ${response.statusText}: ${text}`);
+    }
+    if (response.status === 204) {
+      return null;
+    }
+    return response.json();
+  } catch (error) {
+    console.warn(`Fetch failed for ${url}`, error);
     return null;
   }
-  return response.json();
 }
 
 function getPath(obj, path) {
@@ -137,6 +142,15 @@ function bindInputs(container, data) {
 
 function ensureConfigDefaults() {
   state.config = state.config || {};
+  if (!state.config.inputNames && Array.isArray(state.config.inputs)) {
+    state.config.inputNames = state.config.inputs.map((input) => input.name || "");
+  }
+  if (!state.config.inputActiveLevels && Array.isArray(state.config.inputs)) {
+    state.config.inputActiveLevels = state.config.inputs.map((input) => (input.activeLevel ?? 1));
+  }
+  if (!state.config.relayNames && Array.isArray(state.config.relays)) {
+    state.config.relayNames = state.config.relays.map((relay) => relay.name || "");
+  }
   state.config.inputNames = state.config.inputNames || Array(8).fill("");
   state.config.relayNames = state.config.relayNames || Array(8).fill("");
   state.config.inputActiveLevels = state.config.inputActiveLevels || Array(8).fill(1);
@@ -574,7 +588,8 @@ function renderTempGrid(temps) {
   const container = $("tempGrid");
   container.innerHTML = "";
   for (let i = 0; i < 8; i += 1) {
-    const entry = temps[i] || {};
+    const raw = temps[i];
+    const entry = typeof raw === "number" ? { tempC: raw, valid: true } : raw || {};
     const valid = entry.valid !== false;
     const chip = document.createElement("div");
     chip.className = `temp-chip ${valid ? "" : "invalid"}`;
@@ -736,24 +751,18 @@ async function loadAll() {
 }
 
 async function refreshStatus() {
-  try {
-    state.status = await fetchJson("/api/status");
-    $("statusDump").textContent = JSON.stringify(state.status, null, 2);
-    updateStatusUI();
-  } catch (error) {
-    console.warn(error);
-  }
+  const result = await fetchJson("/api/status");
+  state.status = result || {};
+  $("statusDump").textContent = JSON.stringify(state.status, null, 2);
+  updateStatusUI();
 }
 
 async function refreshDash() {
-  try {
-    state.dash = await fetchJson("/api/dash");
-    renderEquithermSources();
-    renderThermometers();
-    updateDashUI();
-  } catch (error) {
-    console.warn(error);
-  }
+  const result = await fetchJson("/api/dash");
+  state.dash = result || {};
+  renderEquithermSources();
+  renderThermometers();
+  updateDashUI();
 }
 
 async function toggleRelay(relay, value) {
