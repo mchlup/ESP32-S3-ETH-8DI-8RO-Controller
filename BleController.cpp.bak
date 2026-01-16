@@ -128,7 +128,6 @@ static bool g_meteoRefreshOnlyActive = false;
 static char g_meteoRefreshTargetMac[18] = {0};
 static bool g_meteoConnecting = false;
 static uint32_t g_meteoLastConnectAttemptMs = 0;
-static uint8_t g_meteoAddrTryIndex = 0; // rotate address type attempts to avoid long blocking sequences
 static int g_meteoLastDisconnectReason = -1;
 static bool g_meteoAutoSavePending = false;
 static char g_meteoAutoSaveMac[18] = {0};
@@ -200,9 +199,18 @@ static void normalizeMacToBuf(const char* in, char out[18]) {
 
 static bool macEqualsBufStr(const char aNormUpper[18], const String& b) {
     if (!aNormUpper || !aNormUpper[0]) return b.length() == 0;
-    char bNorm[18];
-    normalizeMacToBuf(b.c_str(), bNorm);
-    return strncmp(aNormUpper, bNorm, 18) == 0;
+    const char* bc = b.c_str();
+    // Case-insensitive compare without allocating a temporary String.
+    for (size_t i = 0; i < 17; ++i) {
+        char ac = aNormUpper[i];
+        char cc = bc[i];
+        if (ac == 0 && cc == 0) return true;
+        if (ac == 0 || cc == 0) return false;
+        if (ac >= 'a' && ac <= 'f') ac = (char)(ac - 32);
+        if (cc >= 'a' && cc <= 'f') cc = (char)(cc - 32);
+        if (ac != cc) return false;
+    }
+    return aNormUpper[17] == 0 && bc[17] == 0;
 }
 
 static String normalizeMac(String mac) {
@@ -238,7 +246,6 @@ static void meteoResetRetryState(const char* reason) {
     g_meteoRefreshOnlyRequested = false;
     g_meteoRefreshOnlyActive = false;
     g_meteoRefreshTargetMac[0] = 0;
-    g_meteoAddrTryIndex = 0;
     if (reason && strlen(reason)) {
         Serial.printf("[BLE] Meteo retry state reset (%s)\n", reason);
     }
@@ -901,7 +908,10 @@ static bool meteoConnectIfNeeded() {
 
     if (g_meteoClient && g_meteoClient->isConnected()) return true;
 
-    // Avoid connect attempts while scanning.
+    // NOTE: Connection should not be blocked by missing scan-derived addrType/RSSI.
+    // We can always attempt to connect by trying both PUBLIC and RANDOM address types.
+    // Scanning is only required for auto-discovery when MAC is not configured.
+
     NimBLEScan* scan = NimBLEDevice::getScan();
     const bool scanRunning = (scan && scan->isScanning()) || g_meteoScanning;
     if (scanRunning) {
@@ -911,7 +921,7 @@ static bool meteoConnectIfNeeded() {
         return false;
     }
 
-    // Cleanup old client instance (fresh connect attempt).
+    // cleanup old
     if (g_meteoClient) {
         NimBLEDevice::deleteClient(g_meteoClient);
         g_meteoClient = nullptr;
@@ -921,62 +931,53 @@ static bool meteoConnectIfNeeded() {
     g_meteoClient = NimBLEDevice::createClient();
     g_meteoClient->setClientCallbacks(&g_meteoClientCbs, false);
 
-    // FIX(1): Make connect attempts short to keep the main loop responsive.
-    // NimBLEClient::setConnectTimeout expects milliseconds.
-    // Default can be ~30s; that would freeze HTTP/UI when the meteo sensor is offline.
-    const uint32_t connectTimeoutMs = 1500UL;
+    // short timeouts
+    // NimBLEClient::setConnectTimeout expects **milliseconds** (default 30s).
+    // Using seconds here causes near-immediate failures (e.g. 10 -> 10ms).
+    const uint32_t connectTimeoutMs = 10UL * 1000UL;
     g_meteoClient->setConnectTimeout(connectTimeoutMs);
 
     g_meteoConnecting = true;
     g_meteoLastConnectAttemptMs = now;
 
     const int preferredType = g_meteoRuntimeMac[0] ? g_meteoRuntimeAddrType : g_meteoLastSeenAddrType;
-
-    // FIX(2): Do not try multiple addr types in a single loop iteration.
-    // Rotate address-type attempts across retries to avoid worst-case blocking (PUBLIC+RANDOM back-to-back).
-    int types[3];
-    int nTypes = 0;
-    auto addType = [&](int t) {
-        for (int i = 0; i < nTypes; i++) if (types[i] == t) return;
-        if (nTypes < 3) types[nTypes++] = t;
-    };
-    if (preferredType == BLE_ADDR_PUBLIC || preferredType == BLE_ADDR_RANDOM) addType(preferredType);
-    addType(BLE_ADDR_PUBLIC);
-    addType(BLE_ADDR_RANDOM);
-    if (nTypes <= 0) {
-        addType(BLE_ADDR_PUBLIC);
-        nTypes = 1;
-    }
-
-    const int useType = types[g_meteoAddrTryIndex % (uint8_t)nTypes];
-
     const bool relaxSecurity = (g_cfg.securityMode != "off");
     if (relaxSecurity) applyBleSecurityRelaxedForMeteo();
 
-    Serial.printf("[BLE] Meteo connect attempt: mac=%s preferred=%s try=%s rssi=%d scanRunning=%s timeout=%lums security=%s\n",
+    Serial.printf("[BLE] Meteo connect attempt: mac=%s addrType=%s rssi=%d scanRunning=%s timeout=%lus security=%s\n",
                   targetMac,
                   addrTypeToStr(preferredType),
-                  addrTypeToStr(useType),
                   g_meteoLastSeenRssi,
                   scanRunning ? "yes" : "no",
-                  (unsigned long)connectTimeoutMs,
+                  (unsigned long)(connectTimeoutMs / 1000UL),
                   relaxSecurity ? "relaxed" : "strict");
 
     auto tryConnect = [&](uint8_t addrType) -> bool {
+        // NimBLE-Arduino 2.x requires address type; most peripherals use public or random static.
         Serial.printf("[BLE] Meteo connect -> %s (addrType=%s)\n", targetMac, addrTypeToStr(addrType));
         NimBLEAddress addr(std::string(targetMac), addrType);
         return g_meteoClient->connect(addr);
     };
 
-    bool connected = tryConnect((uint8_t)useType);
-    const int connectedType = connected ? useType : -1;
+    bool connected = false;
+    int connectedType = -1;
+
+    if (preferredType == BLE_ADDR_PUBLIC || preferredType == BLE_ADDR_RANDOM) {
+        connected = tryConnect(static_cast<uint8_t>(preferredType));
+        if (connected) connectedType = preferredType;
+    }
+    if (!connected && preferredType != BLE_ADDR_PUBLIC) {
+        connected = tryConnect(BLE_ADDR_PUBLIC);
+        if (connected) connectedType = BLE_ADDR_PUBLIC;
+    }
+    if (!connected && preferredType != BLE_ADDR_RANDOM) {
+        connected = tryConnect(BLE_ADDR_RANDOM);
+        if (connected) connectedType = BLE_ADDR_RANDOM;
+    }
 
     if (relaxSecurity) applyBleSecurityFromConfig(false);
 
     if (!connected) {
-        // advance rotation for next attempt
-        g_meteoAddrTryIndex = (uint8_t)((g_meteoAddrTryIndex + 1U) % (uint8_t)nTypes);
-
         g_meteoConnectFails = (uint8_t)min(255, g_meteoConnectFails + 1);
         const bool suspended = meteoSuspendIfNeeded(now, g_meteoConnectFails);
         const bool willDiscover = !suspended && meteoAutoDiscoverOnFailAllowed() && g_meteoConnectFails >= METEO_FAILS_BEFORE_SCAN;
@@ -988,17 +989,13 @@ static bool meteoConnectIfNeeded() {
             }
         }
         logMeteoFailure("connect failed", g_meteoConnectFails, g_meteoNextActionMs, willDiscover);
-        logMeteoConnectDiagnostics(now, useType);
+        logMeteoConnectDiagnostics(now, preferredType);
         g_meteoConnecting = false;
         g_meteoAutoSavePending = false;
         g_meteoAutoSaveMac[0] = 0;
         g_meteoAutoSaveName = "";
         return false;
     }
-
-    // success -> reset rotation
-    g_meteoAddrTryIndex = 0;
-
     g_meteoConnectFails = 0;
     g_meteoSuspendUntilMs = 0;
     if (connectedType >= 0) {
@@ -1082,7 +1079,7 @@ static bool meteoConnectIfNeeded() {
     g_meteoLastSeenMac[sizeof(g_meteoLastSeenMac) - 1] = 0;
     meteoCommitAutoSaveIfPending(connectedMacNorm);
 
-    g_meteoNextActionMs = now + 15000; // next action no sooner than 15s
+    g_meteoNextActionMs = now + 15000; // další pokus o akci nejdříve za 15s
     g_meteoLastDisconnectReason = -1;
     g_meteoConnecting = false;
     return true;
