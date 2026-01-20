@@ -1,4 +1,6 @@
 #include <Arduino.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 #include "RelayController.h"
 #include "config_pins.h"
@@ -18,6 +20,23 @@
 #include <LittleFS.h>
 
 String inputBuffer;
+
+// ---- BLE bootstrap helper ----
+// If networkInit enters WiFiManager config portal, it can block setup() for a long time.
+// During that time loop() is not running, so the meteo BLE client would never connect.
+// This short-lived task keeps bleLoop() running until setup() finishes.
+static TaskHandle_t s_bleBootstrapTask = nullptr;
+static volatile bool s_bleBootstrapRun = false;
+
+static void bleBootstrapTaskFn(void* param) {
+    (void)param;
+    while (s_bleBootstrapRun) {
+        bleLoop();
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    s_bleBootstrapTask = nullptr;
+    vTaskDelete(nullptr);
+}
 
 // Jednoduchá nápověda pro konzoli
 void printHelp() {
@@ -113,10 +132,11 @@ void setup() {
     Serial.begin(115200);
     Serial.println();
     Serial.println(F("=== ESP Heat & Domestic Controller ==="));
-    #ifdef FORCE_LOW_PIN
-        pinMode(FORCE_LOW_PIN, OUTPUT);
-        digitalWrite(FORCE_LOW_PIN, LOW);
-    #endif
+
+#ifdef FORCE_LOW_PIN
+    pinMode(FORCE_LOW_PIN, OUTPUT);
+    digitalWrite(FORCE_LOW_PIN, LOW);
+#endif
 
     // Relé + vstupy + FS
     relayInit();
@@ -145,19 +165,36 @@ void setup() {
     });
 
     logicInit();
-    rgbLedInit();       // RGB LED (pokud používáš)
+    rgbLedInit();       // RGB LED
     thermometersInit(); // MQTT/BLE teploměry (konfigurace)
-    openthermInit();    // OpenTherm (boiler) - zatím stub/placeholder
+
+    // BLE init ASAP (before NetworkController/WiFiManager) so we can acquire meteo temperature quickly.
+    bleInit();
+
+    // Keep BLE loop alive while networkInit may block (WiFiManager portal).
+    s_bleBootstrapRun = true;
+    xTaskCreatePinnedToCore(bleBootstrapTaskFn, "bleBoot", 8192, nullptr, 1, &s_bleBootstrapTask, 0);
+
+    openthermInit();    // OpenTherm (boiler)
+
+    // Network can block (WiFiManager). BLE bootstrap task keeps running.
     networkInit();
+
+    // Stop bootstrap task (from now on, bleLoop() will run from the main loop()).
+    s_bleBootstrapRun = false;
+    const uint32_t stopStart = millis();
+    while (s_bleBootstrapTask && (millis() - stopStart) < 500) {
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
     DallasController::begin();
     DallasController::configureGpio(0, TEMP_INPUT_AUTO);
     DallasController::configureGpio(1, TEMP_INPUT_AUTO);
     DallasController::configureGpio(2, TEMP_INPUT_AUTO);
     DallasController::configureGpio(3, TEMP_INPUT_AUTO);
-    //dallasInit();
+
     webserverInit();
     mqttInit();
-    bleInit();
     buzzerInit();
     OTA::init();
 
@@ -180,17 +217,25 @@ void loop() {
     }
 
     inputUpdate();              // vstupy (debounce + callback)
+    relayUpdate();              // relé: I2C readback + recovery
     DallasController::loop();   // senzory (před logikou)
+
+    // BLE first: faster (re)connect and faster delivery of meteo temperature.
+    bleLoop();
+
     networkLoop();
     mqttLoop();
+
     // WebServer obsluž co nejdřív – BLE/NimBLE umí občas na chvíli zdržet loop.
     // Dvojí volání je safe (server.handleClient() je neblokující) a výrazně zlepší latenci UI.
     webserverLoop();
+
     logicUpdate();              // logika (AUTO/MANUAL + ventily + equitherm)
     openthermLoop();            // OpenTherm (polling + setpoint)
-    bleLoop();
+
     rgbLedLoop();
     buzzerLoop();
+
     webserverLoop();            // web server
     OTA::loop();
 }

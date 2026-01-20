@@ -2,6 +2,8 @@
 
 #include <ArduinoJson.h>
 
+#include "ThermoRoles.h"
+
 static MqttThermometerCfg s_mqtt[2];
 static BleThermometerCfg  s_ble;
 
@@ -10,10 +12,13 @@ void thermometersInit() {
         s_mqtt[i].name = "";
         s_mqtt[i].topic = "";
         s_mqtt[i].jsonKey = "tempC";
+        s_mqtt[i].role = "";
     }
 
     s_ble.name = "BLE Meteo";
     s_ble.id   = "meteo.tempC";
+    // Backward compatibility: historically BLE meteo was treated as outdoor by default.
+    s_ble.role = "outdoor";
 }
 
 void thermometersApplyConfig(const String& json) {
@@ -21,8 +26,14 @@ void thermometersApplyConfig(const String& json) {
     filter["thermometers"]["mqtt"][0]["name"] = true;
     filter["thermometers"]["mqtt"][0]["topic"] = true;
     filter["thermometers"]["mqtt"][0]["jsonKey"] = true;
+    filter["thermometers"]["mqtt"][0]["role"] = true;
+    filter["thermometers"]["mqtt"][1]["name"] = true;
+    filter["thermometers"]["mqtt"][1]["topic"] = true;
+    filter["thermometers"]["mqtt"][1]["jsonKey"] = true;
+    filter["thermometers"]["mqtt"][1]["role"] = true;
     filter["thermometers"]["ble"]["name"] = true;
     filter["thermometers"]["ble"]["id"] = true;
+    filter["thermometers"]["ble"]["role"] = true;
 
     StaticJsonDocument<1024> doc;
     DeserializationError err = deserializeJson(doc, json, DeserializationOption::Filter(filter));
@@ -45,11 +56,13 @@ void thermometersApplyConfig(const String& json) {
             s_mqtt[i].name   = String((const char*)(o["name"] | ""));
             s_mqtt[i].topic  = String((const char*)(o["topic"] | ""));
             s_mqtt[i].jsonKey= String((const char*)(o["jsonKey"] | "tempC"));
+            s_mqtt[i].role   = thermoNormalizeRole(String((const char*)(o["role"] | "")));
         } else {
             // if missing, reset to defaults
             s_mqtt[i].name = "";
             s_mqtt[i].topic = "";
             s_mqtt[i].jsonKey = "tempC";
+            s_mqtt[i].role = "";
         }
     }
 
@@ -57,6 +70,9 @@ void thermometersApplyConfig(const String& json) {
     if (bleObj) {
         s_ble.name = String((const char*)(bleObj["name"] | "BLE Meteo"));
         s_ble.id   = String((const char*)(bleObj["id"] | "meteo.tempC"));
+        // If role is missing in older configs, keep default "outdoor".
+        const String r = thermoNormalizeRole(String((const char*)(bleObj["role"] | "")));
+        if (r.length()) s_ble.role = r;
     }
 }
 

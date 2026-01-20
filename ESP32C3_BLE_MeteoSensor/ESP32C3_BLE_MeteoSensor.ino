@@ -24,6 +24,17 @@ static const char* DEVICE_NAME = "ESP-Meteostanice-Outdoor";
 static const uint32_t SENSOR_PERIOD_MS = 2000;
 static const uint32_t NOTIFY_PERIOD_MS = 5000;
 
+// Broadcast do advertising (Manufacturer Data) každých 5s:
+// Format (little-endian):
+//   uint16 companyId (0xFFFF)
+//   uint8  version (1)
+//   int16  temp_x10
+//   uint8  hum_pct
+//   uint16 press_hPa
+static const uint32_t ADV_BCAST_PERIOD_MS = 5000;
+static const uint16_t METEO_MFG_ID = 0xFFFF;
+static const uint8_t  METEO_BCAST_VER = 1;
+
 // -------------------- Senzory --------------------
 static Adafruit_HTU21DF g_htu;
 static BH1750 g_bh1750;
@@ -40,6 +51,11 @@ static NimBLECharacteristic* g_chMeteo = nullptr;
 
 static volatile bool g_connected = false;
 static volatile bool g_advRestartPending = false;
+
+static NimBLEAdvertising* g_adv = nullptr;
+static NimBLEAdvertisementData g_advData;
+static NimBLEAdvertisementData g_scanData;
+static uint32_t g_nextAdvBcastMs = 0;
 
 // BLE housekeeping (bez delay):
 // - po disconnectu NESPOUŠTĚT advertising přímo z callbacku (v praxi se občas stává,
@@ -58,7 +74,11 @@ static void bleEnsureAdvertising(uint32_t now, const char* reason) {
   // jednoduchý debounce, aby se to nespouštělo 100× za sekundu
   if ((int32_t)(now - g_lastAdvStartMs) < 500) return;
   g_lastAdvStartMs = now;
+
+  // Restart advertising to ensure updated payload is broadcasted reliably.
+  NimBLEDevice::stopAdvertising();
   NimBLEDevice::startAdvertising();
+
   if (reason) {
     Serial.printf("[BLE] Advertising ensure/start (%s)\n", reason);
   }
@@ -69,10 +89,30 @@ static void bleEnsureAdvertising(uint32_t now, const char* reason) {
 static uint8_t  g_frame[6];
 static bool     g_haveReading = false;
 
+static void bleUpdateAdvBroadcast() {
+  if (!g_adv) return;
+  if (!g_haveReading) return;
+
+  // Manufacturer data = [companyIdLE][ver][temp_x10LE][hum][press_hPaLE]
+  uint8_t md[2 + 1 + 2 + 1 + 2];
+  md[0] = (uint8_t)(METEO_MFG_ID & 0xFF);
+  md[1] = (uint8_t)((METEO_MFG_ID >> 8) & 0xFF);
+  md[2] = METEO_BCAST_VER;
+  md[3] = g_frame[0];
+  md[4] = g_frame[1];
+  md[5] = g_frame[2];
+  md[6] = g_frame[3];
+  md[7] = g_frame[4];
+
+  g_advData.setManufacturerData(std::string((const char*)md, sizeof(md)));
+  g_adv->setAdvertisementData(g_advData);
+}
+
 // “kick” logika: pošli 1× notify hned po prvním validním měření
 static bool     g_kickPending = true;   // po startu čekáme na první validní data
 static bool     g_kickSent = true;     // jednorázově po startu
 static bool     g_kickSentAfterConnect = false; // jednorázově po connectu (pokud klient přijde pozdě)
+static volatile bool g_kickAfterConnectPending = false; // notify hned po připojení (bez čekání na další čtení senzorů)
 
 // poslední hodnoty
 static int16_t   g_tempX10 = 0;
@@ -148,6 +188,7 @@ class ServerCallbacks : public NimBLEServerCallbacks {
 
     // klient se právě připojil -> dovolíme jednorázový "kick" po connectu
     g_kickSentAfterConnect = false;
+    g_kickAfterConnectPending = true;
 
     Serial.println("[BLE] Client connected");
   }
@@ -227,6 +268,12 @@ static bool readSensorsOnce(uint32_t now) {
   g_frame[5] = (uint8_t)g_trend;
 
   g_haveReading = true;
+
+  // Udržuj hodnotu charakteristiky vždy aktuální, aby si ji klient (S3) mohl přečíst ihned po connectu
+  // i v případě, že ještě neproběhl notify.
+  if (g_chMeteo) {
+    g_chMeteo->setValue(g_frame, sizeof(g_frame));
+  }
   return true;
 }
 
@@ -257,17 +304,25 @@ static void bleInit() {
 
   g_svc->start();
 
-  NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
+g_adv = NimBLEDevice::getAdvertising();
 
-  NimBLEAdvertisementData advData;
-  advData.setFlags(0x06);
-  advData.addServiceUUID(UUID_SVC_METEO);
+g_advData = NimBLEAdvertisementData();
+g_advData.setFlags(0x06);
+g_advData.addServiceUUID(UUID_SVC_METEO);
 
-  NimBLEAdvertisementData scanData;
-  scanData.setName(DEVICE_NAME);
+g_scanData = NimBLEAdvertisementData();
+g_scanData.setName(DEVICE_NAME);
 
-  adv->setAdvertisementData(advData);
-  adv->setScanResponseData(scanData);
+// Embed first broadcast payload (if already available)
+bleUpdateAdvBroadcast();
+
+g_adv->setAdvertisementData(g_advData);
+g_adv->setScanResponseData(g_scanData);
+
+  // Krátký advertising interval = rychlejší objevení a připojení po restartu S3.
+  // Jednotky: 0.625ms. 0x20=20ms, 0x40=40ms.
+  g_adv->setMinInterval(0x20);
+  g_adv->setMaxInterval(0x40);
 
   bleEnsureAdvertising(millis(), "init");
   Serial.println("[BLE] Advertising started");
@@ -302,7 +357,12 @@ void setup() {
   bleInit();
 
   const uint32_t now = millis();
-  g_nextSensorMs = now + 200;
+  g_nextAdvBcastMs = now + 200;
+  // První pokus o čtení hned po startu: characteristic dostane validní data co nejdřív.
+  readSensorsOnce(now);
+
+  // Další čtení brzo znovu (pro případ, že senzory ještě nebyly ready).
+  g_nextSensorMs = now + 250;
   g_nextNotifyMs = now + NOTIFY_PERIOD_MS; // první periodický notify až za interval
 
   // watchdog inzerce
@@ -311,6 +371,19 @@ void setup() {
 
 void loop() {
   const uint32_t now = millis();
+
+  // Pokud se klient (S3) připojí mezi dvěma měřeními, pošli poslední známý rámec okamžitě.
+  // Tím se výrazně zkrátí doba do prvních validních dat po restartu S3.
+  if (g_connected && g_haveReading) {
+    const bool needKick = (g_kickPending && !g_kickSent) || (g_kickAfterConnectPending && !g_kickSentAfterConnect);
+    if (needKick) {
+      meteoNotifyNow("kick_immediate");
+      g_kickSent = true;
+      g_kickPending = false;
+      g_kickSentAfterConnect = true;
+      g_kickAfterConnectPending = false;
+    }
+  }
 
   // čtení senzorů
   if ((int32_t)(now - g_nextSensorMs) >= 0) {
@@ -343,6 +416,13 @@ void loop() {
       Serial.println("[DATA] No valid reading yet");
     }
   }
+
+// broadcast do advertising (bez spojení) – užitečné pro "pasivní poslech" na S3.
+if (!g_connected && g_haveReading && (int32_t)(now - g_nextAdvBcastMs) >= 0) {
+  g_nextAdvBcastMs = now + ADV_BCAST_PERIOD_MS;
+  bleUpdateAdvBroadcast();
+  bleRequestAdvRestart();
+}
 
   // periodické notify
   if ((int32_t)(now - g_nextNotifyMs) >= 0) {

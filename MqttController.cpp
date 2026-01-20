@@ -527,11 +527,16 @@ void mqttLoop() {
 
 void mqttApplyConfig(const String& json) {
     StaticJsonDocument<256> filter;
+    // IMPORTANT: for arrays, using [0] in ArduinoJson filter means "only first element".
     filter["mqtt"] = true;
-    filter["relayNames"][0] = true;
-    filter["inputNames"][0] = true;
+    filter["relayNames"] = true;
+    filter["inputNames"] = true;
+    // backward compatibility (older configs nested under cfg)
+    filter["cfg"]["mqtt"] = true;
+    filter["cfg"]["relayNames"] = true;
+    filter["cfg"]["inputNames"] = true;
 
-    StaticJsonDocument<1024> doc;
+    StaticJsonDocument<2048> doc;
     DeserializationError err = deserializeJson(doc, json, DeserializationOption::Filter(filter));
     if (err) {
         Serial.print(F("[MQTT] config parse failed: "));
@@ -539,7 +544,12 @@ void mqttApplyConfig(const String& json) {
         return;
     }
 
-    JsonObject m = doc["mqtt"].as<JsonObject>();
+    JsonObjectConst rootObj = doc.as<JsonObjectConst>();
+    JsonObjectConst cfgObj = rootObj;
+    if (rootObj.containsKey("cfg") && rootObj["cfg"].is<JsonObjectConst>()) cfgObj = rootObj["cfg"].as<JsonObjectConst>();
+
+    // cfgObj is JsonObjectConst, so we must read as const variants.
+    JsonObjectConst m = cfgObj["mqtt"].as<JsonObjectConst>();
     if (m.isNull()) {
         mqttCfg.enabled = false;
         return;
@@ -555,12 +565,12 @@ void mqttApplyConfig(const String& json) {
     mqttCfg.haPrefix  = (const char*)(m["haPrefix"] | "homeassistant");
 
     // názvy z configu
-    JsonArray rn = doc["relayNames"].as<JsonArray>();
+    JsonArrayConst rn = cfgObj["relayNames"].as<JsonArrayConst>();
     for (uint8_t i = 0; i < RELAY_COUNT; i++) {
         haRelayNames[i] = (rn.isNull() || i >= rn.size()) ? "" : String((const char*)(rn[i] | ""));
     }
 
-    JsonArray in = doc["inputNames"].as<JsonArray>();
+    JsonArrayConst in = cfgObj["inputNames"].as<JsonArrayConst>();
     for (uint8_t i = 0; i < INPUT_COUNT; i++) {
         haInputNames[i] = (in.isNull() || i >= in.size()) ? "" : String((const char*)(in[i] | ""));
     }

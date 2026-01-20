@@ -8,10 +8,13 @@
 #include <driver/gpio.h>
 #include <memory>
 #include <new>
+#include <type_traits>
 
 // NOTE:
-// For runtime stability we keep persistent OneWire32 instances per GPIO.
-// This avoids repeated new/delete and heap/RMT churn in the fast path.
+// We keep exactly one active OneWire32 instance at a time (RMT channels are limited and
+// other peripherals (e.g. WS2812) may also use them). To reduce heap fragmentation we
+// avoid allocating/deallocating the OneWire32 object itself; we reuse static storage
+// and only recreate the internal RMT driver when switching GPIO.
 
 namespace {
 
@@ -38,8 +41,19 @@ struct InternalDallas {
 };
 
 InternalDallas g_bus[GPIO_MAX + 1];
-std::unique_ptr<OneWire32> s_oneWire;
+static std::aligned_storage_t<sizeof(OneWire32), alignof(OneWire32)> s_oneWireStorage;
+static OneWire32* s_oneWire = nullptr;
 static uint8_t s_oneWireGpio = 255;
+
+static void destroyOneWire() {
+    if (!s_oneWire) return;
+    // OneWire32::cleanup() is private (performed by the destructor).
+    // Since we construct OneWire32 with placement-new, explicitly calling
+    // the destructor is the correct way to release the internal RMT driver.
+    s_oneWire->~OneWire32();
+    s_oneWire = nullptr;
+    s_oneWireGpio = 255;
+}
 
 // Global scheduler: keep OneWire/RMT usage strictly sequential (1 GPIO at a time)
 static uint8_t s_rrGpio = 0;
@@ -59,24 +73,21 @@ static inline void ensureDallasPullup(uint8_t gpio) {
 static OneWire32* getOneWireBus(uint8_t gpio) {
     if (!gpioSupportsDallas(gpio)) return nullptr;
 
-    // Reuse current bus if it matches requested GPIO
     if (s_oneWire && s_oneWireGpio == gpio) {
-        return s_oneWire.get();
+        return s_oneWire;
     }
 
-    // Switch active bus (ESP32-S3 has limited RMT channels; keep only one bus alive)
-    s_oneWire.reset();
-    s_oneWireGpio = 255;
+    // Switch GPIO: cleanup + re-create driver in the same static storage.
+    destroyOneWire();
 
-    s_oneWire.reset(new (std::nothrow) OneWire32(gpio));
-    if (!s_oneWire) return nullptr;
+    s_oneWire = new (&s_oneWireStorage) OneWire32(gpio);
     if (!s_oneWire->ready()) {
-        s_oneWire.reset();
+        destroyOneWire();
         return nullptr;
     }
 
     s_oneWireGpio = gpio;
-    return s_oneWire.get();
+    return s_oneWire;
 }
 
 static void clearBus(uint8_t gpio) {
@@ -221,8 +232,7 @@ bool DallasController::gpioSupportsDallas(uint8_t gpio) {
 }
 
 void DallasController::begin() {
-    s_oneWire.reset();
-    s_oneWireGpio = 255;
+    destroyOneWire();
     for (uint8_t i = GPIO_MIN; i <= GPIO_MAX; i++) {
         g_bus[i].gpio = i;
         g_bus[i].type = TEMP_INPUT_NONE;
@@ -326,47 +336,47 @@ namespace {
 constexpr uint8_t INPUT_COUNT = 8;
 
 struct DallasInputCfg {
-  bool    enabled = false;
-  uint8_t gpio    = 255;
-  String  addr;   // optional (hex), if empty -> first valid device on bus
+  bool enabled = false;
+  uint8_t gpio = 255;
+  bool hasAddr = false;
+  uint64_t addr = 0; // optional ROM (8B), if hasAddr==false -> first valid device on bus
 };
 
 DallasInputCfg s_cfg[INPUT_COUNT];
 bool s_inited = false;
 
-String normHex(String s) {
-  s.toUpperCase();
-  String out;
-  out.reserve(16);
-  for (size_t i=0;i<s.length();i++){
-    char c=s[i];
-    bool isHex = (c>='0'&&c<='9')||(c>='A'&&c<='F');
-    if (isHex) out += c;
-  }
-  return out;
+static inline int hexNibble(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+  if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+  return -1;
 }
 
-String romToHex(uint64_t rom){
-  char buf[17];
-  for(int i=0;i<16;i++) buf[i]='0';
-  buf[16]='\0';
-  for(int b=0;b<8;b++){
-    uint8_t v = (rom >> (56 - 8*b)) & 0xFF;
-    const char* hex="0123456789ABCDEF";
-    buf[b*2]   = hex[(v>>4)&0xF];
-    buf[b*2+1] = hex[v&0xF];
+// Parse ROM in hex (accepts separators; uses first 16 hex digits). Returns true if 16 nibbles were parsed.
+static bool parseRomHex(const char* s, uint64_t &out) {
+  if (!s) return false;
+  uint64_t v = 0;
+  uint8_t n = 0;
+  for (; *s; s++) {
+    int h = hexNibble(*s);
+    if (h < 0) continue;
+    v = (v << 4) | (uint64_t)h;
+    n++;
+    if (n == 16) break;
   }
-  return String(buf);
+  if (n != 16) return false;
+  out = v;
+  return true;
 }
 
-bool pickDeviceTemp(uint8_t gpio, const String& addrNorm, float& outTemp){
+static bool pickDeviceTemp(uint8_t gpio, bool hasAddr, uint64_t addr, float& outTemp) {
   const DallasGpioStatus* st = DallasController::getStatus(gpio);
   if (!st) return false;
   if (st->devices.empty()) return false;
 
-  if (addrNorm.length() == 0){
-    for (auto &d : st->devices){
-      if (d.valid && isfinite(d.temperature)){
+  if (!hasAddr) {
+    for (auto &d : st->devices) {
+      if (d.valid && isfinite(d.temperature)) {
         outTemp = d.temperature;
         return true;
       }
@@ -374,9 +384,9 @@ bool pickDeviceTemp(uint8_t gpio, const String& addrNorm, float& outTemp){
     return false;
   }
 
-  for (auto &d : st->devices){
+  for (auto &d : st->devices) {
     if (!d.valid || !isfinite(d.temperature)) continue;
-    if (romToHex(d.rom) == addrNorm){
+    if (d.rom == addr) {
       outTemp = d.temperature;
       return true;
     }
@@ -392,30 +402,73 @@ void applyCfgObj(const JsonObjectConst& root){
   for (uint8_t i=0;i<INPUT_COUNT;i++){
     s_cfg[i].enabled = false;
     s_cfg[i].gpio = 255;
-    s_cfg[i].addr = "";
+    s_cfg[i].hasAddr = false;
+    s_cfg[i].addr = 0;
   }
 
-  // --- Header thermometers (GPIO0..3) ---
-  // Pokud UI obsahuje dallasNames/dallasAddrs, bereme DS18B20 na pin-headeru jako
-  // nezávislé teploměry mapované 1:1 na TEMP1..TEMP4 (GPIO0..3).
-  // DŮLEŽITÉ: tato logika nesmí zablokovat další mapování (iofunc.inputs[].role==temp_dallas).
-  const bool headerMode = cfg.containsKey("dallasNames") || cfg.containsKey("dallasAddrs");
-  if (headerMode) {
-    JsonArrayConst addrs = (cfg.containsKey("dallasAddrs") && cfg["dallasAddrs"].is<JsonArrayConst>())
+  bool usedGpio[4] = {false,false,false,false};
+
+  // --- TEMP1..TEMP8 mapping from UI (preferred) ---
+  // UI can optionally provide:
+  //   dallasGpios[0..7]  (0..3)
+  //   dallasAddrs[0..7]  (ROM hex, empty => auto)
+  // This enables multiple sensors on one GPIO and per-channel ROM selection.
+  const bool hasDallasGpios = cfg.containsKey("dallasGpios") && cfg["dallasGpios"].is<JsonArrayConst>();
+  JsonArrayConst mapGpios = hasDallasGpios ? cfg["dallasGpios"].as<JsonArrayConst>() : JsonArrayConst();
+
+  JsonArrayConst mapAddrs = (cfg.containsKey("dallasAddrs") && cfg["dallasAddrs"].is<JsonArrayConst>())
                              ? cfg["dallasAddrs"].as<JsonArrayConst>()
                              : JsonArrayConst();
+
+  const bool channelMapMode = hasDallasGpios || (!mapAddrs.isNull() && mapAddrs.size() >= INPUT_COUNT);
+
+  // --- Header fallback (legacy) ---
+  // If UI only provides dallasNames/dallasAddrs (length 4) and no dallasGpios,
+  // keep backward compatibility: TEMP1..TEMP4 map 1:1 to GPIO0..GPIO3.
+  const bool headerMode = !channelMapMode && (cfg.containsKey("dallasNames") || cfg.containsKey("dallasAddrs"));
+
+  if (channelMapMode) {
+    for (uint8_t i=0;i<INPUT_COUNT;i++){
+      int gpio = -1;
+      if (!mapGpios.isNull() && i < mapGpios.size()) {
+        gpio = (int)(mapGpios[i] | -1);
+      } else {
+        // sensible defaults if only addrs are given
+        gpio = (i <= 3) ? (int)i : -1;
+      }
+      bool hasAddr = false;
+      uint64_t addr = 0;
+      if (!mapAddrs.isNull() && i < mapAddrs.size()) {
+        const char* as = (const char*)(mapAddrs[i] | "");
+        hasAddr = parseRomHex(as, addr);
+      }
+
+      if (gpio >= 0 && gpio <= 3) {
+        s_cfg[i].enabled = true;
+        s_cfg[i].gpio = (uint8_t)gpio;
+        s_cfg[i].hasAddr = hasAddr;
+        s_cfg[i].addr = addr;
+        usedGpio[gpio] = true;
+      }
+    }
+  } else if (headerMode) {
     for (uint8_t i=0;i<=3;i++){
-      String addr = "";
-      if (!addrs.isNull() && i < addrs.size()) addr = String((const char*)(addrs[i] | ""));
+      bool hasAddr = false;
+      uint64_t addr = 0;
+      if (!mapAddrs.isNull() && i < mapAddrs.size()) {
+        const char* as = (const char*)(mapAddrs[i] | "");
+        hasAddr = parseRomHex(as, addr);
+      }
       s_cfg[i].enabled = true;
       s_cfg[i].gpio = i;
-      s_cfg[i].addr = normHex(addr);
+      s_cfg[i].hasAddr = hasAddr;
+      s_cfg[i].addr = addr;
+      usedGpio[i] = true;
     }
   }
 
-  // --- temp_dallas mapování přes iofunc.inputs[] (legacy + doplňkové teploměry) ---
-
-  bool usedGpio[4] = {false,false,false,false};
+  // --- temp_dallas mapování přes iofunc.inputs[] (legacy / power users) ---
+  // If configured, it overrides the per-channel mapping.
   if (cfg.containsKey("iofunc") && cfg["iofunc"].is<JsonObjectConst>()){
     JsonObjectConst iof = cfg["iofunc"].as<JsonObjectConst>();
     if (iof.containsKey("inputs") && iof["inputs"].is<JsonArrayConst>()){
@@ -425,21 +478,21 @@ void applyCfgObj(const JsonObjectConst& root){
         if (idx >= INPUT_COUNT) break;
         if (!v.is<JsonObjectConst>()) { idx++; continue; }
 
-        // TEMP1..TEMP4 jsou v headerMode rezervované pro pevné mapování GPIO0..3.
-        if (headerMode && idx <= 3) { idx++; continue; }
-
         JsonObjectConst o = v.as<JsonObjectConst>();
         const char* role = o["role"] | "none";
 
         if (strcmp(role, "temp_dallas") == 0){
           JsonObjectConst p = o["params"].is<JsonObjectConst>() ? o["params"].as<JsonObjectConst>() : JsonObjectConst();
           uint8_t gpio = (uint8_t)(p["gpio"] | 0);
-          String addr = String((const char*)(p["addr"] | ""));
-          addr = normHex(addr);
+          bool hasAddr = false;
+          uint64_t addr = 0;
+          const char* as = (const char*)(p["addr"] | "");
+          hasAddr = parseRomHex(as, addr);
 
           if (gpio <= 3){
             s_cfg[idx].enabled = true;
             s_cfg[idx].gpio = gpio;
+            s_cfg[idx].hasAddr = hasAddr;
             s_cfg[idx].addr = addr;
             usedGpio[gpio] = true;
           }
@@ -472,18 +525,18 @@ void dallasApplyConfig(const String& jsonStr){
   }
 
   StaticJsonDocument<256> filter;
-  filter["dallasNames"][0] = true;
-  filter["dallasAddrs"][0] = true;
-  filter["iofunc"]["inputs"][0]["role"] = true;
-  filter["iofunc"]["inputs"][0]["params"]["gpio"] = true;
-  filter["iofunc"]["inputs"][0]["params"]["addr"] = true;
-  filter["cfg"]["dallasNames"][0] = true;
-  filter["cfg"]["dallasAddrs"][0] = true;
-  filter["cfg"]["iofunc"]["inputs"][0]["role"] = true;
-  filter["cfg"]["iofunc"]["inputs"][0]["params"]["gpio"] = true;
-  filter["cfg"]["iofunc"]["inputs"][0]["params"]["addr"] = true;
+  // IMPORTANT: for arrays, using [0] in ArduinoJson filter means "only first element".
+  // We need the whole arrays (multiple sensors per GPIO + per-input ROM selection).
+  filter["dallasNames"] = true;
+  filter["dallasAddrs"] = true;
+  filter["dallasGpios"] = true;
+  filter["iofunc"]["inputs"] = true;
+  filter["cfg"]["dallasNames"] = true;
+  filter["cfg"]["dallasAddrs"] = true;
+  filter["cfg"]["dallasGpios"] = true;
+  filter["cfg"]["iofunc"]["inputs"] = true;
 
-  StaticJsonDocument<1024> doc;
+  DynamicJsonDocument doc(4096);
   DeserializationError err = deserializeJson(doc, jsonStr, DeserializationOption::Filter(filter));
   if (err) return;
   applyCfgObj(doc.as<JsonObjectConst>());
@@ -505,12 +558,12 @@ bool dallasIsValid(uint8_t inputIndex){
   if (!s_cfg[inputIndex].enabled) {
     if (inputIndex <= 3){
       float t;
-      return pickDeviceTemp(inputIndex, "", t);
+      return pickDeviceTemp(inputIndex, false, 0, t);
     }
     return false;
   }
   float t;
-  return pickDeviceTemp(s_cfg[inputIndex].gpio, s_cfg[inputIndex].addr, t);
+  return pickDeviceTemp(s_cfg[inputIndex].gpio, s_cfg[inputIndex].hasAddr, s_cfg[inputIndex].addr, t);
 }
 
 float dallasGetTempC(uint8_t inputIndex){
@@ -518,11 +571,11 @@ float dallasGetTempC(uint8_t inputIndex){
   float t = NAN;
   if (!s_cfg[inputIndex].enabled){
     if (inputIndex <= 3){
-      pickDeviceTemp(inputIndex, "", t);
+      pickDeviceTemp(inputIndex, false, 0, t);
       return t;
     }
     return NAN;
   }
-  pickDeviceTemp(s_cfg[inputIndex].gpio, s_cfg[inputIndex].addr, t);
+  pickDeviceTemp(s_cfg[inputIndex].gpio, s_cfg[inputIndex].hasAddr, s_cfg[inputIndex].addr, t);
   return t;
 }

@@ -9,11 +9,13 @@ struct MqttThermometerCfg {
     String name;
     String topic;
     String jsonKey;
+    String role; // canonical role key (outdoor/flow/return/dhw/aku_*)
 };
 
 struct BleThermometerCfg {
     String name;
     String id;   // např. "meteo.tempC"
+    String role; // canonical role key
 };
 
 void thermometersInit();

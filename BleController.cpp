@@ -64,7 +64,7 @@ struct BleConfig {
     // scan tuning
     bool meteoFastScan = true;       // agresivnější scan parametry pro rychlejší nalezení/refresh
     bool meteoStopScanOnMatch = true; // ukonči scan dříve při dobrém kandidátovi / přesném match
-    int meteoPairMinRssi = -85;      // RSSI threshold pro early-stop při pairing (typicky -85..-70)
+    int meteoPairMinRssi = -99;      // RSSI threshold pro early-stop při pairing (typicky -85..-70)
     uint16_t meteoScanInterval = 97; // default scan interval (units depend on NimBLE)
     uint16_t meteoScanWindow = 37;
     uint16_t meteoFastScanInterval = 60;
@@ -72,9 +72,9 @@ struct BleConfig {
 
     // connect tuning
     uint32_t meteoConnectTimeoutMs = 900; // kratší timeout = méně blokování v loopu
-    uint32_t meteoDiscoverIntervalMs = 10000; // jak často opakovat scan, když se nedaří nic najít
-    uint32_t meteoScanMs = 4000;     // délka scan okna
-    uint32_t meteoReconnectMs = 8000;
+    uint32_t meteoDiscoverIntervalMs = 15000; // jak často opakovat scan, když se nedaří nic najít
+    uint32_t meteoScanMs = 6000;     // délka scan okna
+    uint32_t meteoReconnectMs = 2000;
     int meteoMaxConnectFails = 3;    // 0 = unlimited
     uint32_t meteoCooldownMs = 30000;
     uint32_t schemaVersion = 1;
@@ -137,6 +137,11 @@ static uint32_t g_meteoLastSeenMs = 0;
 static char g_meteoRuntimeMac[18] = {0};
 static int g_meteoRuntimeAddrType = -1;
 static uint32_t g_meteoLastFixMs = 0;
+// Fast bootstrap: after S3 reboot we want the first meteo fix ASAP.
+// Keep retries aggressive until the first valid frame is received.
+static uint32_t g_bleBootMs = 0;
+static uint32_t g_meteoFastUntilMs = 0;
+static bool g_meteoEverFix = false;
 static uint8_t g_meteoFailCount = 0;
 static uint8_t g_meteoConnectFails = 0;
 static bool g_meteoDiscoverRequested = false;
@@ -152,6 +157,11 @@ static char g_meteoAutoSaveMac[18] = {0};
 static String g_meteoAutoSaveName = "";
 static uint32_t g_meteoSuspendUntilMs = 0;
 static uint32_t g_meteoLastSuspendLogMs = 0;
+static uint32_t g_meteoNextBcastScanMs = 0;
+static uint32_t g_meteoLastBcastMs = 0;
+static uint32_t g_meteoBcastWindowStartMs = 0;
+static uint8_t  g_meteoBcastFramesInWindow = 0;
+static bool     g_meteoPassiveBroadcastOnly = false; // if true and broadcast is stable, never connect (pure passive mode)
 
 // scan best candidate
 static char g_scanBestMac[18] = {0};
@@ -166,7 +176,14 @@ static const uint8_t METEO_FAILS_BEFORE_SCAN = 3;
 static const uint32_t METEO_STALE_MS = 60000;
 static const uint32_t METEO_MIN_CONNECT_INTERVAL_MS = 2500;
 static const uint32_t METEO_SUSPEND_LOG_INTERVAL_MS = 5000;
-static const char* METEO_NAME_PREFIX = "ESP-Meteostanice-Outdoor";
+static const char* METEO_NAME_PREFIX = "ESP-Meteostanice";
+static const uint16_t METEO_MFG_ID = 0xFFFF;                 // Manufacturer ID for broadcast frames
+static const uint8_t  METEO_BCAST_VER = 1;                  // Broadcast payload version
+static const uint32_t METEO_BCAST_PERIOD_MS = 5000;         // C3 broadcast interval (expected)
+static const uint32_t METEO_BCAST_STABLE_MAX_GAP_MS = 12000; // If we see frames with gaps <= this, consider "stable"
+static const uint8_t  METEO_BCAST_STABLE_MIN_FRAMES = 3;    // Frames needed to enter passive mode
+static const uint32_t METEO_BCAST_STABLE_WINDOW_MS = 20000; // Window for stability evaluation
+static const uint32_t METEO_BCAST_SCAN_PERIOD_MS = 6000;    // Periodic short scan on S3 to catch advertisements
 
 // ---------- Helpers ----------
 static String nowIso() {
@@ -175,6 +192,42 @@ static String nowIso() {
     char buf[32];
     snprintf(buf, sizeof(buf), "uptime+%lus", (unsigned long)s);
     return String(buf);
+}
+
+static bool meteoFastBootstrapActive(uint32_t now) {
+    if (g_meteoEverFix) return false;
+    if (!g_meteoFastUntilMs) return false;
+    return (int32_t)(now - g_meteoFastUntilMs) < 0;
+}
+
+static bool meteoBroadcastStable(uint32_t now) {
+    if (!g_meteoLastBcastMs) return false;
+    if ((now - g_meteoLastBcastMs) > METEO_BCAST_STABLE_MAX_GAP_MS) return false;
+    return g_meteoPassiveBroadcastOnly;
+}
+
+static uint32_t meteoComputeRetryDelayMs(uint32_t now, uint8_t fails) {
+    // Add a small jitter to avoid phase-lock with WiFi/ETH bursts.
+    const uint32_t jitter = (uint32_t)(millis() & 0x7FU); // 0..127ms
+
+    // Fast bootstrap: aggressive backoff until we get the first fix.
+    if (meteoFastBootstrapActive(now)) {
+        // 250, 500, 1000, 1500, 1500...
+        uint32_t d = 250UL << (fails > 3 ? 3 : fails);
+        if (d > 1500UL) d = 1500UL;
+        return d + jitter;
+    }
+
+    // If the reading is stale, still retry faster than the normal reconnect.
+    if (!g_meteoLastFixMs || (now - g_meteoLastFixMs) > 30000UL) {
+        // 750, 1500, 3000, then cap to configured reconnect
+        uint32_t d = 750UL << (fails > 2 ? 2 : fails);
+        const uint32_t cap = g_cfg.meteoReconnectMs ? g_cfg.meteoReconnectMs : 8000UL;
+        if (d > cap) d = cap;
+        return d + jitter;
+    }
+
+    return (g_cfg.meteoReconnectMs ? g_cfg.meteoReconnectMs : 8000UL) + jitter;
 }
 
 static bool fsReadAll(const char* path, String& out) {
@@ -544,6 +597,22 @@ static void meteoScanFinalize() {
             // The target may simply not have advertised during this short window.
             // We will try to connect anyway (client connect tries both PUBLIC and RANDOM addr types).
             const uint32_t now = millis();
+// Pure passive mode: if broadcast frames are stable, do not connect (unless pairing is active).
+if (g_meteoPassiveBroadcastOnly && g_meteoLastBcastMs && (now - g_meteoLastBcastMs) > METEO_BCAST_STABLE_MAX_GAP_MS) {
+    // Broadcast went stale -> allow connections again.
+    g_meteoPassiveBroadcastOnly = false;
+    g_meteoBcastWindowStartMs = 0;
+    g_meteoBcastFramesInWindow = 0;
+}
+if (!g_meteoPairingActive && g_meteoPassiveBroadcastOnly && g_meteoLastBcastMs && (now - g_meteoLastBcastMs) <= METEO_BCAST_STABLE_MAX_GAP_MS) {
+    // If we happen to be connected, disconnect to keep the link purely passive.
+    if (g_meteoClient && g_meteoClient->isConnected()) {
+        g_meteoClient->disconnect();
+    }
+    g_meteoNextActionMs = now + 1000;
+    return false;
+}
+
             g_meteoNextActionMs = now + 250;
             Serial.printf("[BLE] Meteo refresh: target %s not seen (next=%lums)\n",
                           g_meteoRefreshTargetMac,
@@ -567,6 +636,61 @@ static void meteoScanFinalize() {
     g_scanBestAddrType = -1;
 }
 
+
+static bool meteoTryParseBroadcast(const NimBLEAdvertisedDevice* dev) {
+    if (!dev) return false;
+
+    const std::string md = dev->getManufacturerData();
+    if (md.size() < (2 + 1 + 2 + 1 + 2)) return false;
+
+    const uint8_t* b = (const uint8_t*)md.data();
+    const uint16_t companyId = (uint16_t)(b[0] | (b[1] << 8));
+    if (companyId != METEO_MFG_ID) return false;
+
+    const uint8_t ver = b[2];
+    if (ver != METEO_BCAST_VER) return false;
+
+    const int16_t tempX10 = (int16_t)(b[3] | (b[4] << 8));
+    const uint8_t hum = b[5];
+    const uint16_t pressHpa = (uint16_t)(b[6] | (b[7] << 8));
+
+    const uint32_t now = millis();
+
+    // Update latest reading (broadcast acts as a "fix" without connecting)
+    g_meteoTempX10 = tempX10;
+    g_meteoHum = hum;
+    g_meteoPress = pressHpa;
+    g_meteoTrend = 0;
+    g_meteoLastMs = now;
+    g_meteoLastFixMs = now;
+    g_meteoLastBcastMs = now;
+    g_meteoFix = true;
+    g_meteoEverFix = true;
+
+    // Update last-seen metadata (useful for diagnostics)
+    const String mac = normalizeMac(macToString(dev->getAddress()));
+    strncpy(g_meteoLastSeenMac, mac.c_str(), sizeof(g_meteoLastSeenMac) - 1);
+    g_meteoLastSeenMac[sizeof(g_meteoLastSeenMac) - 1] = 0;
+    g_meteoLastSeenName = String(dev->getName().c_str());
+    g_meteoLastSeenRssi = dev->getRSSI();
+    g_meteoLastSeenMs = now;
+    g_meteoLastSeenAddrType = dev->getAddressType();
+
+    // Evaluate "stable broadcast" -> enable pure passive mode (never connect).
+    // We require N frames within a time window and gaps not exceeding METEO_BCAST_STABLE_MAX_GAP_MS.
+    if (!g_meteoBcastWindowStartMs || (now - g_meteoBcastWindowStartMs) > METEO_BCAST_STABLE_WINDOW_MS) {
+        g_meteoBcastWindowStartMs = now;
+        g_meteoBcastFramesInWindow = 1;
+    } else {
+        if (g_meteoBcastFramesInWindow < 250) g_meteoBcastFramesInWindow++;
+    }
+    if (g_meteoBcastFramesInWindow >= METEO_BCAST_STABLE_MIN_FRAMES) {
+        g_meteoPassiveBroadcastOnly = true;
+    }
+
+    return true;
+}
+
 // NimBLE-Arduino 2.x: NimBLEAdvertisedDeviceCallbacks replaced by NimBLEScanCallbacks,
 // scan end callback moved to onScanEnd().
 class MeteoScanCallbacks : public NimBLEScanCallbacks {
@@ -578,6 +702,10 @@ public:
         const String name = String(dev->getName().c_str());
         const bool matchesName = name.startsWith(METEO_NAME_PREFIX);
         if (!matchesService && !matchesName) return;
+
+        // Passive mode: parse meteo broadcast frames from advertising (Manufacturer Data).
+        // This provides meteo readings without connecting.
+        meteoTryParseBroadcast(dev);
 
         const int rssi = dev->getRSSI();
         const String mac = normalizeMac(macToString(dev->getAddress()));
@@ -643,17 +771,25 @@ static bool meteoStartScanIfNeeded() {
 
     const bool useFast = g_cfg.meteoFastScan && (refreshOnly || pairing || (g_cfg.meteoAutoPair && !g_cfg.meteoMac.length()));
     const uint16_t interval = useFast ? g_cfg.meteoFastScanInterval : g_cfg.meteoScanInterval;
-    const uint16_t window = useFast ? g_cfg.meteoFastScanWindow : g_cfg.meteoScanWindow;
+    uint16_t window = useFast ? g_cfg.meteoFastScanWindow : g_cfg.meteoScanWindow;
+    // During bootstrapping we prefer a 100% scan duty cycle to discover the meteo sensor ASAP.
+    if (useFast && meteoFastBootstrapActive(now)) {
+        window = interval;
+    }
     scan->setInterval(interval);
     scan->setWindow(window);
 
     g_scanStopIssued = false;
 
     uint32_t requestMs = g_cfg.meteoScanMs;
-    if (refreshOnly) requestMs = min(requestMs, useFast ? 1500UL : 3000UL);
+    if (refreshOnly) {
+        const uint32_t fastRefresh = meteoFastBootstrapActive(now) ? 900UL : 1500UL;
+        requestMs = min(requestMs, useFast ? fastRefresh : 3000UL);
+    }
     if (pairing) requestMs = min(requestMs, 2500UL);
     uint32_t durSec = (requestMs + 999) / 1000;
-    if (durSec < 2) durSec = 2;
+    const uint32_t minDurSec = (useFast && meteoFastBootstrapActive(now)) ? 1UL : 2UL;
+    if (durSec < minDurSec) durSec = minDurSec;
     if (durSec > 30) durSec = 30;
 
     const bool scanActive = scan->isScanning() || g_meteoScanning;
@@ -903,6 +1039,12 @@ static void meteoOnNotify(NimBLERemoteCharacteristic* ch, uint8_t* data, size_t 
     g_meteoFix = true;
     g_meteoLastMs = millis();
     g_meteoLastFixMs = g_meteoLastMs;
+
+    // First valid frame after boot: exit fast-bootstrap mode.
+    if (!g_meteoEverFix) {
+        g_meteoEverFix = true;
+        g_meteoFastUntilMs = 0;
+    }
     g_meteoFailCount = 0;
     g_meteoConnectFails = 0;
     g_meteoSuspendUntilMs = 0;
@@ -946,7 +1088,7 @@ class MeteoClientCallbacks : public NimBLEClientCallbacks {
         g_meteoLastDisconnectReason = reason;
         g_meteoConnectFails = (uint8_t)min(255, g_meteoConnectFails + 1);
         const uint32_t now = millis();
-        g_meteoNextActionMs = now + 250;
+        g_meteoNextActionMs = now + meteoComputeRetryDelayMs(now, g_meteoConnectFails);
         const bool suspended = meteoSuspendIfNeeded(now, g_meteoConnectFails);
         if (!suspended && meteoAutoDiscoverOnFailAllowed() && g_meteoConnectFails >= METEO_FAILS_BEFORE_SCAN) {
             g_meteoDiscoverRequested = true;
@@ -1006,7 +1148,14 @@ static bool meteoConnectIfNeeded() {
         return false;
     }
     if ((int32_t)(now - g_meteoNextActionMs) < 0) return false;
-    if (g_meteoLastConnectAttemptMs && (now - g_meteoLastConnectAttemptMs) < METEO_MIN_CONNECT_INTERVAL_MS) return false;
+    // Limit connect attempts, but keep the very first fix after boot as fast as possible.
+    uint32_t minConnectIntervalMs = METEO_MIN_CONNECT_INTERVAL_MS;
+    if (meteoFastBootstrapActive(now)) {
+        minConnectIntervalMs = 450;   // aggressive: converge quickly after reboot
+    } else if (!g_meteoLastFixMs || (now - g_meteoLastFixMs) > 30000UL) {
+        minConnectIntervalMs = 1200;  // stale -> retry quicker than normal
+    }
+    if (g_meteoLastConnectAttemptMs && (now - g_meteoLastConnectAttemptMs) < minConnectIntervalMs) return false;
 
     if (g_meteoClient && g_meteoClient->isConnected()) return true;
 
@@ -1020,7 +1169,7 @@ static bool meteoConnectIfNeeded() {
         && (g_meteoLastSeenAddrType < 0 || !g_meteoLastSeenMs || (now - g_meteoLastSeenMs) > 30000UL)) {
         g_meteoRefreshOnlyRequested = true;
         g_meteoNextDiscoverMs = 0;
-        g_meteoNextActionMs = now + 500;
+        g_meteoNextActionMs = now + (meteoFastBootstrapActive(now) ? 120 : 500);
         return false;
     }
 
@@ -1028,7 +1177,7 @@ static bool meteoConnectIfNeeded() {
     NimBLEScan* scan = NimBLEDevice::getScan();
     const bool scanRunning = (scan && scan->isScanning()) || g_meteoScanning;
     if (scanRunning) {
-        g_meteoNextActionMs = now + 500;
+        g_meteoNextActionMs = now + (meteoFastBootstrapActive(now) ? 150 : 500);
         Serial.printf("[BLE] Meteo connect deferred: scan running (next in %lums)\n",
                       (unsigned long)(g_meteoNextActionMs - now));
         return false;
@@ -1106,7 +1255,7 @@ static bool meteoConnectIfNeeded() {
         const bool suspended = meteoSuspendIfNeeded(now, g_meteoConnectFails);
         const bool willDiscover = !suspended && meteoAutoDiscoverOnFailAllowed() && g_meteoConnectFails >= METEO_FAILS_BEFORE_SCAN;
         if (!suspended) {
-            g_meteoNextActionMs = now + g_cfg.meteoReconnectMs;
+            g_meteoNextActionMs = now + meteoComputeRetryDelayMs(now, g_meteoConnectFails);
             if (willDiscover) {
                 g_meteoDiscoverRequested = true;
                 g_meteoNextDiscoverMs = 0;
@@ -1134,10 +1283,12 @@ static bool meteoConnectIfNeeded() {
     NimBLERemoteService* svc = g_meteoClient->getService(UUID_SVC_METEO);
     if (!svc) {
         g_meteoClient->disconnect();
-        g_meteoNextActionMs = now + g_cfg.meteoReconnectMs;
         g_meteoFailCount = (uint8_t)min(255, g_meteoFailCount + 1);
         const bool suspended = meteoSuspendIfNeeded(now, g_meteoFailCount);
         const bool willDiscover = !suspended && meteoAutoDiscoverOnFailAllowed() && g_meteoFailCount >= METEO_FAILS_BEFORE_SCAN;
+        if (!suspended) {
+            g_meteoNextActionMs = now + meteoComputeRetryDelayMs(now, g_meteoFailCount);
+        }
         if (!suspended && willDiscover) {
             g_meteoDiscoverRequested = true;
             g_meteoNextDiscoverMs = 0;
@@ -1153,10 +1304,12 @@ static bool meteoConnectIfNeeded() {
     g_meteoRemoteCh = svc->getCharacteristic(UUID_CH_METEO);
     if (!g_meteoRemoteCh) {
         g_meteoClient->disconnect();
-        g_meteoNextActionMs = now + g_cfg.meteoReconnectMs;
         g_meteoFailCount = (uint8_t)min(255, g_meteoFailCount + 1);
         const bool suspended = meteoSuspendIfNeeded(now, g_meteoFailCount);
         const bool willDiscover = !suspended && meteoAutoDiscoverOnFailAllowed() && g_meteoFailCount >= METEO_FAILS_BEFORE_SCAN;
+        if (!suspended) {
+            g_meteoNextActionMs = now + meteoComputeRetryDelayMs(now, g_meteoFailCount);
+        }
         if (!suspended && willDiscover) {
             g_meteoDiscoverRequested = true;
             g_meteoNextDiscoverMs = 0;
@@ -1172,10 +1325,12 @@ static bool meteoConnectIfNeeded() {
     if (g_meteoRemoteCh->canNotify()) {
         if (!g_meteoRemoteCh->subscribe(true, meteoOnNotify)) {
             g_meteoClient->disconnect();
-            g_meteoNextActionMs = now + g_cfg.meteoReconnectMs;
             g_meteoFailCount = (uint8_t)min(255, g_meteoFailCount + 1);
             const bool suspended = meteoSuspendIfNeeded(now, g_meteoFailCount);
             const bool willDiscover = !suspended && meteoAutoDiscoverOnFailAllowed() && g_meteoFailCount >= METEO_FAILS_BEFORE_SCAN;
+            if (!suspended) {
+                g_meteoNextActionMs = now + meteoComputeRetryDelayMs(now, g_meteoFailCount);
+            }
             if (!suspended && willDiscover) {
                 g_meteoDiscoverRequested = true;
                 g_meteoNextDiscoverMs = 0;
@@ -1189,8 +1344,19 @@ static bool meteoConnectIfNeeded() {
         }
     }
 
-    // NOTE: we intentionally do not perform an initial read here.
-    // readValue() can block; we rely on notifications for fresh data.
+    // Bootstrap: do a single initial read so we can get a value immediately after connect.
+    // The C3 meteo sensor keeps the characteristic value updated even when no notifications were sent yet.
+    if (g_meteoRemoteCh->canRead()) {
+        std::string v = g_meteoRemoteCh->readValue();
+        if (v.length() >= 6) {
+            uint8_t tmp[6];
+            memcpy(tmp, v.data(), 6);
+            meteoOnNotify(g_meteoRemoteCh, tmp, 6, false);
+            Serial.println(F("[BLE] Meteo initial read OK"));
+        } else {
+            Serial.printf("[BLE] Meteo initial read: short (%uB)\n", (unsigned)v.length());
+        }
+    }
 
     if (!g_meteoLastFixMs) {
         g_meteoLastFixMs = millis();
@@ -1266,7 +1432,11 @@ void bleInit() {
     }
 
     // Meteo client: initial scheduling
-    g_meteoNextActionMs = millis() + 3000;
+    g_bleBootMs = millis();
+    g_meteoEverFix = false;
+    g_meteoFastUntilMs = g_bleBootMs + 20000UL; // 20s to acquire first fix quickly
+    g_meteoNextActionMs = g_bleBootMs + 50;
+    g_meteoNextBcastScanMs = g_bleBootMs + 200;
     g_bleInitialized = true;
 }
 
@@ -1298,6 +1468,17 @@ void bleLoop() {
     }
 
     // meteo auto-discovery + client handling
+// Periodic short refresh scans to catch advertising broadcast frames (pure passive mode).
+// We run these even when a target MAC is known and we are not connected.
+if (g_cfg.meteoEnabled && meteoTargetMacCStr()[0] && (!g_meteoClient || !g_meteoClient->isConnected())) {
+    if (!g_meteoNextBcastScanMs) g_meteoNextBcastScanMs = now + 200;
+    if ((int32_t)(now - g_meteoNextBcastScanMs) >= 0) {
+        g_meteoNextBcastScanMs = now + METEO_BCAST_SCAN_PERIOD_MS;
+        g_meteoRefreshOnlyRequested = true;
+        g_meteoNextDiscoverMs = 0;
+    }
+}
+
     meteoStartScanIfNeeded();
     meteoConnectIfNeeded();
 
@@ -1356,7 +1537,10 @@ String bleGetStatusJson() {
     meteoObj["lastSeenName"] = g_meteoLastSeenName;
     meteoObj["lastSeenRssi"] = g_meteoLastSeenRssi;
     meteoObj["lastRssi"] = g_meteoLastSeenRssi;
-    meteoObj["lastSeenMs"] = g_meteoLastSeenMs;
+meteoObj["lastSeenMs"] = g_meteoLastSeenMs;
+meteoObj["broadcastPassive"] = g_meteoPassiveBroadcastOnly;
+meteoObj["lastBcastMs"] = g_meteoLastBcastMs;
+meteoObj["bcastFramesInWindow"] = g_meteoBcastFramesInWindow;
     meteoObj["connected"] = (g_meteoClient && g_meteoClient->isConnected());
     meteoObj["fix"] = g_meteoFix;
     meteoObj["failCount"] = g_meteoFailCount;
@@ -1675,8 +1859,22 @@ bool bleGetTempCById(const String& id, float &outC) {
     // Default / legacy IDs
     if (!id.length()) return bleGetMeteoTempC(outC);
 
-    String s = id;
-    s.trim();
+    String raw = id;
+    raw.trim();
+    if (!raw.length()) return bleGetMeteoTempC(outC);
+
+    // Accept MAC as ID (maps to meteo if it matches the active target MAC)
+    {
+        char idNorm[18];
+        char targetNorm[18];
+        normalizeMacToBuf(raw.c_str(), idNorm);
+        normalizeMacToBuf(meteoTargetMacCStr(), targetNorm);
+        if (idNorm[0] && targetNorm[0] && strcmp(idNorm, targetNorm) == 0) {
+            return bleGetMeteoTempC(outC);
+        }
+    }
+
+    String s = raw;
     s.toLowerCase();
 
     if (s == "meteo" || s == "meteo.tempc" || s == "temp" || s == "tempc") {

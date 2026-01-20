@@ -32,10 +32,12 @@
 #define RGB_LED_PIN 38
 #define BUZZER_PIN 46
 
-// NTC ADC pins (IO1-IO3 per your requirement)
-#define NTC_ADC_IO1_PIN 1
-#define NTC_ADC_IO2_PIN 2
-#define NTC_ADC_IO3_PIN 3
+// DS18B20 (OneWire) sběrnice – GPIO0..GPIO3
+// Na každé sběrnici mohou být až 3 teploměry (dle návrhu projektu).
+#define DALLAS_IO0_PIN 0
+#define DALLAS_IO1_PIN 1
+#define DALLAS_IO2_PIN 2
+#define DALLAS_IO3_PIN 3
 
 // TCA9554 default I2C address on many boards
 #ifndef TCA9554_ADDR

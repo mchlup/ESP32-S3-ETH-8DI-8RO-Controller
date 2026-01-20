@@ -39,6 +39,130 @@ static DynamicJsonDocument g_dashDoc(32768);
 // vede k neúplným odpovědím (ArduinoJson při nedostatku kapacity tiše "ořeže" vnořené části).
 static DynamicJsonDocument g_statusDoc(24576);
 
+
+// --- Validation helpers: reserve relays used by 3-way valves so they cannot be used elsewhere ---
+static bool isValve3wayRole(const char* role) {
+    if (!role) return false;
+    return strncmp(role, "valve_3way_", 10) == 0;
+}
+
+static bool valveRoleNeedsPeer(const char* role) {
+    if (!role) return false;
+    return strcmp(role, "valve_3way_mix") == 0 ||
+           strcmp(role, "valve_3way_2rel") == 0 ||
+           strcmp(role, "valve_3way_spring") == 0;
+}
+
+static void collectReservedRelaysFromValves(JsonDocument& doc, bool reserved[9]) {
+    for (int i = 0; i < 9; i++) reserved[i] = false;
+
+    JsonArray outputs = doc["iofunc"]["outputs"].as<JsonArray>();
+    if (outputs.isNull()) return;
+
+    int idx = 0;
+    for (JsonVariant vv : outputs) {
+        JsonObject o = vv.as<JsonObject>();
+        const char* role = o["role"] | "";
+        const int master = idx + 1; // 1..8
+        if (master >= 1 && master <= 8 && isValve3wayRole(role)) {
+            reserved[master] = true;
+            if (valveRoleNeedsPeer(role)) {
+                JsonObject params = o["params"].as<JsonObject>();
+                int peer = 0;
+                if (!params.isNull()) {
+                    peer = (int)(params["peerRel"] | params["partnerRelay"] | 0);
+                }
+                if (peer < 1 || peer > 8) {
+                    peer = (master < 8) ? (master + 1) : 0;
+                }
+                if (peer >= 1 && peer <= 8) reserved[peer] = true;
+            }
+        }
+        idx++;
+    }
+}
+
+static bool isReservedRelayNum(int relayNum, const bool reserved[9]) {
+    if (relayNum < 1 || relayNum > 8) return false;
+    return reserved[relayNum];
+}
+
+static bool validateNoRelayConflictsWithValves(JsonDocument& doc, String& errMsg, int& errRelay) {
+    bool reserved[9];
+    collectReservedRelaysFromValves(doc, reserved);
+
+    // 1) relayMap: mapping for reserved relays must be disabled (input=0)
+    JsonArray relayMap = doc["relayMap"].as<JsonArray>();
+    if (!relayMap.isNull()) {
+        int idx = 0;
+        for (JsonVariant vv : relayMap) {
+            const int relayNum = idx + 1;
+            JsonObject m = vv.as<JsonObject>();
+            int input = m.isNull() ? 0 : (int)(m["input"] | 0);
+            if (isReservedRelayNum(relayNum, reserved) && input > 0) {
+                errRelay = relayNum;
+                errMsg = "Relé R" + String(relayNum) + " je použito pro 3c ventil a nesmí být mapováno jako běžné relé (relayMap).";
+                return false;
+            }
+            idx++;
+        }
+    }
+
+
+    // 1b) modes: reserved relays must not be forced by manual modes
+    JsonArray modes = doc["modes"].as<JsonArray>();
+    if (!modes.isNull()) {
+        for (JsonVariant mv : modes) {
+            JsonObject mode = mv.as<JsonObject>();
+            if (mode.isNull()) continue;
+            JsonArray rs = mode["relayStates"].as<JsonArray>();
+            if (rs.isNull()) rs = mode["relay_states"].as<JsonArray>();
+            if (rs.isNull()) continue;
+
+            int ridx = 0;
+            for (JsonVariant sv : rs) {
+                const int relayNum = ridx + 1;
+                const int v = (int)(sv | 0);
+                if (isReservedRelayNum(relayNum, reserved) && v != 0) {
+                    errRelay = relayNum;
+                    errMsg = "Relé R" + String(relayNum) + " je použito pro 3c ventil a nesmí být spínáno přes režimy (modes.relayStates).";
+                    return false;
+                }
+                ridx++;
+            }
+        }
+    }
+
+    // 2) Explicit relays used by other features
+    struct PathRelay { const char* a; const char* b; } paths[] = {
+        {"tuv", "relay"},
+        {"tuv", "requestRelay"},
+        {"tuv", "request_relay"},
+        {"dhwRecirc", "pumpRelay"},
+        {"boiler", "dhwRequestRelay"},
+        {"boiler", "dhw_request_relay"},
+        {"boiler", "nightModeRelay"},
+        {"boiler", "night_mode_relay"},
+        {"akuHeater", "relay"},
+        {"akuHeater", "relayIndex"},
+    };
+
+    for (auto &pr : paths) {
+        JsonObject o = doc[pr.a].as<JsonObject>();
+        if (o.isNull()) continue;
+        int r = (int)(o[pr.b] | 0);
+        if (isReservedRelayNum(r, reserved)) {
+            errRelay = r;
+            errMsg = "Relé R" + String(r) + " je použito pro 3c ventil a nelze ho použít v konfiguraci (" + String(pr.a) + "." + String(pr.b) + ").";
+            return false;
+        }
+    }
+
+    errRelay = 0;
+    errMsg = "";
+    return true;
+}
+
 // Krátký cache pro /api/status (UI občas pošle více requestů těsně po sobě).
 static uint32_t g_statusCacheAtMs = 0;
 static bool     g_statusCacheValid = false;
@@ -409,6 +533,7 @@ static void handleApiDash() {
         o["peer"] = vs.peer;
         o["posPct"] = vs.posPct;
         o["moving"] = vs.moving;
+        o["targetPct"] = vs.targetPct;
         o["targetB"] = vs.targetB;
     }
 
@@ -463,10 +588,21 @@ void handleApiStatus() {
     }
 
     // --- temperatures (TEMP1..TEMP8) ---
+    // IMPORTANT:
+    // Web UI polls /api/status frequently (2s). Some sensor backends (notably DS18B20)
+    // can occasionally report "invalid" for a single cycle (bus timing/noise).
+    // If we return `null` when invalid, the UI briefly "drops" values.
+    //
+    // Therefore we always return the *last known* temperature (if available) and
+    // add a per-entry `valid` flag. UI already supports object entries.
     JsonArray temps = doc.createNestedArray("temps");
     for (int i = 0; i < INPUT_COUNT; i++) {
-        if (logicIsTempValid((uint8_t)i)) temps.add(logicGetTempC((uint8_t)i));
-        else temps.add(nullptr);
+        JsonObject o = temps.createNestedObject();
+        const bool valid = logicIsTempValid((uint8_t)i);
+        const float tC = logicGetTempC((uint8_t)i);
+        o["valid"] = valid;
+        if (isfinite(tC)) o["tempC"] = tC;
+        else o["tempC"] = nullptr;
     }
 
     // --- valves (legacy list for UI) ---
@@ -491,6 +627,28 @@ void handleApiStatus() {
         heap["free"] = (uint32_t)ESP.getFreeHeap();
         heap["minFree"] = (uint32_t)ESP.getMinFreeHeap();
         heap["largest"] = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    }
+
+    // --- error counters / diagnostics (stability) ---
+    {
+        JsonObject diag = doc.createNestedObject("diag");
+        JsonObject i2c = diag.createNestedObject("i2c");
+        i2c["relayErrors"] = relayGetI2cErrorCount();
+        i2c["relayRecoveries"] = relayGetI2cRecoveryCount();
+        i2c["relayLastErrorMs"] = relayGetI2cLastErrorMs();
+        const char* lastI2c = relayGetI2cLastError();
+        if (lastI2c && lastI2c[0]) i2c["relayLastError"] = lastI2c; else i2c["relayLastError"] = nullptr;
+
+        JsonObject cfg = diag.createNestedObject("configApply");
+        cfg["ok"] = logicGetConfigApplyOkCount();
+        cfg["fail"] = logicGetConfigApplyFailCount();
+        cfg["noMemory"] = logicGetConfigApplyNoMemoryCount();
+        cfg["filterOverflow"] = logicGetConfigApplyFilterOverflowCount();
+        cfg["oversize"] = logicGetConfigApplyOversizeCount();
+        cfg["lastFailMs"] = logicGetConfigApplyLastFailMs();
+        cfg["lastInputLen"] = logicGetConfigApplyLastInputLen();
+        const char* lastCfg = logicGetConfigApplyLastError();
+        if (lastCfg && lastCfg[0]) cfg["lastError"] = lastCfg; else cfg["lastError"] = nullptr;
     }
 
     // --- wifi ---
@@ -564,6 +722,8 @@ void handleApiStatus() {
         eq["outdoorAgeMs"] = es.outdoorAgeMs;
         if (es.outdoorReason.length()) eq["outdoorReason"] = es.outdoorReason; else eq["outdoorReason"] = nullptr;
         if (isfinite(es.flowC))    eq["flowC"]    = es.flowC;    else eq["flowC"]    = nullptr;
+        if (isfinite(es.boilerInC)) eq["boilerInC"] = es.boilerInC; else eq["boilerInC"] = nullptr;
+        eq["boilerInValid"] = es.boilerInValid;
         if (isfinite(es.targetFlowC)) eq["targetFlowC"] = es.targetFlowC; else eq["targetFlowC"] = nullptr;
         if (isfinite(es.actualC)) eq["actualC"] = es.actualC; else eq["actualC"] = nullptr;
         if (isfinite(es.targetC)) eq["targetC"] = es.targetC; else eq["targetC"] = nullptr;
@@ -731,6 +891,9 @@ void handleApiConfigPost() {
     filter["time"] = true;
     filter["thermometers"] = true;
     filter["tempRoles"] = true;
+    filter["dallasGpios"] = true;
+    filter["dallasAddrs"] = true;
+    filter["dallasNames"] = true;
     filter["opentherm"] = true;
     filter["relayNames"] = true;
     filter["inputNames"] = true;
@@ -754,6 +917,22 @@ void handleApiConfigPost() {
     if (!doc.is<JsonObject>()) {
         server.send(400, "application/json", "{\"error\":\"invalid json\"}");
         return;
+    }
+
+    // Validace: relé používaná pro 3c ventily nelze použít jako běžná relé v jiných funkcích
+    {
+        String errMsg;
+        int errRelay = 0;
+        if (!validateNoRelayConflictsWithValves(doc, errMsg, errRelay)) {
+            DynamicJsonDocument out(512);
+            out["error"] = "relay_conflict_with_valve";
+            out["relay"] = errRelay;
+            out["message"] = errMsg;
+            String resp;
+            serializeJson(out, resp);
+            server.send(400, "application/json", resp);
+            return;
+        }
     }
 
     String sanitized;
@@ -945,6 +1124,88 @@ void handleApiModeCtrlPost() {
             logicSetRelayRaw(relay, on);
             server.send(200, "application/json", "{\"ok\":true}");
             return;
+        }
+
+        if (action == "valve_pulse" || action == "valve_stop" || action == "valve_goto") {
+            // Bezpečné chování: kalibrace / ruční zásah => MANUAL
+            if (logicGetControlMode() == ControlMode::AUTO) {
+                logicSetControlMode(ControlMode::MANUAL);
+            }
+
+            const uint8_t master = (uint8_t)(doc["master"] | doc["relay"] | 0); // 1..8
+            if (master < 1 || master > RELAY_COUNT) {
+                server.send(400, "application/json", "{\"error\":\"master must be 1-8\"}");
+                return;
+            }
+
+            // Optional runtime config override (useful for calibration without saving config)
+            const bool hasCfg = doc.containsKey("peer") || doc.containsKey("peerRel") ||
+                                doc.containsKey("singleRelay") || doc.containsKey("invertDir") ||
+                                doc.containsKey("travelTime") || doc.containsKey("travelTimeS") ||
+                                doc.containsKey("pulseTime") || doc.containsKey("pulseTimeS") ||
+                                doc.containsKey("guardTime") || doc.containsKey("guardTimeS") ||
+                                doc.containsKey("minSwitchS") || doc.containsKey("minSwitch") ||
+                                doc.containsKey("defaultPos");
+            if (hasCfg) {
+                const uint8_t peer = (uint8_t)(doc["peer"] | doc["peerRel"] | 0);
+                const bool singleRelay = (bool)(doc["singleRelay"] | false);
+                const bool invertDir = (bool)(doc["invertDir"] | false);
+
+                float travelS = NAN;
+                if (doc.containsKey("travelTimeS")) travelS = doc["travelTimeS"].as<float>();
+                else if (doc.containsKey("travelTime")) travelS = doc["travelTime"].as<float>();
+
+                float pulseS = NAN;
+                if (doc.containsKey("pulseTimeS")) pulseS = doc["pulseTimeS"].as<float>();
+                else if (doc.containsKey("pulseTime")) pulseS = doc["pulseTime"].as<float>();
+
+                float guardS = NAN;
+                if (doc.containsKey("guardTimeS")) guardS = doc["guardTimeS"].as<float>();
+                else if (doc.containsKey("guardTime")) guardS = doc["guardTime"].as<float>();
+
+                float minSwitchS = NAN;
+                if (doc.containsKey("minSwitchS")) minSwitchS = doc["minSwitchS"].as<float>();
+                else if (doc.containsKey("minSwitch")) minSwitchS = doc["minSwitch"].as<float>();
+
+                const char* dp = (const char*)(doc["defaultPos"] | "A");
+                const char defaultPos = (dp && dp[0]) ? dp[0] : 'A';
+
+                if (!logicValveManualConfigure(master, peer, singleRelay, invertDir, travelS, pulseS, guardS, minSwitchS, defaultPos)) {
+                    server.send(400, "application/json", "{\"error\":\"invalid valve cfg\"}");
+                    return;
+                }
+            }
+
+            if (action == "valve_pulse") {
+                const int dirI = (int)(doc["dir"] | doc["direction"] | 0);
+                const int8_t dir = (dirI >= 0) ? (int8_t)1 : (int8_t)-1;
+                if (!logicValvePulse(master, dir)) {
+                    server.send(400, "application/json", "{\"error\":\"valve pulse failed\"}");
+                    return;
+                }
+                server.send(200, "application/json", "{\"ok\":true}");
+                return;
+            }
+
+            if (action == "valve_stop") {
+                if (!logicValveStop(master)) {
+                    server.send(400, "application/json", "{\"error\":\"valve stop failed\"}");
+                    return;
+                }
+                server.send(200, "application/json", "{\"ok\":true}");
+                return;
+            }
+
+            if (action == "valve_goto") {
+                const int pctI = (int)(doc["pct"] | doc["targetPct"] | 0);
+                uint8_t pct = (pctI < 0) ? 0 : (pctI > 100 ? 100 : (uint8_t)pctI);
+                if (!logicValveGotoPct(master, pct)) {
+                    server.send(400, "application/json", "{\"error\":\"valve goto failed\"}");
+                    return;
+                }
+                server.send(200, "application/json", "{\"ok\":true}");
+                return;
+            }
         }
 
         if (action == "mqtt_discovery") {
@@ -1257,6 +1518,21 @@ void webserverInit() {
 
 void webserverLoop() {
     server.handleClient();
+
+    // Throttled system/heap health log (stability).
+    static uint32_t s_lastDiagLogMs = 0;
+    const uint32_t nowMs = millis();
+    if ((uint32_t)(nowMs - s_lastDiagLogMs) >= 60000UL) {
+        s_lastDiagLogMs = nowMs;
+        const uint32_t freeHeap = (uint32_t)ESP.getFreeHeap();
+        const uint32_t minFree  = (uint32_t)ESP.getMinFreeHeap();
+        const uint32_t largest  = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+        Serial.printf("[SYS] heap free=%u min=%u largest=%u; i2c relayErr=%u recov=%u; cfgApply fail=%u noMem=%u\n",
+                      freeHeap, minFree, largest,
+                      (unsigned)relayGetI2cErrorCount(), (unsigned)relayGetI2cRecoveryCount(),
+                      (unsigned)logicGetConfigApplyFailCount(), (unsigned)logicGetConfigApplyNoMemoryCount());
+    }
+
 
     if (g_rebootPending) {
         const uint32_t now = millis();

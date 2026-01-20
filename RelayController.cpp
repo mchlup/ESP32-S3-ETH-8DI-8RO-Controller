@@ -12,6 +12,20 @@ static constexpr uint8_t REG_CFG    = 0x03;
 static bool s_ok = false;
 static uint8_t s_mask = 0x00; // logical ON bits (bit0=R1 ... bit7=R8)
 
+// ---- Non-blocking apply state ----
+static bool     s_applyPending = false;
+static uint8_t  s_pendingMask  = 0x00;
+static uint8_t  s_applyAttempt = 0;
+static uint32_t s_nextApplyMs  = 0;
+static uint32_t s_backoffMs    = 2; // grows on repeated failures
+
+// ---- Telemetry ----
+static uint32_t s_i2cErrors     = 0;
+static uint32_t s_i2cRecoveries = 0;
+static uint32_t s_lastI2cErrMs  = 0;
+static char     s_lastI2cErr[96] = {0};
+static uint32_t s_lastI2cLogMs  = 0;
+
 // Pokud by se ukázalo, že relé je active-low, přepni na 1.
 #ifndef RELAY_ACTIVE_LOW
 #define RELAY_ACTIVE_LOW 0
@@ -25,46 +39,172 @@ static uint8_t toHw(uint8_t logicalMask) {
 #endif
 }
 
-static bool writeReg(uint8_t reg, uint8_t val) {
+static void noteI2cErrorThrottled(const char* msg) {
+  s_i2cErrors++;
+  s_lastI2cErrMs = millis();
+  if (msg) {
+    snprintf(s_lastI2cErr, sizeof(s_lastI2cErr), "%s", msg);
+  }
+
+  const uint32_t now = s_lastI2cErrMs;
+  // Throttle: do not spam Serial during bus faults
+  if ((uint32_t)(now - s_lastI2cLogMs) >= 5000) {
+    s_lastI2cLogMs = now;
+    Serial.print(F("[RELAY] I2C error: "));
+    Serial.println(s_lastI2cErr);
+  }
+}
+
+static bool writeRegRaw(uint8_t reg, uint8_t val) {
   Wire.beginTransmission(TCA9554_ADDR);
   Wire.write(reg);
   Wire.write(val);
-  return Wire.endTransmission() == 0;
+  const uint8_t rc = Wire.endTransmission();
+  if (rc != 0) {
+    char buf[64];
+    snprintf(buf, sizeof(buf), "write reg 0x%02X rc=%u", reg, (unsigned)rc);
+    noteI2cErrorThrottled(buf);
+    return false;
+  }
+  return true;
+}
+
+static bool readRegRaw(uint8_t reg, uint8_t &out) {
+  Wire.beginTransmission(TCA9554_ADDR);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) {
+    char buf[64];
+    snprintf(buf, sizeof(buf), "read reg 0x%02X addrNACK", reg);
+    noteI2cErrorThrottled(buf);
+    return false;
+  }
+  const uint8_t n = Wire.requestFrom((int)TCA9554_ADDR, 1);
+  if (n != 1) {
+    char buf[64];
+    snprintf(buf, sizeof(buf), "read reg 0x%02X req=%u", reg, (unsigned)n);
+    noteI2cErrorThrottled(buf);
+    return false;
+  }
+  out = Wire.read();
+  return true;
+}
+
+static void scheduleApply(uint8_t logicalMask) {
+  s_applyPending = true;
+  s_pendingMask  = logicalMask;
+  s_applyAttempt = 0;
+  s_backoffMs    = 2;
+  s_nextApplyMs  = 0;
+}
+
+static void processPending(uint32_t now) {
+  if (!s_applyPending) return;
+  if (!s_ok) return;
+  if ((int32_t)(now - s_nextApplyMs) < 0) return;
+
+  const uint8_t hw = toHw(s_pendingMask);
+
+  bool ok = writeRegRaw(REG_OUTPUT, hw);
+  if (ok) {
+    uint8_t rb = 0;
+    ok = readRegRaw(REG_OUTPUT, rb) && (rb == hw);
+    if (!ok) {
+      noteI2cErrorThrottled("verify mismatch/output read failed");
+    }
+  }
+
+  if (ok) {
+    s_applyPending = false;
+    return;
+  }
+
+  // Non-blocking retry: next attempt later (no delay())
+  s_applyAttempt++;
+  if (s_applyAttempt >= 3) {
+    // Mark expander as not OK -> recovery path will re-init and re-apply mask
+    s_ok = false;
+    return;
+  }
+
+  s_nextApplyMs = now + s_backoffMs;
+  if (s_backoffMs < 100) s_backoffMs *= 2;
 }
 
 static bool initTca() {
   i2cInit();
 
   // polarity normal
-  if (!writeReg(REG_POL, 0x00)) return false;
+  if (!writeRegRaw(REG_POL, 0x00)) return false;
 
   // all 8 as outputs (0=output)
-  if (!writeReg(REG_CFG, 0x00)) return false;
+  if (!writeRegRaw(REG_CFG, 0x00)) return false;
 
-  // set initial outputs
-  if (!writeReg(REG_OUTPUT, toHw(s_mask))) return false;
+  // set initial outputs (write + verify)
+  const uint8_t hw = toHw(s_mask);
+  if (!writeRegRaw(REG_OUTPUT, hw)) return false;
+  uint8_t rb = 0;
+  if (!readRegRaw(REG_OUTPUT, rb) || (rb != hw)) {
+    noteI2cErrorThrottled("init verify mismatch");
+    return false;
+  }
 
   return true;
 }
 
 void relayInit() {
-  s_mask = 0x00;        // zachovej default OFF
+  s_mask = 0x00;        // default OFF
+  scheduleApply(s_mask);
   s_ok = initTca();
+  if (s_ok) {
+    s_i2cRecoveries++; // first successful init
+    processPending(millis());
+  }
 }
 
 void relayUpdate() {
-  // reserved – currently nothing
+  const uint32_t now = millis();
+
+  // Apply pending mask if needed (non-blocking)
+  processPending(now);
+
+  // Periodic health-check (detect expander reset / desync)
+  static uint32_t lastCheckMs = 0;
+  if (s_ok && (uint32_t)(now - lastCheckMs) >= 2000) {
+    lastCheckMs = now;
+    uint8_t rb = 0;
+    if (!readRegRaw(REG_OUTPUT, rb) || (rb != toHw(s_mask))) {
+      noteI2cErrorThrottled("health-check desync");
+      s_ok = false;
+    }
+  }
+
+  // Auto-recovery if expander is not OK
+  static uint32_t lastRecoverAttemptMs = 0;
+  if (!s_ok) {
+    if ((uint32_t)(now - lastRecoverAttemptMs) < 1000) return;
+    lastRecoverAttemptMs = now;
+
+    // Re-init expander and re-apply desired mask
+    const bool ok = initTca();
+    if (ok) {
+      s_ok = true;
+      s_i2cRecoveries++;
+      // Ensure requested mask is applied (in case init succeeded but output differs)
+      scheduleApply(s_mask);
+      processPending(now);
+    }
+  }
 }
 
 void relaySet(RelayId id, bool on) {
-  if (!s_ok) return;
   if ((uint8_t)id >= RELAY_COUNT) return;
 
-  uint8_t bit = (uint8_t)(1U << (uint8_t)id);
+  const uint8_t bit = (uint8_t)(1U << (uint8_t)id);
   if (on) s_mask |= bit;
   else    s_mask &= (uint8_t)~bit;
 
-  writeReg(REG_OUTPUT, toHw(s_mask));
+  scheduleApply(s_mask);
+  processPending(millis());
 }
 
 void relayToggle(RelayId id) {
@@ -89,9 +229,9 @@ uint8_t relayGetMask() {
 }
 
 void relaySetMask(uint8_t mask) {
-  if (!s_ok) return;
   s_mask = mask;
-  writeReg(REG_OUTPUT, toHw(s_mask));
+  scheduleApply(s_mask);
+  processPending(millis());
 }
 
 void relayPrintStates(Stream &out) {
@@ -104,4 +244,21 @@ void relayPrintStates(Stream &out) {
     if (i != RELAY_COUNT - 1) out.print(F(", "));
   }
   out.println(F("]"));
+}
+
+// --- Diagnostics / telemetry ---
+uint32_t relayGetI2cErrorCount() {
+  return s_i2cErrors;
+}
+
+uint32_t relayGetI2cRecoveryCount() {
+  return s_i2cRecoveries;
+}
+
+uint32_t relayGetI2cLastErrorMs() {
+  return s_lastI2cErrMs;
+}
+
+const char* relayGetI2cLastError() {
+  return s_lastI2cErr;
 }

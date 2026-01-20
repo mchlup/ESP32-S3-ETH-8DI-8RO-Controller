@@ -8,12 +8,53 @@
 #include "OpenThermController.h"
 
 #include "ThermometerController.h"
+#include "ThermoRoles.h"
 #include "TempParse.h"
 
 #include <ArduinoJson.h>
 #include <time.h>
 #include <math.h>
 #include "BleController.h"
+
+// ============================================================================
+// FIXED HW MAPPING (Waveshare ESP32-S3-POE-ETH-8DI-8DO)
+//
+// Požadavek projektu: mapování relé/vstupů je pevně dané ve firmwaru.
+//
+// Relé (R1..R8):
+//  R1 = 3c směšovací ventil (směr A)
+//  R2 = 3c směšovací ventil (směr B)
+//  R3 = 3c přepínací ventil (0%/100%) – single relay (pružina nebo interní návrat)
+//  R4 = REZERVA
+//  R5 = požadavek ohřevu TUV do kotle (DHW request)
+//  R6 = požadavek Denní/Noční křivka do kotle
+//  R7 = cirkulační čerpadlo
+//  R8 = stykač topné spirály akumulační nádrže
+//
+// Vstupy (IN1..IN8):
+//  IN1 = požadavek ohřevu TUV (DHW demand)
+//  IN2 = přepnutí Denní/Noční křivka
+//  IN3 = požadavek cirkulace
+//  IN4..IN8 = REZERVA
+// ============================================================================
+static constexpr uint8_t FIX_RELAY_MIX_A0           = 0; // R1
+static constexpr uint8_t FIX_RELAY_MIX_B0           = 1; // R2
+static constexpr uint8_t FIX_RELAY_TUV_VALVE0       = 2; // R3
+static constexpr uint8_t FIX_RELAY_RESERVED_4_0     = 3; // R4
+static constexpr uint8_t FIX_RELAY_BOILER_DHW_REQ0  = 4; // R5
+static constexpr uint8_t FIX_RELAY_BOILER_NIGHT0    = 5; // R6
+static constexpr uint8_t FIX_RELAY_RECIRC_PUMP0     = 6; // R7
+static constexpr uint8_t FIX_RELAY_AKU_HEATER0      = 7; // R8
+
+static constexpr int8_t  FIX_IN_DHW_DEMAND0         = 0; // IN1
+static constexpr int8_t  FIX_IN_NIGHT_MODE0         = 1; // IN2
+static constexpr int8_t  FIX_IN_RECIRC_DEMAND0      = 2; // IN3
+
+static inline bool isFixedFunctionRelay(uint8_t r0) {
+    return (r0 == FIX_RELAY_MIX_A0 || r0 == FIX_RELAY_MIX_B0 || r0 == FIX_RELAY_TUV_VALVE0 ||
+            r0 == FIX_RELAY_BOILER_DHW_REQ0 || r0 == FIX_RELAY_BOILER_NIGHT0 ||
+            r0 == FIX_RELAY_RECIRC_PUMP0 || r0 == FIX_RELAY_AKU_HEATER0);
+}
 
 // Každý režim má profil pro všechna relé (RELAY_COUNT = 8).
 
@@ -118,6 +159,20 @@ static void valveResetAll() {
 static bool isValveMaster(uint8_t r0){ return r0 < RELAY_COUNT && s_valves[r0].configured; }
 static bool isValvePeer(uint8_t r0){ return r0 < RELAY_COUNT && s_valvePeerOf[r0] >= 0; }
 
+static float jsonGetFloat2(JsonObject obj, const char* keyA, const char* keyB, float defVal) {
+    if (!obj.isNull()) {
+        if (keyA && obj.containsKey(keyA)) {
+            JsonVariant v = obj[keyA];
+            if (!v.isNull()) return v.as<float>();
+        }
+        if (keyB && obj.containsKey(keyB)) {
+            JsonVariant v = obj[keyB];
+            if (!v.isNull()) return v.as<float>();
+        }
+    }
+    return defVal;
+}
+
 static uint8_t valveComputePosPct(const Valve3WayState& v, uint32_t nowMs){
     // Udržujeme posPct jako poslední známou / dopočtenou pozici (0..100),
     // aby šlo ventil řídit i procenty (ekviterm).
@@ -184,10 +239,7 @@ static void valveStartMoveInternal(Valve3WayState &v, uint8_t internalTargetPct,
 static void valveCommand(uint8_t masterA0, bool wantB){
     if (!isValveMaster(masterA0)) return;
     Valve3WayState &v = s_valves[masterA0];
-
-    // Pozn.: historicky invertDir obrací smysl A/B (nejen cívky).
-    // Zachováváme kvůli kompatibilitě stávajících konfigurací.
-    if (v.invertDir) wantB = !wantB;
+    // invertDir: prohození cívky A/B (nemění logickou škálu 0..100)
 
     const uint32_t nowMs = millis();
     const uint8_t targetPct = wantB ? 100 : 0;
@@ -204,7 +256,7 @@ static void valveCommand(uint8_t masterA0, bool wantB){
             if (v.singleRelay) {
                 // Jednocívkový přepínací ventil (spring-return apod.): drž stabilní stav relé dle cílové polohy.
                 // Důležité: nesmí docházet k periodickému OFF/ON "cukání" při opakovaných povelích na stejný cíl.
-                relaySet(static_cast<RelayId>(v.relayA), wantB);
+                relaySet(static_cast<RelayId>(v.relayA), (wantB ^ v.invertDir));
             } else {
                 relaySet(static_cast<RelayId>(v.relayA), false);
                 relaySet(static_cast<RelayId>(v.relayB), false);
@@ -233,9 +285,6 @@ static void valveMoveToPct(uint8_t masterA0, uint8_t targetPctExt){
     uint8_t targetPct = targetPctExt;
     if (targetPct > 100) targetPct = 100;
 
-    // kompatibilita s invertDir: obrátíme škálu 0..100
-    if (v.invertDir) targetPct = (uint8_t)(100 - targetPct);
-
     const uint32_t nowMs = millis();
 
     // během pohybu pouze queue
@@ -254,7 +303,7 @@ static void valveMoveToPct(uint8_t masterA0, uint8_t targetPctExt){
         v.hasPending = false;
         if (v.singleRelay) {
             // U jednocívkového ventilu udržuj stabilní stav relé dle cílové polohy.
-            const bool holdOn = (v.targetPct >= 50);
+            const bool holdOn = ((v.targetPct >= 50) ^ v.invertDir);
             relaySet(static_cast<RelayId>(v.relayA), holdOn);
         } else {
             relaySet(static_cast<RelayId>(v.relayA), false);
@@ -293,12 +342,13 @@ static void valveTick(uint32_t nowMs){
                     // Jednocivkovy/prepinaci ventil (spring-return apod.): ovladame pouze relayA.
                     // relayB muze byt shodne s relayA (kvuli legacy nastaveni), proto na nej nesahame,
                     // jinak by doslo k okamzitemu vypnuti vystupu.
-                    relaySet(static_cast<RelayId>(v.relayA), v.currentB);
+                    relaySet(static_cast<RelayId>(v.relayA), (v.currentB ^ v.invertDir));
                 } else {
                     // během pohybu je sepnutá jen správná cívka
                     const bool wantB = v.currentB;
-                    const uint8_t dir = wantB ? v.relayB : v.relayA;
-                    const uint8_t other = wantB ? v.relayA : v.relayB;
+                    const bool coilB = v.invertDir ? !wantB : wantB;
+                    const uint8_t dir = coilB ? v.relayB : v.relayA;
+                    const uint8_t other = coilB ? v.relayA : v.relayB;
                     relaySet(static_cast<RelayId>(other), false);
                     relaySet(static_cast<RelayId>(dir), true);
                 }
@@ -308,7 +358,7 @@ static void valveTick(uint32_t nowMs){
             if ((int32_t)(nowMs - v.moveEndMs) >= 0){
                 if (v.singleRelay) {
                     // U jednocívkového ventilu po doběhu nepřepínej relé OFF, pokud má zůstat v poloze B.
-                    const bool holdOn = (v.targetPct >= 50);
+                    const bool holdOn = ((v.targetPct >= 50) ^ v.invertDir);
                     relaySet(static_cast<RelayId>(v.relayA), holdOn);
                 } else {
                     relaySet(static_cast<RelayId>(v.relayA), false);
@@ -320,7 +370,7 @@ static void valveTick(uint32_t nowMs){
             }
         } else {
             if (v.singleRelay) {
-                const bool holdOn = (v.targetPct >= 50);
+                const bool holdOn = ((v.targetPct >= 50) ^ v.invertDir);
                 relaySet(static_cast<RelayId>(v.relayA), holdOn);
                 //relaySet(static_cast<RelayId>(v.relayB), false);
             } else {
@@ -370,7 +420,9 @@ static uint8_t s_tuvEqValveSavedPct   = 0;
 static bool    s_tuvRestoreEqValveAfter = true;
 static bool    s_tuvBypassEnabled = true;
 static uint8_t s_tuvBypassPct = 100;
-static uint8_t s_tuvChPct = 100;
+// Pro přepínací ventil (0/100) je typicky "CH" poloha = 0% (bez napětí),
+// "DHW" poloha = 100% (pod napětím). Pokud potřebuješ opak, použij invert.
+static uint8_t s_tuvChPct = 0;
 static bool    s_tuvBypassInvert = false;
 static uint8_t s_tuvValveCurrentPct = 0;
 static String  s_tuvValveMode = "ch";
@@ -386,6 +438,10 @@ static int8_t   s_recircPumpRelayRole = -1;
 static uint32_t s_recircOnDemandRunMs = 120000;
 static uint32_t s_recircMinOffMs = 300000;
 static uint32_t s_recircMinOnMs = 30000;
+// Volitelný cyklus v rámci časových oken (time_windows/hybrid):
+// například 5 min ON / 15 min OFF. 0 = vypnuto (běží kontinuálně v okně).
+static uint32_t s_recircCycleOnMs = 0;
+static uint32_t s_recircCycleOffMs = 0;
 static EqSourceCfg s_recircReturnCfg;
 static float    s_recircStopTempC = 42.0f;
 static bool     s_recircActive = false;
@@ -530,7 +586,7 @@ static float  s_eqMinFlow = 25, s_eqMaxFlow = 55;
 
 // Řízení 3c ventilu (B varianta = plynulá korekce po krocích)
 static float    s_eqDeadbandC = 0.5f;      // necitlivost (°C)
-static uint8_t  s_eqStepPct   = 4;         // krok změny pozice (%)
+static uint8_t  s_eqStepPct   = 0;         // krok změny pozice (%) (0 = AUTO z pulsu/travel)
 static uint32_t s_eqPeriodMs  = 30000;     // minimální perioda korekcí (ms)
 static uint8_t  s_eqMinPct    = 0;         // clamp pozice
 static uint8_t  s_eqMaxPctDay    = 100;
@@ -857,14 +913,22 @@ static void equithermRecompute(){
     }
     target += curveOffset;
 
-    // Flow temperature (feedback)
+    // Flow temperature (feedback) + BoilerIn (limit/diagnostic)
     float flow = NAN;
-    (void)tryGetTempFromSource(s_eqBoilerInCfg, flow); // ok když není – jen diagnostika
-    const bool hasFlow = isfinite(flow);
+    EqSourceDiag flowDiag;
+    const bool flowOk = tryGetTempFromSource(s_eqFlowCfg, flow, &flowDiag) && isfinite(flow);
+
+    float boilerIn = NAN;
+    EqSourceDiag boilerDiag;
+    const bool boilerOk = tryGetTempFromSource(s_eqBoilerInCfg, boilerIn, &boilerDiag) && isfinite(boilerIn);
+
+    const bool hasFlow = flowOk;
 
     s_eqStatus.active      = true;
     s_eqStatus.outdoorC    = tout;
     s_eqStatus.flowC       = flow;
+    s_eqStatus.boilerInC   = boilerIn;
+    s_eqStatus.boilerInValid = boilerOk;
     s_eqStatus.targetFlowC = target;
     s_eqStatus.actualC = flow;
     s_eqStatus.targetC = target;
@@ -930,14 +994,15 @@ static void equithermRecompute(){
         return;
     }
 
-    if (isfinite(s_eqMaxBoilerInC) && s_eqMaxBoilerInC > 0.0f && flow > s_eqMaxBoilerInC) {
+    const float boilerForLimits = boilerOk ? boilerIn : flow;
+    if (isfinite(s_eqMaxBoilerInC) && s_eqMaxBoilerInC > 0.0f && isfinite(boilerForLimits) && boilerForLimits > s_eqMaxBoilerInC) {
         s_eqReason = "boiler in high";
         s_eqStatus.reason = s_eqReason;
         return;
     }
 
     String akuReason;
-    if (!isAkuMixingAllowed(target, flow, s_nightMode, &akuReason)) {
+    if (!isAkuMixingAllowed(target, boilerForLimits, s_nightMode, &akuReason)) {
         s_eqReason = akuReason.length() ? akuReason : "aku limit";
         s_eqStatus.reason = s_eqReason;
         s_eqStatus.akuSupportActive = false;
@@ -949,6 +1014,22 @@ static void equithermRecompute(){
 
     s_eqReason = "";
     s_eqStatus.reason = ""; // OK
+}
+
+static uint8_t equithermAutoStepPct(const Valve3WayState& v) {
+    if (v.travelMs == 0) return 4;
+    float stepPctF = ((float)v.pulseMs * 100.0f) / (float)v.travelMs;
+    if (!isfinite(stepPctF) || stepPctF < 1.0f) stepPctF = 1.0f;
+    if (stepPctF > 25.0f) stepPctF = 25.0f;
+    return (uint8_t)lroundf(stepPctF);
+}
+
+static uint8_t equithermEffectiveStepPct(const Valve3WayState& v) {
+    if (s_eqStepPct == 0) return equithermAutoStepPct(v);
+    uint8_t step = s_eqStepPct;
+    if (step < 1) step = 1;
+    if (step > 25) step = 25;
+    return step;
 }
 
 static void equithermControlTick(uint32_t nowMs){
@@ -966,9 +1047,9 @@ static void equithermControlTick(uint32_t nowMs){
         return;
     }
 
-    // nutný feedback senzor
+    // nutný feedback senzor (FLOW)
     float flow = NAN;
-    if (!tryGetTempFromSource(s_eqBoilerInCfg, flow)) return;
+    if (!tryGetTempFromSource(s_eqFlowCfg, flow)) return;
     if (isfinite(flow)) {
         if (!isfinite(s_eqLastFlowC) || fabsf(flow - s_eqLastFlowC) >= 0.1f) {
             s_eqLastFlowC = flow;
@@ -1000,16 +1081,21 @@ static void equithermControlTick(uint32_t nowMs){
     Valve3WayState &v = s_valves[master0];
     if (v.moving) return;
 
+    // limit / ochrana (BOILER_IN). Když není k dispozici, použij flow.
+    float boilerIn = NAN;
+    const bool boilerOk = tryGetTempFromSource(s_eqBoilerInCfg, boilerIn) && isfinite(boilerIn);
+    const float boilerForLimits = (boilerOk && isfinite(boilerIn)) ? boilerIn : flow;
+
     const float target = s_eqStatus.targetFlowC;
     String akuReason;
-    if (!isAkuMixingAllowed(target, flow, s_nightMode, &akuReason)) {
+    if (!isAkuMixingAllowed(target, boilerForLimits, s_nightMode, &akuReason)) {
         if (s_eqAkuNoSupportBehavior == "close") {
             valveMoveToPct(master0, 0);
             s_eqLastAdjustMs = nowMs;
         }
         return;
     }
-    if (isfinite(s_eqMaxBoilerInC) && s_eqMaxBoilerInC > 0.0f && flow > s_eqMaxBoilerInC) {
+    if (isfinite(s_eqMaxBoilerInC) && s_eqMaxBoilerInC > 0.0f && isfinite(boilerForLimits) && boilerForLimits > s_eqMaxBoilerInC) {
         valveMoveToPct(master0, 0);
         s_eqLastAdjustMs = nowMs;
         return;
@@ -1020,7 +1106,8 @@ static void equithermControlTick(uint32_t nowMs){
     if (fabsf(err) <= s_eqDeadbandC) return;
 
     const uint8_t curPct = valveComputePosPct(v, nowMs);
-    int nextPct = (int)curPct + ((err > 0) ? (int)s_eqStepPct : -(int)s_eqStepPct);
+    const uint8_t stepPct = equithermEffectiveStepPct(v);
+    int nextPct = (int)curPct + ((err > 0) ? (int)stepPct : -(int)stepPct);
     if (nextPct < (int)s_eqMinPct) nextPct = (int)s_eqMinPct;
     const uint8_t maxPct = s_nightMode ? s_eqMaxPctNight : s_eqMaxPctDay;
     if (nextPct > (int)maxPct) nextPct = (int)maxPct;
@@ -1034,6 +1121,8 @@ static void equithermControlTick(uint32_t nowMs){
 
     // aktualizuj status pro UI
     s_eqStatus.flowC = flow;
+    s_eqStatus.boilerInC = boilerIn;
+    s_eqStatus.boilerInValid = boilerOk;
     s_eqStatus.valvePosPct = curPct;
     s_eqStatus.valveTargetPct = (uint8_t)nextPct;
     s_eqStatus.valveMoving = true;
@@ -1141,13 +1230,18 @@ static void updateInputBasedModes() {
 }
 
 static bool isTuvEnabledEffective() {
-    return s_tuvScheduleEnabled || s_tuvDemandActive;
+    // 'enabled' = DHW feature armed (schedule/input/config), 'demand' = external DHW call.
+    // DHW mode becomes active only when BOTH are true (per role 'dhw_demand').
+    // NOTE: if no demand input is configured, we fall back to schedule-enabled behavior.
+    const bool hasDemand = (s_tuvDemandInput >= 0 && s_tuvDemandInput < (int8_t)INPUT_COUNT);
+    if (!hasDemand) return s_tuvScheduleEnabled;
+    return s_tuvScheduleEnabled && s_tuvDemandActive;
 }
 
 static void applyTuvRequest() {
     const int8_t relayIdx = (s_boilerDhwRelay >= 0) ? s_boilerDhwRelay : s_tuvRequestRelay;
     if (relayIdx < 0 || relayIdx >= (int8_t)RELAY_COUNT) return;
-    relaySet(static_cast<RelayId>(relayIdx), isTuvEnabledEffective());
+    relaySet(static_cast<RelayId>(relayIdx), s_tuvModeActive);
 }
 
 static void applyNightModeRelay() {
@@ -1189,15 +1283,17 @@ static void applyTuvModeValves(uint32_t nowMs) {
 
 static void updateTuvModeState(uint32_t nowMs) {
     const bool newActive = isTuvEnabledEffective();
-
+    // Status explanation for UI
     if (s_tuvScheduleEnabled && s_tuvDemandActive) {
-        s_tuvReason = "schedule+demand";
-        s_tuvSource = "schedule+demand";
+        s_tuvReason = "active";
+        s_tuvSource = "demand";
     } else if (s_tuvScheduleEnabled) {
-        s_tuvReason = "schedule";
+        // DHW feature armed, but no demand yet
+        s_tuvReason = "armed";
         s_tuvSource = "schedule";
     } else if (s_tuvDemandActive) {
-        s_tuvReason = "demand";
+        // Demand present, but DHW feature disabled
+        s_tuvReason = "demand_ignored";
         s_tuvSource = "demand";
     } else {
         s_tuvReason = "off";
@@ -1208,7 +1304,7 @@ static void updateTuvModeState(uint32_t nowMs) {
     if (newActive && !s_tuvPrevModeActive) {
         // právě začal ohřev TUV
         if (s_eqValveMaster0 >= 0 && isValveMaster((uint8_t)s_eqValveMaster0)) {
-            s_tuvEqValveSavedPct = valveComputePosPct(s_valves[(uint8_t)s_eqValveMaster0], nowMs);
+            s_tuvEqValveSavedPct = s_valves[(uint8_t)s_eqValveMaster0].targetPct;
             s_tuvEqValveSavedValid = true;
         } else {
             s_tuvEqValveSavedValid = false;
@@ -1261,6 +1357,9 @@ static void recircUpdate(uint32_t nowMs) {
         }
     }
 
+    const bool cycleEnabled = (s_recircCycleOnMs > 0 && s_recircCycleOffMs > 0 &&
+                               (s_recircMode == "time_windows" || s_recircMode == "hybrid"));
+
     bool demandEdge = false;
     if (s_recircDemandInput >= 0 && s_recircDemandInput < (int8_t)INPUT_COUNT) {
         const bool cur = inputGetState(static_cast<InputId>(s_recircDemandInput));
@@ -1270,13 +1369,19 @@ static void recircUpdate(uint32_t nowMs) {
 
     if ((s_recircMode == "on_demand" || s_recircMode == "hybrid") && demandEdge) {
         if (s_recircLastOffMs == 0 || (uint32_t)(nowMs - s_recircLastOffMs) >= s_recircMinOffMs) {
+            // Explicitní požadavek (edge) má prioritu: dovol restart i když byl před chvílí dosažen
+            // stopTemp (jinak by uživatel nemohl znovu vyžádat cirkulaci během okna).
+            s_recircStopReached = false;
             recircStart(nowMs, s_recircOnDemandRunMs);
         }
     }
 
-    if (!s_recircActive && windowActive && windowRemainingMs > 0) {
-        if (s_recircLastOffMs == 0 || (uint32_t)(nowMs - s_recircLastOffMs) >= s_recircMinOffMs) {
-            recircStart(nowMs, windowRemainingMs);
+    if (!s_recircActive && windowActive && windowRemainingMs > 0 && !s_recircStopReached) {
+        // V oknech lze volitelně cyklovat ON/OFF (např. 5/15). OFF pauza se přičte k minOff.
+        const uint32_t offGuardMs = cycleEnabled ? max(s_recircMinOffMs, s_recircCycleOffMs) : s_recircMinOffMs;
+        if (s_recircLastOffMs == 0 || (uint32_t)(nowMs - s_recircLastOffMs) >= offGuardMs) {
+            const uint32_t runMs = cycleEnabled ? min(windowRemainingMs, s_recircCycleOnMs) : windowRemainingMs;
+            recircStart(nowMs, runMs);
         }
     }
 
@@ -1291,7 +1396,9 @@ static void recircUpdate(uint32_t nowMs) {
             return;
         }
 
-        if (s_recircUntilMs != 0 && (int32_t)(nowMs - s_recircUntilMs) >= 0 && minOnOk && !windowActive) {
+        // pokud běžíme v cyklu, respektujeme untilMs i když je okno stále aktivní
+        const bool allowStopOnUntil = cycleEnabled || !windowActive;
+        if (s_recircUntilMs != 0 && (int32_t)(nowMs - s_recircUntilMs) >= 0 && minOnOk && allowStopOnUntil) {
             recircStop(nowMs);
             return;
         }
@@ -1409,6 +1516,10 @@ static const RelayProfile* profileForMode(SystemMode mode) {
 static void updateRelaysForMode(SystemMode mode) {
     const RelayProfile* p = profileForMode(mode);
     for (uint8_t r = 0; r < RELAY_COUNT; r++) {
+        // R1..R3 + R5..R8 jsou systémové (ventily/boiler/recirc/AKU) a řídí je
+        // specializovaná logika. Režimy (MODE1..MODE5) a relay profily se na ně
+        // nesmí aplikovat, aby nedocházelo ke konfliktům.
+        if (isFixedFunctionRelay(r)) continue;
         relayApplyLogical(r, p->states[r]);
     }
 }
@@ -1451,7 +1562,7 @@ AutoStatus logicGetAutoStatus() {
 }
 
 bool logicGetTuvEnabled() {
-    return isTuvEnabledEffective();
+    return s_tuvScheduleEnabled;
 }
 
 bool logicGetNightMode() {
@@ -1464,7 +1575,7 @@ bool logicGetHeatCallActive() {
 
 TuvStatus logicGetTuvStatus() {
     TuvStatus st;
-    st.enabled = isTuvEnabledEffective();
+    st.enabled = s_tuvScheduleEnabled;
     st.active = s_tuvModeActive;
     st.scheduleEnabled = s_tuvScheduleEnabled;
     st.demandActive = s_tuvDemandActive;
@@ -1538,6 +1649,9 @@ bool logicGetAutoDefaultOffUnmapped() {
 // Aplikace relayMap na základě aktuálních logických stavů vstupů
 static void applyRelayMapFromInputs(bool defaultOffUnmapped) {
     for (uint8_t r = 0; r < RELAY_COUNT; r++) {
+        // FIXED mapping: systémové relé nejsou řízené relayMap (AUTO) – pouze
+        // jejich dedikovanou logikou (ventily, boiler signály, recirkulace, AKU).
+        if (isFixedFunctionRelay(r)) continue;
         const uint8_t in = relayMap[r].input;
         if (in == 0 || in > INPUT_COUNT) {
             // bez přiřazení
@@ -1763,6 +1877,50 @@ void logicOnInputChanged(InputId id, bool newState) {
     logicRecomputeFromInputs();
 }
 
+// --- Config apply (ArduinoJson) stability ---
+
+static constexpr size_t LOGIC_CONFIG_JSON_HARD_CAP_BYTES = 64UL * 1024UL;
+// Max capacity for filtered config doc. Sized to handle typical 20-40 KB configs with margin.
+static constexpr size_t LOGIC_CONFIG_DOC_CAP_BYTES = 64UL * 1024UL;
+// Filter is intentionally tiny: we include whole supported sections instead of enumerating every key.
+static constexpr size_t LOGIC_CONFIG_FILTER_CAP_BYTES = 2048;
+
+static DynamicJsonDocument g_logicApplyDoc(LOGIC_CONFIG_DOC_CAP_BYTES);
+static StaticJsonDocument<LOGIC_CONFIG_FILTER_CAP_BYTES> g_logicApplyFilter;
+
+static uint32_t g_logicApplyOk = 0;
+static uint32_t g_logicApplyFail = 0;
+static uint32_t g_logicApplyNoMem = 0;
+static uint32_t g_logicApplyFilterOverflow = 0;
+static uint32_t g_logicApplyOversize = 0;
+static uint32_t g_logicApplyLastFailMs = 0;
+static uint32_t g_logicApplyLastInputLen = 0;
+static char     g_logicApplyLastErr[160] = {0};
+
+static void logicSetApplyErr(const char* msg, uint32_t inputLen) {
+    g_logicApplyFail++;
+    g_logicApplyLastFailMs = millis();
+    g_logicApplyLastInputLen = inputLen;
+    if (msg) {
+        snprintf(g_logicApplyLastErr, sizeof(g_logicApplyLastErr), "%s", msg);
+    } else {
+        g_logicApplyLastErr[0] = 0;
+    }
+}
+
+static void logicLogApplyCapInsufficient(const char* which, uint32_t inputLen, size_t filterCap, size_t docCap) {
+    Serial.print(F("[LOGIC] logicApplyConfig: filter/doc capacity insufficient ("));
+    Serial.print(which ? which : "?");
+    Serial.print(F(") inLen="));
+    Serial.print(inputLen);
+    Serial.print(F(" jsonHardCap="));
+    Serial.print((uint32_t)LOGIC_CONFIG_JSON_HARD_CAP_BYTES);
+    Serial.print(F(" filterCap="));
+    Serial.print((uint32_t)filterCap);
+    Serial.print(F(" docCap="));
+    Serial.println((uint32_t)docCap);
+}
+
 // ===== Aplikace konfigurace z JSON =====
 //
 // Očekávaný tvar v config.json:
@@ -1780,250 +1938,80 @@ void logicOnInputChanged(InputId id, bool newState) {
 //  ]
 //
 void logicApplyConfig(const String& json) {
-    StaticJsonDocument<4096> filter;
+    const uint32_t inputLen = (uint32_t)json.length();
+    if (inputLen == 0) {
+        Serial.println(F("[LOGIC] logicApplyConfig: empty JSON"));
+        return;
+    }
+
+    if (inputLen > LOGIC_CONFIG_JSON_HARD_CAP_BYTES) {
+        g_logicApplyOversize++;
+        logicLogApplyCapInsufficient("oversize", inputLen, LOGIC_CONFIG_FILTER_CAP_BYTES, g_logicApplyDoc.capacity());
+        logicSetApplyErr("config too large", inputLen);
+        return;
+    }
+
+    // Build a *small* filter: include whole supported sections instead of listing every nested key.
+    StaticJsonDocument<LOGIC_CONFIG_FILTER_CAP_BYTES>& filter = g_logicApplyFilter;
+    filter.clear();
+
     filter["inputActiveLevels"] = true;
-    filter["inputs"][0]["activeLevel"] = true;
-    filter["inputs"][0]["active_level"] = true;
-    filter["relayMap"][0]["input"] = true;
-    filter["relayMap"][0]["polarity"] = true;
+    filter["inputs"] = true;
+    filter["relayMap"] = true;
     filter["autoDefaultOffUnmapped"] = true;
     filter["auto_default_off_unmapped"] = true;
-    filter["modes"][0]["id"] = true;
-    filter["modes"][0]["relayStates"][0] = true;
-    filter["modes"][0]["triggerInput"] = true;
-    filter["iofunc"]["inputs"][0]["role"] = true;
-    filter["iofunc"]["outputs"][0]["role"] = true;
-    filter["iofunc"]["outputs"][0]["params"]["peerRel"] = true;
-    filter["iofunc"]["outputs"][0]["params"]["partnerRelay"] = true;
-    filter["iofunc"]["outputs"][0]["params"]["travelTime"] = true;
-    filter["iofunc"]["outputs"][0]["params"]["pulseTime"] = true;
-    filter["iofunc"]["outputs"][0]["params"]["guardTime"] = true;
-    filter["iofunc"]["outputs"][0]["params"]["minSwitchS"] = true;
-    filter["iofunc"]["outputs"][0]["params"]["invertDir"] = true;
-    filter["iofunc"]["outputs"][0]["params"]["defaultPos"] = true;
-    filter["equitherm"]["enabled"] = true;
-    filter["equitherm"]["outdoor"]["source"] = true;
-    filter["equitherm"]["outdoor"]["gpio"] = true;
-    filter["equitherm"]["outdoor"]["rom"] = true;
-    filter["equitherm"]["outdoor"]["addr"] = true;
-    filter["equitherm"]["outdoor"]["topic"] = true;
-    filter["equitherm"]["outdoor"]["jsonKey"] = true;
-    filter["equitherm"]["outdoor"]["key"] = true;
-    filter["equitherm"]["outdoor"]["field"] = true;
-    filter["equitherm"]["outdoor"]["mqttIdx"] = true;
-    filter["equitherm"]["outdoor"]["preset"] = true;
-    filter["equitherm"]["outdoor"]["maxAgeMs"] = true;
-    filter["equitherm"]["outdoor"]["max_age_ms"] = true;
-    filter["equitherm"]["outdoor"]["bleId"] = true;
-    filter["equitherm"]["outdoor"]["id"] = true;
-    filter["equitherm"]["flow"]["source"] = true;
-    filter["equitherm"]["flow"]["gpio"] = true;
-    filter["equitherm"]["flow"]["rom"] = true;
-    filter["equitherm"]["flow"]["addr"] = true;
-    filter["equitherm"]["flow"]["topic"] = true;
-    filter["equitherm"]["flow"]["jsonKey"] = true;
-    filter["equitherm"]["flow"]["key"] = true;
-    filter["equitherm"]["flow"]["field"] = true;
-    filter["equitherm"]["flow"]["mqttIdx"] = true;
-    filter["equitherm"]["flow"]["preset"] = true;
-    filter["equitherm"]["flow"]["maxAgeMs"] = true;
-    filter["equitherm"]["flow"]["max_age_ms"] = true;
-    filter["equitherm"]["flow"]["bleId"] = true;
-    filter["equitherm"]["flow"]["id"] = true;
-    filter["equitherm"]["akuTop"]["source"] = true;
-    filter["equitherm"]["akuTop"]["gpio"] = true;
-    filter["equitherm"]["akuTop"]["rom"] = true;
-    filter["equitherm"]["akuTop"]["addr"] = true;
-    filter["equitherm"]["akuTop"]["topic"] = true;
-    filter["equitherm"]["akuTop"]["jsonKey"] = true;
-    filter["equitherm"]["akuTop"]["key"] = true;
-    filter["equitherm"]["akuTop"]["field"] = true;
-    filter["equitherm"]["akuTop"]["mqttIdx"] = true;
-    filter["equitherm"]["akuTop"]["preset"] = true;
-    filter["equitherm"]["akuTop"]["maxAgeMs"] = true;
-    filter["equitherm"]["akuTop"]["max_age_ms"] = true;
-    filter["equitherm"]["akuTop"]["bleId"] = true;
-    filter["equitherm"]["akuTop"]["id"] = true;
-    filter["equitherm"]["akuMid"]["source"] = true;
-    filter["equitherm"]["akuMid"]["gpio"] = true;
-    filter["equitherm"]["akuMid"]["rom"] = true;
-    filter["equitherm"]["akuMid"]["addr"] = true;
-    filter["equitherm"]["akuMid"]["topic"] = true;
-    filter["equitherm"]["akuMid"]["jsonKey"] = true;
-    filter["equitherm"]["akuMid"]["key"] = true;
-    filter["equitherm"]["akuMid"]["field"] = true;
-    filter["equitherm"]["akuMid"]["mqttIdx"] = true;
-    filter["equitherm"]["akuMid"]["preset"] = true;
-    filter["equitherm"]["akuMid"]["maxAgeMs"] = true;
-    filter["equitherm"]["akuMid"]["max_age_ms"] = true;
-    filter["equitherm"]["akuMid"]["bleId"] = true;
-    filter["equitherm"]["akuMid"]["id"] = true;
-    filter["equitherm"]["akuBottom"]["source"] = true;
-    filter["equitherm"]["akuBottom"]["gpio"] = true;
-    filter["equitherm"]["akuBottom"]["rom"] = true;
-    filter["equitherm"]["akuBottom"]["addr"] = true;
-    filter["equitherm"]["akuBottom"]["topic"] = true;
-    filter["equitherm"]["akuBottom"]["jsonKey"] = true;
-    filter["equitherm"]["akuBottom"]["key"] = true;
-    filter["equitherm"]["akuBottom"]["field"] = true;
-    filter["equitherm"]["akuBottom"]["mqttIdx"] = true;
-    filter["equitherm"]["akuBottom"]["preset"] = true;
-    filter["equitherm"]["akuBottom"]["maxAgeMs"] = true;
-    filter["equitherm"]["akuBottom"]["max_age_ms"] = true;
-    filter["equitherm"]["akuBottom"]["bleId"] = true;
-    filter["equitherm"]["akuBottom"]["id"] = true;
-    filter["equitherm"]["boilerIn"]["source"] = true;
-    filter["equitherm"]["boilerIn"]["gpio"] = true;
-    filter["equitherm"]["boilerIn"]["rom"] = true;
-    filter["equitherm"]["boilerIn"]["addr"] = true;
-    filter["equitherm"]["boilerIn"]["topic"] = true;
-    filter["equitherm"]["boilerIn"]["jsonKey"] = true;
-    filter["equitherm"]["boilerIn"]["key"] = true;
-    filter["equitherm"]["boilerIn"]["field"] = true;
-    filter["equitherm"]["boilerIn"]["mqttIdx"] = true;
-    filter["equitherm"]["boilerIn"]["preset"] = true;
-    filter["equitherm"]["boilerIn"]["maxAgeMs"] = true;
-    filter["equitherm"]["boilerIn"]["max_age_ms"] = true;
-    filter["equitherm"]["boilerIn"]["bleId"] = true;
-    filter["equitherm"]["boilerIn"]["id"] = true;
-    filter["equitherm"]["minFlow"] = true;
-    filter["equitherm"]["maxFlow"] = true;
-    filter["equitherm"]["akuMinTopC"] = true;
-    filter["equitherm"]["akuMinTopC_day"] = true;
-    filter["equitherm"]["akuMinTopC_night"] = true;
-    filter["equitherm"]["akuMinDeltaToTargetC"] = true;
-    filter["equitherm"]["akuMinDeltaToTargetC_day"] = true;
-    filter["equitherm"]["akuMinDeltaToTargetC_night"] = true;
-    filter["equitherm"]["akuMinDeltaToBoilerInC"] = true;
-    filter["equitherm"]["akuMinDeltaToBoilerInC_day"] = true;
-    filter["equitherm"]["akuMinDeltaToBoilerInC_night"] = true;
-    filter["equitherm"]["akuSupportEnabled"] = true;
-    filter["equitherm"]["akuNoSupportBehavior"] = true;
-    filter["equitherm"]["curveOffsetC"] = true;
-    filter["equitherm"]["deadbandC"] = true;
-    filter["equitherm"]["stepPct"] = true;
-    filter["equitherm"]["controlPeriodMs"] = true;
-    filter["equitherm"]["maxBoilerInC"] = true;
-    filter["equitherm"]["noFlowDetectEnabled"] = true;
-    filter["equitherm"]["noFlowTimeoutMs"] = true;
-    filter["equitherm"]["noFlowTestPeriodMs"] = true;
-    filter["equitherm"]["slopeDay"] = true;
-    filter["equitherm"]["shiftDay"] = true;
-    filter["equitherm"]["slopeNight"] = true;
-    filter["equitherm"]["shiftNight"] = true;
-    filter["equitherm"]["refs"]["day"]["tout1"] = true;
-    filter["equitherm"]["refs"]["day"]["tflow1"] = true;
-    filter["equitherm"]["refs"]["day"]["tout2"] = true;
-    filter["equitherm"]["refs"]["day"]["tflow2"] = true;
-    filter["equitherm"]["refs"]["night"]["tout1"] = true;
-    filter["equitherm"]["refs"]["night"]["tflow1"] = true;
-    filter["equitherm"]["refs"]["night"]["tout2"] = true;
-    filter["equitherm"]["refs"]["night"]["tflow2"] = true;
-    filter["equitherm"]["valve"]["master"] = true;
-    filter["equitherm"]["valveMaster"] = true;
-    filter["equitherm"]["control"]["deadbandC"] = true;
-    filter["equitherm"]["control"]["deadband"] = true;
-    filter["equitherm"]["control"]["stepPct"] = true;
-    filter["equitherm"]["control"]["step"] = true;
-    filter["equitherm"]["control"]["periodMs"] = true;
-    filter["equitherm"]["control"]["period"] = true;
-    filter["equitherm"]["control"]["minPct"] = true;
-    filter["equitherm"]["control"]["maxPct"] = true;
-    filter["equitherm"]["control"]["maxPct_day"] = true;
-    filter["equitherm"]["control"]["maxPct_night"] = true;
-    filter["equitherm"]["maxPct_day"] = true;
-    filter["equitherm"]["maxPct_night"] = true;
-    filter["sensors"]["outdoor"]["maxAgeMs"] = true;
-    filter["equitherm"]["fallbackOutdoorC"] = true;
-    filter["system"]["profile"] = true;
-    filter["system"]["nightModeSource"] = true;
-    filter["system"]["nightModeManual"] = true;
-    filter["nightMode"]["source"] = true;
-    filter["nightMode"]["manual"] = true;
-    filter["dhwRecirc"]["enabled"] = true;
-    filter["dhwRecirc"]["mode"] = true;
-    filter["dhwRecirc"]["demandInput"] = true;
-    filter["dhwRecirc"]["pumpRelay"] = true;
-    filter["dhwRecirc"]["onDemandRunMs"] = true;
-    filter["dhwRecirc"]["minOffMs"] = true;
-    filter["dhwRecirc"]["minOnMs"] = true;
-    filter["dhwRecirc"]["tempReturnSource"]["source"] = true;
-    filter["dhwRecirc"]["tempReturnSource"]["gpio"] = true;
-    filter["dhwRecirc"]["tempReturnSource"]["rom"] = true;
-    filter["dhwRecirc"]["tempReturnSource"]["addr"] = true;
-    filter["dhwRecirc"]["tempReturnSource"]["topic"] = true;
-    filter["dhwRecirc"]["tempReturnSource"]["jsonKey"] = true;
-    filter["dhwRecirc"]["tempReturnSource"]["key"] = true;
-    filter["dhwRecirc"]["tempReturnSource"]["field"] = true;
-    filter["dhwRecirc"]["tempReturnSource"]["mqttIdx"] = true;
-    filter["dhwRecirc"]["tempReturnSource"]["preset"] = true;
-    filter["dhwRecirc"]["tempReturnSource"]["maxAgeMs"] = true;
-    filter["dhwRecirc"]["tempReturnSource"]["max_age_ms"] = true;
-    filter["dhwRecirc"]["tempReturnSource"]["bleId"] = true;
-    filter["dhwRecirc"]["tempReturnSource"]["id"] = true;
-    filter["dhwRecirc"]["stopTempC"] = true;
-    filter["dhwRecirc"]["windows"][0]["start"] = true;
-    filter["dhwRecirc"]["windows"][0]["end"] = true;
-    filter["dhwRecirc"]["windows"][0]["days"][0] = true;
-    filter["tuv"]["demandInput"] = true;
-    filter["tuv"]["demand_input"] = true;
-    filter["tuv"]["relay"] = true;
-    filter["tuv"]["requestRelay"] = true;
-    filter["tuv"]["request_relay"] = true;
-    filter["tuv"]["enabled"] = true;
-    filter["tuv"]["valveMaster"] = true;
-    filter["tuv"]["shortValveMaster"] = true;
-    filter["tuv"]["valveTargetPct"] = true;
-    filter["tuv"]["targetPct"] = true;
-    filter["tuv"]["eqValveTargetPct"] = true;
-    filter["tuv"]["mixValveTargetPct"] = true;
-    filter["tuv"]["bypassValve"]["enabled"] = true;
-    filter["tuv"]["bypassValve"]["mode"] = true;
-    filter["tuv"]["bypassValve"]["masterRelay"] = true;
-    filter["tuv"]["bypassValve"]["bypassPct"] = true;
-    filter["tuv"]["bypassValve"]["chPct"] = true;
-    filter["tuv"]["bypassValve"]["invert"] = true;
+    filter["modes"] = true;
+
+    // Whole sections (robust against future key additions)
+    filter["iofunc"] = true;
+    filter["tempRoles"] = true;
+    filter["equitherm"] = true;
+    filter["nightMode"] = true;
+    filter["system"] = true;
+    filter["dhwRecirc"] = true;
+    filter["tuv"] = true;
+    filter["boiler"] = true;
+    filter["akuHeater"] = true;
+    filter["schedules"] = true;
+    filter["sensors"] = true;
+
+    // Legacy top-level keys used for backward compatibility
     filter["tuvDemandInput"] = true;
     filter["tuv_demand_input"] = true;
     filter["tuvRelay"] = true;
     filter["tuv_relay"] = true;
     filter["tuvEnabled"] = true;
-    filter["tuvValveMaster"] = true;
-    filter["tuv_valve_master"] = true;
     filter["tuvValveTargetPct"] = true;
     filter["tuv_valve_target_pct"] = true;
     filter["tuvEqValveTargetPct"] = true;
     filter["tuv_eq_valve_target_pct"] = true;
-    filter["boiler"]["dhwRequestRelay"] = true;
-    filter["boiler"]["nightModeRelay"] = true;
-    filter["akuHeater"]["enabled"] = true;
-    filter["akuHeater"]["relay"] = true;
-    filter["akuHeater"]["mode"] = true;
-    filter["akuHeater"]["manualOn"] = true;
-    filter["akuHeater"]["targetTopC"] = true;
-    filter["akuHeater"]["hysteresisC"] = true;
-    filter["akuHeater"]["maxOnMs"] = true;
-    filter["akuHeater"]["minOffMs"] = true;
-    filter["akuHeater"]["windows"][0]["start"] = true;
-    filter["akuHeater"]["windows"][0]["end"] = true;
-    filter["akuHeater"]["windows"][0]["days"][0] = true;
-    filter["schedules"][0]["enabled"] = true;
-    filter["schedules"][0]["days"][0] = true;
-    filter["schedules"][0]["at"] = true;
-    filter["schedules"][0]["time"] = true;
-    filter["schedules"][0]["kind"] = true;
-    filter["schedules"][0]["type"] = true;
-    filter["schedules"][0]["value"] = true;
-    filter["schedules"][0]["params"] = true;
 
-    DynamicJsonDocument doc(16384);
-    DeserializationError err = deserializeJson(doc, json, DeserializationOption::Filter(filter));
-    if (err) {
-        Serial.print(F("[LOGIC] Config JSON parse error: "));
-        Serial.println(err.c_str());
+    if (filter.overflowed()) {
+        g_logicApplyFilterOverflow++;
+        logicLogApplyCapInsufficient("filter overflow", inputLen, filter.capacity(), g_logicApplyDoc.capacity());
+        logicSetApplyErr("filter overflow", inputLen);
         return;
     }
 
+    DynamicJsonDocument& doc = g_logicApplyDoc;
+    doc.clear();
+
+    DeserializationError err = deserializeJson(doc, json, DeserializationOption::Filter(filter));
+    if (err) {
+        if (err == DeserializationError::NoMemory) {
+            g_logicApplyNoMem++;
+            logicLogApplyCapInsufficient("doc NoMemory", inputLen, filter.capacity(), doc.capacity());
+        } else {
+            Serial.print(F("[LOGIC] Config JSON parse error: "));
+            Serial.println(err.c_str());
+        }
+        logicSetApplyErr(err.c_str(), inputLen);
+        return;
+    }
+
+    // success
+    g_logicApplyOk++;
+    g_logicApplyLastErr[0] = 0;
     // reset relayMap + triggers (umožní "smazat" mapování v UI)
     for (uint8_t r = 0; r < RELAY_COUNT; r++) {
         relayMap[r].input = 0;
@@ -2040,7 +2028,6 @@ void logicApplyConfig(const String& json) {
     // stejného master relé ji obnovíme.
     struct ValveSnapshot {
         bool valid = false;
-        bool invertDir = false;
         uint8_t posPct = 0;
     } snap[RELAY_COUNT];
 
@@ -2048,7 +2035,6 @@ void logicApplyConfig(const String& json) {
     for (uint8_t i=0; i<RELAY_COUNT; i++) {
         if (s_valves[i].configured) {
             snap[i].valid = true;
-            snap[i].invertDir = s_valves[i].invertDir;
             snap[i].posPct = valveComputePosPct(s_valves[i], nowMsSnap);
         }
     }
@@ -2094,14 +2080,19 @@ void logicApplyConfig(const String& json) {
     }
 
     
-    s_tuvEnableInput = -1;
-    s_nightModeInput = -1;
-    s_heatCallInput = -1;
-    s_recircDemandInput = -1;
-    s_boilerDhwRelay = -1;
-    s_boilerNightRelay = -1;
-    s_recircPumpRelayRole = -1;
-    s_akuHeaterRelay = -1;
+    // --------------------------------------------------------------------
+    // FIXED mapping pro tento projekt/řídicí jednotku (viz konstanty nahoře)
+    //
+    // Důvod: aby se zařízení nerozbilo špatným nastavením v UI/configu.
+    // --------------------------------------------------------------------
+    s_tuvEnableInput = -1;                 // zůstává volitelné (ale ne mapované na IN1..3)
+    s_nightModeInput = (int8_t)FIX_IN_NIGHT_MODE0;        // IN2
+    s_heatCallInput = -1;                  // nepoužíváme jako zdroj nightMode v tomto projektu
+    s_recircDemandInput = (int8_t)FIX_IN_RECIRC_DEMAND0;  // IN3
+    s_boilerDhwRelay = (int8_t)FIX_RELAY_BOILER_DHW_REQ0; // R5
+    s_boilerNightRelay = (int8_t)FIX_RELAY_BOILER_NIGHT0; // R6
+    s_recircPumpRelayRole = (int8_t)FIX_RELAY_RECIRC_PUMP0; // R7
+    s_akuHeaterRelay = (int8_t)FIX_RELAY_AKU_HEATER0;        // R8
 
     // ---------------- I/O funkce (roles/templates) ----------------
     JsonObject iof = doc["iofunc"].as<JsonObject>();
@@ -2115,14 +2106,12 @@ void logicApplyConfig(const String& json) {
                 JsonObject io = in[i].as<JsonObject>();
                 const String role = String((const char*)(io["role"] | "none"));
 
-                if (role == "dhw_enable") {
-                    s_tuvEnableInput = (int8_t)i;
-                } else if (role == "night_mode") {
-                    s_nightModeInput = (int8_t)i;
+                // FIXED mapping: následující role jsou v tomto firmware pevně dané
+                // (IN1..IN3) a konfigurací se nemění.
+                if (role == "dhw_enable" || role == "night_mode" || role == "recirc_demand") {
+                    continue;
                 } else if (role == "thermostat" || role == "heat_call") {
                     s_heatCallInput = (int8_t)i;
-                } else if (role == "recirc_demand") {
-                    s_recircDemandInput = (int8_t)i;
                 }
             }
         }
@@ -2131,15 +2120,123 @@ void logicApplyConfig(const String& json) {
         JsonArray out = iof["outputs"].as<JsonArray>();
         if (!out.isNull()) {
             const uint8_t cnt = (out.size() > RELAY_COUNT) ? RELAY_COUNT : (uint8_t)out.size();
+            bool fixedMixConfigured = false;
+            bool fixedTuvConfigured = false;
+
+            auto configureValve2Rel = [&](uint8_t master0, uint8_t peer0, JsonObject params) {
+                if (master0 >= RELAY_COUNT || peer0 >= RELAY_COUNT || peer0 == master0) return;
+
+                Valve3WayState &v = s_valves[master0];
+                v.configured = true;
+                v.singleRelay = false;
+                v.relayA = master0;
+                v.relayB = peer0;
+                // Defaulty musí být konzistentní s UI (jinak UI ukáže placeholder, ale firmware se chová jinak).
+                // Typické hodnoty pro směšovací 3c ventil: ~120 s plný přeběh.
+                v.travelMs = (uint32_t)(jsonGetFloat2(params, "travelTime", "travelTimeS", 120.0f) * 1000.0f);
+                v.pulseMs  = (uint32_t)(jsonGetFloat2(params, "pulseTime", "pulseTimeS", 1.5f) * 1000.0f);
+                v.guardMs  = (uint32_t)(jsonGetFloat2(params, "guardTime", "guardTimeS", 2.0f) * 1000.0f);
+                v.minSwitchMs = (uint32_t)(jsonGetFloat2(params, "minSwitchS", "minSwitch", 3.0f) * 1000.0f);
+                if (v.minSwitchMs > 3600000UL) v.minSwitchMs = 3600000UL;
+                v.lastCmdMs = 0;
+                v.hasPending = false;
+                v.invertDir = (bool)(params["invertDir"] | false);
+                const String defPos = String((const char*)(params["defaultPos"] | "A"));
+                v.defaultB = (defPos.equalsIgnoreCase("B"));
+
+                uint8_t initPct = v.defaultB ? 100 : 0;
+
+                if (snap[master0].valid) {
+                    initPct = snap[master0].posPct;
+                }
+
+                v.posPct = initPct;
+                v.startPct = initPct;
+                v.targetPct = initPct;
+                v.currentB = (initPct >= 50);
+                v.pendingTargetPct = initPct;
+                v.hasPending = false;
+
+                v.moving = false;
+                v.moveStartMs = 0;
+                v.moveEndMs = 0;
+                v.guardEndMs = 0;
+
+                s_valvePeerOf[peer0] = (int8_t)master0;
+
+                relaySet(static_cast<RelayId>(v.relayA), false);
+                relaySet(static_cast<RelayId>(v.relayB), false);
+            };
+
+            auto configureValveSingle = [&](uint8_t master0, JsonObject params) {
+                if (master0 >= RELAY_COUNT) return;
+
+                Valve3WayState &v = s_valves[master0];
+                v.configured = true;
+                v.singleRelay = true;
+                v.relayA = master0;
+                v.relayB = master0;
+                // Pro přepínací/spring-return ventil jsou časy méně kritické, ale držíme stejné defaulty jako UI.
+                v.travelMs = (uint32_t)(jsonGetFloat2(params, "travelTime", "travelTimeS", 6.0f) * 1000.0f);
+                v.pulseMs  = (uint32_t)(jsonGetFloat2(params, "pulseTime", "pulseTimeS", 0.8f) * 1000.0f);
+                v.guardMs  = (uint32_t)(jsonGetFloat2(params, "guardTime", "guardTimeS", 0.3f) * 1000.0f);
+                v.minSwitchMs = (uint32_t)(jsonGetFloat2(params, "minSwitchS", "minSwitch", 3.0f) * 1000.0f);
+                if (v.minSwitchMs > 3600000UL) v.minSwitchMs = 3600000UL;
+                v.lastCmdMs = 0;
+                v.hasPending = false;
+                v.invertDir = (bool)(params["invertDir"] | false);
+                const String defPos = String((const char*)(params["defaultPos"] | "A"));
+                v.defaultB = (defPos.equalsIgnoreCase("B"));
+
+                uint8_t initPct = v.defaultB ? 100 : 0;
+
+                if (snap[master0].valid) {
+                    initPct = snap[master0].posPct;
+                }
+
+                v.posPct = initPct;
+                v.startPct = initPct;
+                v.targetPct = initPct;
+                v.currentB = (initPct >= 50);
+                v.pendingTargetPct = initPct;
+                v.hasPending = false;
+
+                v.moving = false;
+                v.moveStartMs = 0;
+                v.moveEndMs = 0;
+                v.guardEndMs = 0;
+
+                relaySet(static_cast<RelayId>(v.relayA), false);
+            };
+
             for (uint8_t i=0;i<cnt;i++){
                 JsonObject oo = out[i].as<JsonObject>();
-                const String role = String((const char*)(oo["role"] | "none"));
                 JsonObject params = oo["params"].as<JsonObject>();
+
+                // ----------------------------------------------------------------
+                // FIXED mapping: ventily jsou pevně svázané s relé:
+                //  - R1+R2 = směšovací ventil (2 relé)
+                //  - R3    = přepínací ventil (0/100, single relay)
+                // ----------------------------------------------------------------
+                if (i == FIX_RELAY_MIX_A0) {
+                    configureValve2Rel(FIX_RELAY_MIX_A0, FIX_RELAY_MIX_B0, params);
+                    fixedMixConfigured = true;
+                    continue;
+                }
+                if (i == FIX_RELAY_TUV_VALVE0) {
+                    configureValveSingle(FIX_RELAY_TUV_VALVE0, params);
+                    fixedTuvConfigured = true;
+                    continue;
+                }
+
+                const String role = String((const char*)(oo["role"] | "none"));
 
                 // 3c ventil master – podporujeme nové rozdělení i legacy
                 if (role == "valve_3way_mix" || role == "valve_3way_2rel" || role == "valve_3way_spring") {
+                    // FIXED mapping: na relé R1..R3 žádné jiné ventily nekonfigurujeme
+                    if (isFixedFunctionRelay(i)) continue;
                     // peer relé (1-based v UI), default je i+2 = "další relé"
-                    uint8_t peerRel = (uint8_t)(params["peerRel"] | 0);
+                    uint8_t peerRel = (uint8_t)(params["peerRel"] | params["peer"] | 0);
                     if (peerRel == 0) {
                         // legacy config key
                         peerRel = (uint8_t)(params["partnerRelay"] | (int)(i+2));
@@ -2154,13 +2251,14 @@ void logicApplyConfig(const String& json) {
 
                     Valve3WayState &v = s_valves[i];
                     v.configured = true;
+                    v.singleRelay = false;
                     v.relayA = i;
                     v.relayB = (uint8_t)peer0;
-                    v.travelMs = (uint32_t)((float)(params["travelTime"] | 6.0f) * 1000.0f);
-                    v.pulseMs  = (uint32_t)((float)(params["pulseTime"]  | 0.8f) * 1000.0f);
-                    v.guardMs  = (uint32_t)((float)(params["guardTime"]  | 0.3f) * 1000.0f);
-                    // Bezpečnostní / ochranná perioda mezi přestaveními (default 30s)
-                    v.minSwitchMs = (uint32_t)((float)(params["minSwitchS"] | 30.0f) * 1000.0f);
+                    v.travelMs = (uint32_t)(jsonGetFloat2(params, "travelTime", "travelTimeS", 120.0f) * 1000.0f);
+                    v.pulseMs  = (uint32_t)(jsonGetFloat2(params, "pulseTime", "pulseTimeS", 1.5f) * 1000.0f);
+                    v.guardMs  = (uint32_t)(jsonGetFloat2(params, "guardTime", "guardTimeS", 2.0f) * 1000.0f);
+                    // Ochranná perioda mezi přestaveními (default 3s; lze zvýšit podle potřeby)
+                    v.minSwitchMs = (uint32_t)(jsonGetFloat2(params, "minSwitchS", "minSwitch", 3.0f) * 1000.0f);
                     if (v.minSwitchMs > 3600000UL) v.minSwitchMs = 3600000UL;
                     v.lastCmdMs = 0;
                     v.hasPending = false;
@@ -2168,15 +2266,10 @@ void logicApplyConfig(const String& json) {
                     const String defPos = String((const char*)(params["defaultPos"] | "A"));
                     v.defaultB = (defPos.equalsIgnoreCase("B"));
 
-                    // Historická kompatibilita: invertDir obrací smysl A/B
-                    bool initB = v.invertDir ? !v.defaultB : v.defaultB;
-                    uint8_t initPct = initB ? 100 : 0;
-
-                    // Obnova odhadované polohy po změně konfigurace
+                    // Zachovej odhad polohy (ventil může fyzicky zůstat jinde i po změně konfigurace)
+                    uint8_t initPct = v.defaultB ? 100 : 0;
                     if (snap[i].valid) {
-                        uint8_t savedPct = snap[i].posPct;
-                        if (snap[i].invertDir != v.invertDir) savedPct = (uint8_t)(100 - savedPct);
-                        initPct = savedPct;
+                        initPct = snap[i].posPct;
                     }
 
                     v.posPct = initPct;
@@ -2197,15 +2290,17 @@ void logicApplyConfig(const String& json) {
                     relaySet(static_cast<RelayId>(v.relayA), false);
                     relaySet(static_cast<RelayId>(v.relayB), false);
                 } else if (role == "valve_3way_tuv" || role == "valve_3way_dhw") {
+                    // FIXED mapping: na relé R1..R3 žádné jiné ventily nekonfigurujeme
+                    if (isFixedFunctionRelay(i)) continue;
                     Valve3WayState &v = s_valves[i];
                     v.configured = true;
                     v.singleRelay = true;
                     v.relayA = i;
                     v.relayB = i;
-                    v.travelMs = (uint32_t)((float)(params["travelTime"] | 6.0f) * 1000.0f);
-                    v.pulseMs  = (uint32_t)((float)(params["pulseTime"]  | 0.8f) * 1000.0f);
-                    v.guardMs  = (uint32_t)((float)(params["guardTime"]  | 0.3f) * 1000.0f);
-                    v.minSwitchMs = (uint32_t)((float)(params["minSwitchS"] | 30.0f) * 1000.0f);
+                    v.travelMs = (uint32_t)(jsonGetFloat2(params, "travelTime", "travelTimeS", 6.0f) * 1000.0f);
+                    v.pulseMs  = (uint32_t)(jsonGetFloat2(params, "pulseTime", "pulseTimeS", 0.8f) * 1000.0f);
+                    v.guardMs  = (uint32_t)(jsonGetFloat2(params, "guardTime", "guardTimeS", 0.3f) * 1000.0f);
+                    v.minSwitchMs = (uint32_t)(jsonGetFloat2(params, "minSwitchS", "minSwitch", 3.0f) * 1000.0f);
                     if (v.minSwitchMs > 3600000UL) v.minSwitchMs = 3600000UL;
                     v.lastCmdMs = 0;
                     v.hasPending = false;
@@ -2213,12 +2308,9 @@ void logicApplyConfig(const String& json) {
                     const String defPos = String((const char*)(params["defaultPos"] | "A"));
                     v.defaultB = (defPos.equalsIgnoreCase("B"));
 
-                    bool initB = v.invertDir ? !v.defaultB : v.defaultB;
-                    uint8_t initPct = initB ? 100 : 0;
+                    uint8_t initPct = v.defaultB ? 100 : 0;
                     if (snap[i].valid) {
-                        uint8_t savedPct = snap[i].posPct;
-                        if (snap[i].invertDir != v.invertDir) savedPct = (uint8_t)(100 - savedPct);
-                        initPct = savedPct;
+                        initPct = snap[i].posPct;
                     }
 
                     v.posPct = initPct;
@@ -2244,8 +2336,27 @@ void logicApplyConfig(const String& json) {
                     s_recircPumpRelayRole = (int8_t)i;
                 }
             }
+
+            // Pokud pole iofunc.outputs nemá položku na indexu, zajistíme alespoň
+            // default konfiguraci pro pevné ventily.
+            StaticJsonDocument<8> emptyDoc;
+            JsonObject emptyParams = emptyDoc.to<JsonObject>();
+            if (!fixedMixConfigured) {
+                configureValve2Rel(FIX_RELAY_MIX_A0, FIX_RELAY_MIX_B0, emptyParams);
+            }
+            if (!fixedTuvConfigured) {
+                configureValveSingle(FIX_RELAY_TUV_VALVE0, emptyParams);
+            }
         }
     }
+
+    // Enforce fixed mapping (nesmí být přepsáno konfigurací)
+    s_nightModeInput = (int8_t)FIX_IN_NIGHT_MODE0;
+    s_recircDemandInput = (int8_t)FIX_IN_RECIRC_DEMAND0;
+    s_boilerDhwRelay = (int8_t)FIX_RELAY_BOILER_DHW_REQ0;
+    s_boilerNightRelay = (int8_t)FIX_RELAY_BOILER_NIGHT0;
+    s_recircPumpRelayRole = (int8_t)FIX_RELAY_RECIRC_PUMP0;
+    s_akuHeaterRelay = (int8_t)FIX_RELAY_AKU_HEATER0;
 
 
     // ---------------- Equitherm konfigurace ----------------
@@ -2289,6 +2400,66 @@ void logicApplyConfig(const String& json) {
 
         JsonObject akuBottom = eq["akuBottom"].as<JsonObject>();
         parseSrc(akuBottom, s_eqAkuBottomCfg);
+
+        // ---------------- Role fallback (TEMP1..8 / BLE / MQTT) ----------------
+        // Základní konfigurace probíhá na stránce "Teploměry" (role pro TEMP1..8,
+        // BLE a MQTT). Pokud není v equitherm.*.source explicitně nastaven zdroj,
+        // odvodíme ho z rolí.
+        JsonArray tempRoles = doc["tempRoles"].as<JsonArray>();
+
+        auto findTempIdxByRole = [&](const String& wantedNorm) -> int {
+            if (tempRoles.isNull()) return -1;
+            int i = 0;
+            for (JsonVariant v : tempRoles) {
+                if (i >= (int)INPUT_COUNT) break;
+                const char* raw = v.as<const char*>();
+                if (thermoNormalizeRole(String(raw ? raw : "")) == wantedNorm) return i;
+                i++;
+            }
+            return -1;
+        };
+
+        auto applyThermoRoleFallback = [&](EqSourceCfg& dst, const char* roleKey) {
+            if (dst.source.length() && dst.source != "none") return;
+
+            const String wantedNorm = thermoNormalizeRole(String(roleKey ? roleKey : ""));
+            if (!wantedNorm.length()) return;
+
+            // 1) Prefer GPIO TEMP1..8 roles first
+            const int idx = findTempIdxByRole(wantedNorm);
+            if (idx >= 0) {
+                dst.source = String("temp") + String(idx + 1);
+                return;
+            }
+
+            // 2) BLE virtual thermometer by role ("Teploměry" -> BLE)
+            const BleThermometerCfg& bc = thermometersGetBle();
+            const String bleRoleNorm = thermoNormalizeRole(bc.role);
+            if (bleRoleNorm.length() && bleRoleNorm == wantedNorm) {
+                dst.source = "ble";
+                // bleId může být prázdné -> bleGetTempCById("", ...) použije default meteo
+                dst.bleId = bc.id;
+                return;
+            }
+
+            // 3) MQTT virtual thermometers by role ("Teploměry" -> MQTT sloty)
+            for (uint8_t mi = 0; mi < 2; mi++) {
+                const MqttThermometerCfg& mc = thermometersGetMqtt(mi);
+                if (!mc.topic.length()) continue;
+                const String mqttRoleNorm = thermoNormalizeRole(mc.role);
+                if (mqttRoleNorm.length() && mqttRoleNorm == wantedNorm) {
+                    dst.source = "mqtt";
+                    dst.mqttIdx = (uint8_t)(mi + 1);
+                    return;
+                }
+            }
+        };
+
+        applyThermoRoleFallback(s_eqOutdoorCfg, "outdoor");
+        applyThermoRoleFallback(s_eqFlowCfg, "flow");
+        applyThermoRoleFallback(s_eqAkuTopCfg, "aku_top");
+        applyThermoRoleFallback(s_eqAkuMidCfg, "aku_mid");
+        applyThermoRoleFallback(s_eqAkuBottomCfg, "aku_bottom");
 
         // kompatibilita se staršími konfiguracemi (jen MQTT venek)
         if (!s_eqOutdoorCfg.source.length()) s_eqOutdoorCfg.source = "none";
@@ -2382,13 +2553,14 @@ void logicApplyConfig(const String& json) {
             (void)derive(s_eqNightTout1, s_eqNightTflow1, s_eqNightTout2, s_eqNightTflow2, s_eqSlopeNight, s_eqShiftNight);
         }
 
-        // 3c ventil (master relé 1..8)
-        int master1 = 0;
-        JsonObject valve = eq["valve"].as<JsonObject>();
-        if (!valve.isNull()) master1 = (int)(valve["master"] | 0);
-        master1 = (int)(eq["valveMaster"] | master1); // kompatibilita
-        if (master1 >= 1 && master1 <= (int)RELAY_COUNT) s_eqValveMaster0 = (int8_t)(master1 - 1);
-        else s_eqValveMaster0 = -1;
+        // 3c směšovací ventil – FIXED mapping: R1+R2
+        // (Nastavení v UI/configu se ignoruje.)
+        s_eqValveMaster0 = (int8_t)FIX_RELAY_MIX_A0;
+        if (!isValveMaster((uint8_t)s_eqValveMaster0)) {
+            // Pojistka – pokud ventil není nakonfigurovaný, equitherm se raději deaktivuje.
+            s_eqValveMaster0 = -1;
+            s_eqEnabled = false;
+        }
 
         // control params
         JsonObject ctrl = eq["control"].as<JsonObject>();
@@ -2410,9 +2582,7 @@ void logicApplyConfig(const String& json) {
         s_eqPeriodMs = (uint32_t)(eq["controlPeriodMs"] | s_eqPeriodMs);
         s_eqMaxPctDay = (uint8_t)(eq["maxPct_day"] | eq["maxPctDay"] | s_eqMaxPctDay);
         s_eqMaxPctNight = (uint8_t)(eq["maxPct_night"] | eq["maxPctNight"] | s_eqMaxPctNight);
-
         // clamp
-        if (s_eqStepPct < 1) s_eqStepPct = 1;
         if (s_eqStepPct > 25) s_eqStepPct = 25;
         if (!isfinite(s_eqDeadbandC) || s_eqDeadbandC < 0.0f) s_eqDeadbandC = 0.0f;
         if (s_eqDeadbandC > 5.0f) s_eqDeadbandC = 5.0f;
@@ -2462,6 +2632,11 @@ void logicApplyConfig(const String& json) {
     }
     s_systemProfile.toLowerCase();
     s_nightModeSource.toLowerCase();
+
+    // FIXED mapping: Denní/Noční režim je řízený vstupem IN2.
+    // (Nastavení v UI/configu se ignoruje.)
+    s_nightModeSource = "input";
+    s_nightModeInput = (int8_t)FIX_IN_NIGHT_MODE0;
 
     if (s_nightModeInput >= 0 && s_nightModeInput < (int8_t)INPUT_COUNT && s_nightModeSource == "input") {
         s_nightMode = inputGetState(static_cast<InputId>(s_nightModeInput));
@@ -2567,14 +2742,16 @@ void logicApplyConfig(const String& json) {
 
     
     // --- TUV config (schedule / dhw_enable -> DO request) ---
-    s_tuvDemandInput = -1;
+    // FIXED mapping: IN1 = DHW demand
+    s_tuvDemandInput = (int8_t)FIX_IN_DHW_DEMAND0;
     s_tuvRequestRelay = -1;
-    s_tuvValveMaster0 = -1;
+    // FIXED mapping: R3 = přepínací ventil (0/100)
+    s_tuvValveMaster0 = (int8_t)FIX_RELAY_TUV_VALVE0;
     s_tuvValveTargetPct = 0;
     s_tuvEqValveTargetPct = 0;
     s_tuvBypassEnabled = true;
     s_tuvBypassPct = 100;
-    s_tuvChPct = 100;
+    s_tuvChPct = 0;
     s_tuvBypassInvert = false;
     s_tuvValveCurrentPct = 0;
     s_tuvValveMode = "ch";
@@ -2592,15 +2769,14 @@ void logicApplyConfig(const String& json) {
         int rel = tuv["relay"] | tuv["requestRelay"] | tuv["request_relay"] | 0;
         if (rel >= 1 && rel <= RELAY_COUNT) s_tuvRequestRelay = (int8_t)(rel - 1);
         if (tuv.containsKey("enabled")) s_tuvScheduleEnabled = (bool)tuv["enabled"];
-        int demandIn = (int)(tuv["demandInput"] | 0);
-        if (demandIn >= 1 && demandIn <= INPUT_COUNT) s_tuvDemandInput = (int8_t)(demandIn - 1);
+        // FIXED mapping: IN1 = DHW demand (konfigurační hodnoty ignorujeme)
+        s_tuvDemandInput = (int8_t)FIX_IN_DHW_DEMAND0;
 
-        int valve1 = tuv["valveMaster"] | tuv["shortValveMaster"] | 0;
+        // FIXED mapping: R3 = přepínací ventil (0/100)
+        int valve1 = (int)(FIX_RELAY_TUV_VALVE0 + 1);
         JsonObject bypass = tuv["bypassValve"].as<JsonObject>();
         if (!bypass.isNull()) {
             s_tuvBypassEnabled = (bool)(bypass["enabled"] | s_tuvBypassEnabled);
-            int master = (int)(bypass["masterRelay"] | bypass["master"] | 0);
-            if (master >= 1 && master <= RELAY_COUNT) valve1 = master;
             s_tuvBypassPct = clampPctInt((int)(bypass["bypassPct"] | s_tuvBypassPct));
             s_tuvChPct = clampPctInt((int)(bypass["chPct"] | s_tuvChPct));
             s_tuvBypassInvert = (bool)(bypass["invert"] | s_tuvBypassInvert);
@@ -2615,15 +2791,15 @@ void logicApplyConfig(const String& json) {
         if (rel >= 1 && rel <= RELAY_COUNT) s_tuvRequestRelay = (int8_t)(rel - 1);
         if (doc.containsKey("tuvEnabled")) s_tuvScheduleEnabled = (bool)doc["tuvEnabled"];
 
-        int valve1 = doc["tuvValveMaster"] | doc["tuv_valve_master"] | 0;
-        if (valve1 >= 1 && valve1 <= RELAY_COUNT) s_tuvValveMaster0 = (int8_t)(valve1 - 1);
+        // FIXED mapping: R3 = přepínací ventil (0/100)
+        s_tuvValveMaster0 = (int8_t)FIX_RELAY_TUV_VALVE0;
         s_tuvValveTargetPct = clampPctInt((int)(doc["tuvValveTargetPct"] | doc["tuv_valve_target_pct"] | s_tuvValveTargetPct));
         s_tuvEqValveTargetPct = clampPctInt((int)(doc["tuvEqValveTargetPct"] | doc["tuv_eq_valve_target_pct"] | s_tuvEqValveTargetPct));
     }
     if (s_tuvValveMaster0 >= 0 && !isValveMaster((uint8_t)s_tuvValveMaster0)) s_tuvValveMaster0 = -1;
     s_tuvDemandActive = false;
     updateInputBasedModes();
-    s_tuvValveCurrentPct = effectiveTuvValvePct(isTuvEnabledEffective());
+    s_tuvValveCurrentPct = effectiveTuvValvePct(s_tuvModeActive);
     updateTuvModeState(millis());
     applyTuvRequest();
     applyNightModeRelay();
@@ -2631,10 +2807,14 @@ void logicApplyConfig(const String& json) {
     // --- Smart recirculation ---
     s_recircEnabled = false;
     s_recircMode = "on_demand";
-    s_recircPumpRelay = s_recircPumpRelayRole;
+    // FIXED mapping (R7 / IN3)
+    s_recircPumpRelay = (int8_t)FIX_RELAY_RECIRC_PUMP0;
+    s_recircDemandInput = (int8_t)FIX_IN_RECIRC_DEMAND0;
     s_recircOnDemandRunMs = 120000;
     s_recircMinOffMs = 300000;
     s_recircMinOnMs = 30000;
+    s_recircCycleOnMs = 0;
+    s_recircCycleOffMs = 0;
     s_recircStopTempC = 42.0f;
     s_recircReturnCfg = EqSourceCfg{};
     s_recircActive = false;
@@ -2649,13 +2829,31 @@ void logicApplyConfig(const String& json) {
     if (!rec.isNull()) {
         s_recircEnabled = (bool)(rec["enabled"] | s_recircEnabled);
         s_recircMode = String((const char*)(rec["mode"] | s_recircMode.c_str()));
-        int demandInput = rec["demandInput"] | 0;
-        if (demandInput >= 1 && demandInput <= INPUT_COUNT) s_recircDemandInput = (int8_t)(demandInput - 1);
-        int pumpRelay = rec["pumpRelay"] | 0;
-        if (pumpRelay >= 1 && pumpRelay <= RELAY_COUNT) s_recircPumpRelay = (int8_t)(pumpRelay - 1);
+        // FIXED mapping: demand input + pump relay jsou pevně dané (IN3 / R7)
+        // (konfigurační hodnoty ignorujeme, aby se zařízení nerozbilo špatným nastavením).
+        s_recircDemandInput = (int8_t)FIX_IN_RECIRC_DEMAND0;
+        s_recircPumpRelay = (int8_t)FIX_RELAY_RECIRC_PUMP0;
         s_recircOnDemandRunMs = (uint32_t)(rec["onDemandRunMs"] | s_recircOnDemandRunMs);
         s_recircMinOffMs = (uint32_t)(rec["minOffMs"] | s_recircMinOffMs);
         s_recircMinOnMs = (uint32_t)(rec["minOnMs"] | s_recircMinOnMs);
+        // Volitelné cyklování uvnitř okna: cycleOn/cycleOff (lze zadat v ms, s nebo min)
+        {
+            uint32_t onMs = (uint32_t)(rec["cycleOnMs"] | 0);
+            if (onMs == 0) onMs = (uint32_t)(rec["cycleOnS"] | 0) * 1000UL;
+            if (onMs == 0) onMs = (uint32_t)(rec["cycleOnMin"] | 0) * 60000UL;
+
+            uint32_t offMs = (uint32_t)(rec["cycleOffMs"] | 0);
+            if (offMs == 0) offMs = (uint32_t)(rec["cycleOffS"] | 0) * 1000UL;
+            if (offMs == 0) offMs = (uint32_t)(rec["cycleOffMin"] | 0) * 60000UL;
+
+            // sanity clamp: maximálně 24h (ať nedojde k overflow chování při extrémních číslech)
+            const uint32_t maxCycleMs = 24UL * 60UL * 60UL * 1000UL;
+            if (onMs > maxCycleMs) onMs = maxCycleMs;
+            if (offMs > maxCycleMs) offMs = maxCycleMs;
+
+            s_recircCycleOnMs = onMs;
+            s_recircCycleOffMs = offMs;
+        }
         s_recircStopTempC = (float)(rec["stopTempC"] | s_recircStopTempC);
 
         JsonObject ret = rec["tempReturnSource"].as<JsonObject>();
@@ -2669,6 +2867,50 @@ void logicApplyConfig(const String& json) {
             s_recircReturnCfg.mqttIdx = (uint8_t)(ret["mqttIdx"] | ret["preset"] | s_recircReturnCfg.mqttIdx);
             s_recircReturnCfg.maxAgeMs = (uint32_t)(ret["maxAgeMs"] | ret["max_age_ms"] | s_recircReturnCfg.maxAgeMs);
             s_recircReturnCfg.bleId = String((const char*)(ret["bleId"] | ret["id"] | s_recircReturnCfg.bleId.c_str()));
+        }
+
+        // Fallback: if return temperature source isn't set, try to derive it from roles (TEMP1..8 / BLE / MQTT).
+        if (!s_recircReturnCfg.source.length() || s_recircReturnCfg.source == "none") {
+            const String wantedNorm = thermoNormalizeRole("return");
+
+            // 1) TEMP1..8 roles
+            JsonArray tempRoles = doc["tempRoles"].as<JsonArray>();
+            if (!tempRoles.isNull()) {
+                int idx = 0;
+                for (JsonVariant v : tempRoles) {
+                    if (idx >= (int)INPUT_COUNT) break;
+                    const char* raw = v.as<const char*>();
+                    if (thermoNormalizeRole(String(raw ? raw : "")) == wantedNorm) {
+                        s_recircReturnCfg.source = String("temp") + String(idx + 1);
+                        break;
+                    }
+                    idx++;
+                }
+            }
+
+            // 2) BLE thermometer by role
+            if (!s_recircReturnCfg.source.length() || s_recircReturnCfg.source == "none") {
+                const BleThermometerCfg& bc = thermometersGetBle();
+                const String bleRoleNorm = thermoNormalizeRole(bc.role);
+                if (bleRoleNorm.length() && bleRoleNorm == wantedNorm) {
+                    s_recircReturnCfg.source = "ble";
+                    s_recircReturnCfg.bleId = bc.id;
+                }
+            }
+
+            // 3) MQTT thermometer slots by role
+            if (!s_recircReturnCfg.source.length() || s_recircReturnCfg.source == "none") {
+                for (uint8_t mi = 0; mi < 2; mi++) {
+                    const MqttThermometerCfg& mc = thermometersGetMqtt(mi);
+                    if (!mc.topic.length()) continue;
+                    const String mqttRoleNorm = thermoNormalizeRole(mc.role);
+                    if (mqttRoleNorm.length() && mqttRoleNorm == wantedNorm) {
+                        s_recircReturnCfg.source = "mqtt";
+                        s_recircReturnCfg.mqttIdx = (uint8_t)(mi + 1);
+                        break;
+                    }
+                }
+            }
         }
 
         JsonArray win = rec["windows"].as<JsonArray>();
@@ -2705,6 +2947,10 @@ void logicApplyConfig(const String& json) {
         int nmRel = (int)(boiler["nightModeRelay"] | boiler["night_mode_relay"] | 0);
         if (nmRel >= 1 && nmRel <= RELAY_COUNT) s_boilerNightRelay = (int8_t)(nmRel - 1);
     }
+
+    // FIXED mapping (R5/R6) – konfigurace se ignoruje.
+    s_boilerDhwRelay = (int8_t)FIX_RELAY_BOILER_DHW_REQ0;
+    s_boilerNightRelay = (int8_t)FIX_RELAY_BOILER_NIGHT0;
 
     // --- AKU heater ---
     s_akuHeaterEnabled = false;
@@ -2766,6 +3012,9 @@ void logicApplyConfig(const String& json) {
         }
     }
     s_akuHeaterMode.toLowerCase();
+
+    // FIXED mapping (R8) – konfigurace relé se ignoruje.
+    s_akuHeaterRelay = (int8_t)FIX_RELAY_AKU_HEATER0;
 
     // --- schedules (UI stores cfg.schedules[]) ---
     s_scheduleCount = 0;
@@ -2890,6 +3139,172 @@ void logicSetRelayRaw(uint8_t relay1based, bool on){
     relaySet(static_cast<RelayId>(idx), on);
 }
 
+// ===== Manual / calibration control for 3-way valves (Pulse +/-) =====
+
+static uint8_t valveExtFromInt(const Valve3WayState& /*v*/, uint8_t intPct) {
+    return intPct;
+}
+
+static uint8_t valveIntFromExt(const Valve3WayState& /*v*/, uint8_t extPct) {
+    return extPct;
+}
+
+bool logicValveManualConfigure(uint8_t masterRelay1based,
+                               uint8_t peerRelay1based,
+                               bool singleRelay,
+                               bool invertDir,
+                               float travelTimeS,
+                               float pulseTimeS,
+                               float guardTimeS,
+                               float minSwitchS,
+                               char defaultPos) {
+    if (masterRelay1based < 1 || masterRelay1based > RELAY_COUNT) return false;
+    const uint8_t master0 = (uint8_t)(masterRelay1based - 1);
+
+    // Master nemůže být současně peer jiného ventilu
+    if (isValvePeer(master0)) return false;
+
+    uint8_t peer0 = master0;
+    if (!singleRelay) {
+        if (peerRelay1based < 1 || peerRelay1based > RELAY_COUNT) return false;
+        peer0 = (uint8_t)(peerRelay1based - 1);
+        if (peer0 == master0) return false;
+
+        // Peer nesmí být master jiného ventilu ani peer jiného masteru
+        if (isValveMaster(peer0)) return false;
+        if (s_valvePeerOf[peer0] >= 0 && s_valvePeerOf[peer0] != (int8_t)master0) return false;
+    }
+
+    Valve3WayState &v = s_valves[master0];
+    const bool wasConfigured = v.configured;
+    const uint32_t nowMs = millis();
+
+    uint8_t oldInt = 0;
+    if (wasConfigured) {
+        oldInt = valveComputePosPct(v, nowMs);
+    }
+
+    // Pokud master už měl dříve jiný peer, vyčisti mapování
+    for (uint8_t r = 0; r < RELAY_COUNT; r++) {
+        if (s_valvePeerOf[r] == (int8_t)master0) s_valvePeerOf[r] = -1;
+    }
+
+    v.configured = true;
+    v.singleRelay = singleRelay;
+    v.relayA = master0;
+    v.relayB = singleRelay ? master0 : peer0;
+    v.invertDir = invertDir;
+
+    if (isfinite(travelTimeS) && travelTimeS > 0.2f && travelTimeS < 1200.0f) {
+        v.travelMs = (uint32_t)(travelTimeS * 1000.0f);
+    }
+    if (isfinite(pulseTimeS) && pulseTimeS > 0.05f && pulseTimeS < 10.0f) {
+        v.pulseMs = (uint32_t)(pulseTimeS * 1000.0f);
+    }
+    if (isfinite(guardTimeS) && guardTimeS >= 0.0f && guardTimeS < 10.0f) {
+        v.guardMs = (uint32_t)(guardTimeS * 1000.0f);
+    }
+    if (isfinite(minSwitchS) && minSwitchS >= 0.0f && minSwitchS < 3600.0f) {
+        v.minSwitchMs = (uint32_t)(minSwitchS * 1000.0f);
+        if (v.minSwitchMs > 3600000UL) v.minSwitchMs = 3600000UL;
+    }
+
+    v.defaultB = (defaultPos == 'B' || defaultPos == 'b');
+    // Zachovej odhad polohy; invertDir už pouze prohazuje cívky, neškáluje procenta.
+    uint8_t initInt = 0;
+    if (wasConfigured) {
+        initInt = oldInt;
+    } else {
+        initInt = v.defaultB ? 100 : 0;
+    }
+
+    v.posPct = initInt;
+    v.startPct = initInt;
+    v.targetPct = initInt;
+    v.pendingTargetPct = initInt;
+    v.currentB = (initInt >= 50);
+    v.moving = false;
+    v.hasPending = false;
+    v.moveStartMs = 0;
+    v.moveEndMs = 0;
+    v.guardEndMs = 0;
+
+    if (!v.singleRelay) {
+        s_valvePeerOf[peer0] = (int8_t)master0;
+    }
+
+    // vypni relé (bezpečné při kalibraci)
+    relaySet(static_cast<RelayId>(v.relayA), false);
+    relaySet(static_cast<RelayId>(v.relayB), false);
+    return true;
+}
+
+static bool valvePulseInternal(uint8_t master0, int8_t dir, uint32_t nowMs) {
+    if (master0 >= RELAY_COUNT) return false;
+    if (!isValveMaster(master0)) return false;
+    Valve3WayState &v = s_valves[master0];
+    if (v.moving) return false;
+
+    const uint8_t curInt = valveComputePosPct(v, nowMs);
+    const uint8_t curExt = valveExtFromInt(v, curInt);
+
+    float stepPctF = 1.0f;
+    if (v.travelMs > 0) {
+        stepPctF = ((float)v.pulseMs * 100.0f) / (float)v.travelMs;
+    }
+    if (!isfinite(stepPctF) || stepPctF < 1.0f) stepPctF = 1.0f;
+    if (stepPctF > 100.0f) stepPctF = 100.0f;
+    const int stepPct = (int)lroundf(stepPctF);
+
+    int nextExt = (int)curExt + ((dir >= 0) ? stepPct : -stepPct);
+    if (nextExt < 0) nextExt = 0;
+    if (nextExt > 100) nextExt = 100;
+
+    valveMoveToPct(master0, (uint8_t)nextExt);
+    return true;
+}
+
+bool logicValvePulse(uint8_t masterRelay1based, int8_t dir) {
+    if (masterRelay1based < 1 || masterRelay1based > RELAY_COUNT) return false;
+    const uint8_t master0 = (uint8_t)(masterRelay1based - 1);
+    const uint32_t nowMs = millis();
+    return valvePulseInternal(master0, dir, nowMs);
+}
+
+bool logicValveStop(uint8_t masterRelay1based) {
+    if (masterRelay1based < 1 || masterRelay1based > RELAY_COUNT) return false;
+    const uint8_t master0 = (uint8_t)(masterRelay1based - 1);
+    if (!isValveMaster(master0)) return false;
+    Valve3WayState &v = s_valves[master0];
+    const uint32_t nowMs = millis();
+
+    // zamraz aktuální odhad a vypni relé
+    const uint8_t cur = valveComputePosPct(v, nowMs);
+    v.posPct = cur;
+    v.startPct = cur;
+    v.targetPct = cur;
+    v.pendingTargetPct = cur;
+    v.currentB = (cur >= 50);
+    v.moving = false;
+    v.hasPending = false;
+    v.moveStartMs = 0;
+    v.moveEndMs = 0;
+    v.guardEndMs = nowMs + v.guardMs;
+    v.lastCmdMs = nowMs;
+
+    relaySet(static_cast<RelayId>(v.relayA), false);
+    relaySet(static_cast<RelayId>(v.relayB), false);
+    return true;
+}
+
+bool logicValveGotoPct(uint8_t masterRelay1based, uint8_t pct) {
+    if (masterRelay1based < 1 || masterRelay1based > RELAY_COUNT) return false;
+    const uint8_t master0 = (uint8_t)(masterRelay1based - 1);
+    if (!isValveMaster(master0)) return false;
+    valveMoveToPct(master0, pct);
+    return true;
+}
+
 
 bool logicGetValveUiStatus(uint8_t relay1based, ValveUiStatus& out){
     if (relay1based < 1 || relay1based > RELAY_COUNT) return false;
@@ -2990,4 +3405,37 @@ uint8_t logicGetMqttSubscribeTopics(String* outTopics, uint8_t maxTopics) {
     // Pokud outTopics==nullptr, počítáme jen počet
     if (!outTopics) return n;
     return (n > maxTopics) ? maxTopics : n;
+}
+
+// --- Diagnostics / telemetry (config apply) ---
+uint32_t logicGetConfigApplyOkCount() {
+    return g_logicApplyOk;
+}
+
+uint32_t logicGetConfigApplyFailCount() {
+    return g_logicApplyFail;
+}
+
+uint32_t logicGetConfigApplyNoMemoryCount() {
+    return g_logicApplyNoMem;
+}
+
+uint32_t logicGetConfigApplyFilterOverflowCount() {
+    return g_logicApplyFilterOverflow;
+}
+
+uint32_t logicGetConfigApplyOversizeCount() {
+    return g_logicApplyOversize;
+}
+
+uint32_t logicGetConfigApplyLastFailMs() {
+    return g_logicApplyLastFailMs;
+}
+
+uint32_t logicGetConfigApplyLastInputLen() {
+    return g_logicApplyLastInputLen;
+}
+
+const char* logicGetConfigApplyLastError() {
+    return g_logicApplyLastErr;
 }

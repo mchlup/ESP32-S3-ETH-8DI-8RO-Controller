@@ -28,3 +28,9 @@ uint8_t relayGetMask();
 void relaySetMask(uint8_t mask);
 
 void relayPrintStates(Stream &out);
+
+// --- Diagnostics / telemetry ---
+uint32_t relayGetI2cErrorCount();
+uint32_t relayGetI2cRecoveryCount();
+uint32_t relayGetI2cLastErrorMs();
+const char* relayGetI2cLastError();

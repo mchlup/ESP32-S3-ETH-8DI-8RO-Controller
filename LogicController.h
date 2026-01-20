@@ -39,6 +39,8 @@ struct EquithermStatus {
     uint32_t outdoorAgeMs = 0;
     String outdoorReason = "";
     float flowC    = NAN;     // teplota otopné vody / okruhu (feedback)
+    float boilerInC = NAN;    // teplota "boiler_in" (např. návrat / vstup do kotle)
+    bool  boilerInValid = false;
     float targetFlowC = NAN;  // požadovaná teplota podle křivky
     float actualC = NAN;      // alias pro flowC (pro API)
     float targetC = NAN;      // alias pro targetFlowC (pro API)
@@ -63,6 +65,26 @@ struct EquithermStatus {
 };
 EquithermStatus logicGetEquithermStatus();
 String logicGetEquithermReason();
+
+// Manuální / kalibrační ovládání 3c ventilů (neblokující, řízeno časem)
+// - masterRelay1based: 1..8
+// - peerRelay1based:   0..8 (0 = použij stávající peer, pokud je nakonfigurovaný)
+// - singleRelay: true = pružinový (0/100), false = 2-relé
+// - defaultPos: 'A' nebo 'B'
+bool logicValveManualConfigure(uint8_t masterRelay1based,
+                               uint8_t peerRelay1based,
+                               bool singleRelay,
+                               bool invertDir,
+                               float travelTimeS,
+                               float pulseTimeS,
+                               float guardTimeS,
+                               float minSwitchS,
+                               char defaultPos);
+
+// Pulse: dir = +1 (otevřít / více %) nebo -1 (zavřít / méně %)
+bool logicValvePulse(uint8_t masterRelay1based, int8_t dir);
+bool logicValveStop(uint8_t masterRelay1based);
+bool logicValveGotoPct(uint8_t masterRelay1based, uint8_t pct);
 
 // Nastavení výstupu z UI/API (respektuje šablony, např. 3c ventil)
 void logicSetRelayOutput(uint8_t relay1based, bool on);
@@ -175,3 +197,13 @@ bool logicGetValveUiStatus(uint8_t relay1based, ValveUiStatus& out);
 // MQTT: seznam topiců, které je potřeba odebírat (např. Ekviterm zdroje)
 // outTopics může být nullptr pro zjištění počtu.
 uint8_t logicGetMqttSubscribeTopics(String* outTopics, uint8_t maxTopics);
+
+// --- Diagnostics / telemetry (config apply) ---
+uint32_t    logicGetConfigApplyOkCount();
+uint32_t    logicGetConfigApplyFailCount();
+uint32_t    logicGetConfigApplyNoMemoryCount();
+uint32_t    logicGetConfigApplyFilterOverflowCount();
+uint32_t    logicGetConfigApplyOversizeCount();
+uint32_t    logicGetConfigApplyLastFailMs();
+uint32_t    logicGetConfigApplyLastInputLen();
+const char* logicGetConfigApplyLastError();
