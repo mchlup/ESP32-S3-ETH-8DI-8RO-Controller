@@ -34,3 +34,6 @@ uint32_t relayGetI2cErrorCount();
 uint32_t relayGetI2cRecoveryCount();
 uint32_t relayGetI2cLastErrorMs();
 const char* relayGetI2cLastError();
+bool relayIsOk();
+uint32_t relayGetI2cNextRetryInMs();
+uint32_t relayGetI2cFailCount();

@@ -2,6 +2,8 @@
 #include <Wire.h>
 #include "I2cBus.h"
 #include "config_pins.h"
+#include "RetryPolicy.h"
+#include "Log.h"
 
 // Minimal driver for TCA9554 output register
 static constexpr uint8_t REG_INPUT  = 0x00;
@@ -15,9 +17,8 @@ static uint8_t s_mask = 0x00; // logical ON bits (bit0=R1 ... bit7=R8)
 // ---- Non-blocking apply state ----
 static bool     s_applyPending = false;
 static uint8_t  s_pendingMask  = 0x00;
-static uint8_t  s_applyAttempt = 0;
-static uint32_t s_nextApplyMs  = 0;
-static uint32_t s_backoffMs    = 2; // grows on repeated failures
+static RetryPolicy s_applyRetry(50, 1.7f, 1000, 0.2f);
+static RetryPolicy s_recoverRetry(500, 1.7f, 30000, 0.2f);
 
 // ---- Telemetry ----
 static uint32_t s_i2cErrors     = 0;
@@ -50,8 +51,7 @@ static void noteI2cErrorThrottled(const char* msg) {
   // Throttle: do not spam Serial during bus faults
   if ((uint32_t)(now - s_lastI2cLogMs) >= 5000) {
     s_lastI2cLogMs = now;
-    Serial.print(F("[RELAY] I2C error: "));
-    Serial.println(s_lastI2cErr);
+    LOGW("RELAY I2C error: %s", s_lastI2cErr);
   }
 }
 
@@ -92,15 +92,13 @@ static bool readRegRaw(uint8_t reg, uint8_t &out) {
 static void scheduleApply(uint8_t logicalMask) {
   s_applyPending = true;
   s_pendingMask  = logicalMask;
-  s_applyAttempt = 0;
-  s_backoffMs    = 2;
-  s_nextApplyMs  = 0;
+  s_applyRetry.reset(millis());
 }
 
 static void processPending(uint32_t now) {
   if (!s_applyPending) return;
   if (!s_ok) return;
-  if ((int32_t)(now - s_nextApplyMs) < 0) return;
+  if (!s_applyRetry.canAttempt(now)) return;
 
   const uint8_t hw = toHw(s_pendingMask);
 
@@ -115,19 +113,17 @@ static void processPending(uint32_t now) {
 
   if (ok) {
     s_applyPending = false;
+    s_applyRetry.onSuccess(now);
     return;
   }
 
   // Non-blocking retry: next attempt later (no delay())
-  s_applyAttempt++;
-  if (s_applyAttempt >= 3) {
+  s_applyRetry.onFail(now);
+  if (s_applyRetry.failCount() >= 3) {
     // Mark expander as not OK -> recovery path will re-init and re-apply mask
     s_ok = false;
     return;
   }
-
-  s_nextApplyMs = now + s_backoffMs;
-  if (s_backoffMs < 100) s_backoffMs *= 2;
 }
 
 static bool initTca() {
@@ -157,6 +153,7 @@ void relayInit() {
   s_ok = initTca();
   if (s_ok) {
     s_i2cRecoveries++; // first successful init
+    s_recoverRetry.onSuccess(millis());
     processPending(millis());
   }
 }
@@ -179,19 +176,20 @@ void relayUpdate() {
   }
 
   // Auto-recovery if expander is not OK
-  static uint32_t lastRecoverAttemptMs = 0;
   if (!s_ok) {
-    if ((uint32_t)(now - lastRecoverAttemptMs) < 1000) return;
-    lastRecoverAttemptMs = now;
+    if (!s_recoverRetry.canAttempt(now)) return;
 
     // Re-init expander and re-apply desired mask
     const bool ok = initTca();
     if (ok) {
       s_ok = true;
       s_i2cRecoveries++;
+      s_recoverRetry.onSuccess(now);
       // Ensure requested mask is applied (in case init succeeded but output differs)
       scheduleApply(s_mask);
       processPending(now);
+    } else {
+      s_recoverRetry.onFail(now);
     }
   }
 }
@@ -261,4 +259,20 @@ uint32_t relayGetI2cLastErrorMs() {
 
 const char* relayGetI2cLastError() {
   return s_lastI2cErr;
+}
+
+bool relayIsOk() {
+  return s_ok;
+}
+
+uint32_t relayGetI2cNextRetryInMs() {
+  const uint32_t now = millis();
+  if (s_ok) return 0;
+  const uint32_t nextAt = s_recoverRetry.nextAttemptAt();
+  if ((int32_t)(nextAt - now) <= 0) return 0;
+  return nextAt - now;
+}
+
+uint32_t relayGetI2cFailCount() {
+  return (uint32_t)s_recoverRetry.failCount();
 }

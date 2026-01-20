@@ -11,8 +11,11 @@
 #include <math.h>
 #include "config_pins.h"
 #include <ctype.h>
+#include <vector>
 
 #include "RelayController.h"
+#include "JsonUtils.h"
+#include "Log.h"
 #include "BuzzerController.h"
 #include "InputController.h"
 #include "LogicController.h"
@@ -38,6 +41,9 @@ static DynamicJsonDocument g_dashDoc(32768);
 // /api/status narostlo (equitherm + TUV + recirc + opentherm + valves). 12k bývá na hraně a
 // vede k neúplným odpovědím (ArduinoJson při nedostatku kapacity tiše "ořeže" vnořené části).
 static DynamicJsonDocument g_statusDoc(24576);
+static bool g_configOk = false;
+static String g_configLastError = "";
+static uint32_t g_configLoadWarningsCount = 0;
 
 
 // --- Validation helpers: reserve relays used by 3-way valves so they cannot be used elsewhere ---
@@ -179,14 +185,25 @@ static void applyAllConfig(const String& json){
 }
 
 // ===== Pomocné: streamované JSON odpovědi bez velkých String alokací =====
-static void sendJsonStreamed200(const JsonDocument& doc) {
+static const char* httpStatusText(int code) {
+    switch (code) {
+        case 200: return "OK";
+        case 400: return "Bad Request";
+        case 404: return "Not Found";
+        case 413: return "Payload Too Large";
+        case 500: return "Internal Server Error";
+        default: return "OK";
+    }
+}
+
+static void sendJsonStreamed(const JsonDocument& doc, int statusCode) {
     WiFiClient client = server.client();
 
     // Fallback (nemělo by nastat, ale radši bezpečně)
     if (!client) {
         String out;
         serializeJson(doc, out);
-        server.send(200, "application/json", out);
+        server.send(statusCode, "application/json", out);
         return;
     }
 
@@ -194,7 +211,7 @@ static void sendJsonStreamed200(const JsonDocument& doc) {
     const size_t len = measureJson(doc);
 
     // Ručně odešli HTTP hlavičky + Content-Length, pak JSON přímo do socketu
-    client.print(F("HTTP/1.1 200 OK\r\n"));
+    client.printf("HTTP/1.1 %d %s\r\n", statusCode, httpStatusText(statusCode));
     client.print(F("Content-Type: application/json\r\n"));
     client.print(F("Cache-Control: no-store, no-cache, must-revalidate, max-age=0\r\n"));
     client.print(F("Pragma: no-cache\r\n"));
@@ -205,6 +222,48 @@ static void sendJsonStreamed200(const JsonDocument& doc) {
     client.print(F("\r\n\r\n"));
 
     serializeJson(doc, client);
+}
+
+static void sendJsonStreamed200(const JsonDocument& doc) {
+    sendJsonStreamed(doc, 200);
+}
+
+static void appendValidationIssues(JsonArray arr, const ValidationResult& validation, bool includeFatal) {
+    for (const auto& issue : validation.issues) {
+        if (!includeFatal && issue.fatal) continue;
+        JsonObject o = arr.createNestedObject();
+        o["code"] = issue.code;
+        o["path"] = issue.path;
+        o["message"] = issue.message;
+    }
+}
+
+static void sendApiOk(const JsonDocument& dataDoc, const ValidationResult* warnings = nullptr, int statusCode = 200) {
+    const size_t extra = 256 + (warnings ? warnings->issues.size() * 128 : 0);
+    DynamicJsonDocument resp(dataDoc.memoryUsage() + extra);
+    JsonObject root = resp.to<JsonObject>();
+    root["ok"] = true;
+    root["data"] = dataDoc.as<JsonVariant>();
+    JsonArray warnArr = root.createNestedArray("warnings");
+    if (warnings) {
+        appendValidationIssues(warnArr, *warnings, false);
+    }
+    sendJsonStreamed(resp, statusCode);
+}
+
+static void sendApiError(const char* code, const String& message, const ValidationResult* details, int statusCode) {
+    const size_t extra = 256 + (details ? details->issues.size() * 128 : 0);
+    DynamicJsonDocument resp(extra);
+    JsonObject root = resp.to<JsonObject>();
+    root["ok"] = false;
+    JsonObject err = root.createNestedObject("error");
+    err["code"] = code ? code : "internal_error";
+    err["message"] = message;
+    JsonArray detailArr = err.createNestedArray("details");
+    if (details) {
+        appendValidationIssues(detailArr, *details, true);
+    }
+    sendJsonStreamed(resp, statusCode);
 }
 
 // ===== Pomocné funkce pro FS =====
@@ -302,131 +361,58 @@ static bool handleFileUploadWrite() {
 
 // ===== Konfigurace (config.json) =====
 
-static bool loadFileToString(const char* path, String& out) {
-    fsLock();
-    File f = LittleFS.open(path, "r");
-    if (!f) {
-        fsUnlock();
-        return false;
-    }
-
-    const size_t sz = (size_t)f.size();
-    out = "";
-    out.reserve(sz + 1);
-
-    char buf[512];
-    while (f.available()) {
-        const size_t n = f.readBytes(buf, sizeof(buf));
-        if (n == 0) break;
-        out.concat(buf, (unsigned int)n);
-    }
-
-    f.close();
-    fsUnlock();
-    return true;
-}
-
-static size_t configJsonCapacityForSize(size_t jsonSize) {
-    const size_t minCap = 4096;
-    const size_t maxCap = 32768;
-    size_t cap = (jsonSize * 13) / 10 + 1024;
-    if (cap < minCap) cap = minCap;
-    if (cap > maxCap) cap = maxCap;
-    return cap;
-}
-
-static bool isValidJsonObject(const String& json) {
-    // Validace konfigurace – musí to být JSON objekt.
-    // Pozor: pro jistotu necháváme větší buffer, aby validní config nebyl odmítnut jen kvůli velikosti.
-    DynamicJsonDocument doc(configJsonCapacityForSize(json.length()));
-    DeserializationError err = deserializeJson(doc, json);
-    return (!err) && doc.is<JsonObject>();
-}
-
 static void loadConfigFromFS() {
     const char* cfgPath = "/config.json";
     const char* bakPath = "/config.json.bak";
     bool restoredFromBak = false;
 
-    fsLock();
-    const bool hasCfg = LittleFS.exists(cfgPath);
-    fsUnlock();
-    if (!hasCfg) {
+    DynamicJsonDocument doc(2048);
+    String err;
+    if (!loadJsonFromFile(cfgPath, doc, err)) {
+        LOGW("CFG load failed: %s", err.c_str());
+        if (!loadJsonFromFile(bakPath, doc, err)) {
+            g_configJson = "{}";
+            g_configOk = false;
+            g_configLastError = "config_load_failed";
+            g_configLoadWarningsCount = 1;
+            LOGW("CFG load failed (bak): %s", err.c_str());
+            applyAllConfig(g_configJson);
+            return;
+        }
+        restoredFromBak = true;
+    }
+
+    ValidationResult validation;
+    applyDefaultsAndValidate(doc, validation);
+
+    if (!doc.is<JsonObject>()) {
         g_configJson = "{}";
-        Serial.println(F("[CFG] No config.json, using {}"));
+        g_configOk = false;
+        g_configLastError = "invalid_config_object";
+        g_configLoadWarningsCount = 1;
         applyAllConfig(g_configJson);
         return;
     }
+
+    g_configLoadWarningsCount = validation.issues.size();
+    g_configOk = validation.ok;
+    g_configLastError = validation.ok ? "" : "config_validation_failed";
 
     String cfg;
-    if (!loadFileToString(cfgPath, cfg)) {
-        g_configJson = "{}";
-        Serial.println(F("[CFG] config.json open failed, using {}"));
-        applyAllConfig(g_configJson);
-        return;
-    }
-
-    cfg.trim();
-    if (!cfg.length()) cfg = "{}";
-
-    // Pokud je config poškozený, zkusíme obnovu ze zálohy.
-    if (!isValidJsonObject(cfg)) {
-        Serial.println(F("[CFG] config.json invalid, trying .bak"));
-        fsLock();
-        const bool hasBak = LittleFS.exists(bakPath);
-        fsUnlock();
-        if (hasBak) {
-            String bak;
-            if (loadFileToString(bakPath, bak)) {
-                bak.trim();
-                if (bak.length() && isValidJsonObject(bak)) {
-                    cfg = bak;
-                    restoredFromBak = true;
-                    Serial.println(F("[CFG] Restored config from /config.json.bak"));
-                } else {
-                    Serial.println(F("[CFG] config.json.bak invalid, using {}"));
-                    cfg = "{}";
-                }
-            } else {
-                Serial.println(F("[CFG] config.json.bak read failed, using {}"));
-                cfg = "{}";
-            }
-        } else {
-            Serial.println(F("[CFG] No config.json.bak, using {}"));
-            cfg = "{}";
-        }
-    }
-
+    serializeJson(doc, cfg);
     g_configJson = cfg;
 
-    // Pokud jsme obnovili z .bak, je lepší zapsat opravený config zpět do /config.json,
-    // aby se zařízení po každém restartu neopíralo o .bak.
-    // Zároveň necháváme .bak beze změny.
     if (restoredFromBak) {
-        const char* tmpPath = "/config.json.restore.tmp";
-        fsLock();
-        File wf = LittleFS.open(tmpPath, "w");
-        if (wf) {
-            wf.print(g_configJson);
-            wf.flush();
-            wf.close();
-
-            LittleFS.remove(cfgPath); // může to být poškozené
-            if (!LittleFS.rename(tmpPath, cfgPath)) {
-                LittleFS.remove(tmpPath);
-                Serial.println(F("[CFG] Restore write-back failed (rename)."));
-            } else {
-                Serial.println(F("[CFG] Restored config written back to /config.json"));
-            }
+        String saveErr;
+        if (!saveJsonToFileAtomic(cfgPath, doc, saveErr)) {
+            LOGW("CFG restore write-back failed: %s", saveErr.c_str());
         } else {
-            Serial.println(F("[CFG] Restore write-back failed (open tmp)."));
+            LOGI("CFG restored from .bak and saved.");
         }
-        fsUnlock();
     }
 
     applyAllConfig(g_configJson);
-
-    Serial.println(F("[CFG] config.json loaded & applied."));
+    LOGI("CFG loaded & applied.");
     g_configLoaded = true;
 }
 
@@ -542,8 +528,14 @@ static void handleApiDash() {
 }
 
 static bool saveConfigToFS() {
-    const char* bakPath = "/config.json.bak";
-    return fsWriteAtomicKeepBak("/config.json", g_configJson, bakPath, true);
+    DynamicJsonDocument doc(4096);
+    String err;
+    if (!parseJsonBody(g_configJson, doc, 65536, err)) {
+        g_configLastError = err;
+        LOGW("CFG save parse failed: %s", err.c_str());
+        return false;
+    }
+    return saveJsonToFileAtomic("/config.json", doc, err);
 }
 
 // ===== API status =====
@@ -636,8 +628,23 @@ void handleApiStatus() {
         i2c["relayErrors"] = relayGetI2cErrorCount();
         i2c["relayRecoveries"] = relayGetI2cRecoveryCount();
         i2c["relayLastErrorMs"] = relayGetI2cLastErrorMs();
+        i2c["ok"] = relayIsOk();
+        i2c["failCount"] = relayGetI2cFailCount();
+        i2c["nextRetryInMs"] = relayGetI2cNextRetryInMs();
         const char* lastI2c = relayGetI2cLastError();
         if (lastI2c && lastI2c[0]) i2c["relayLastError"] = lastI2c; else i2c["relayLastError"] = nullptr;
+
+        JsonObject jsonDiag = diag.createNestedObject("json");
+        const JsonDiagnostics& jd = jsonGetDiagnostics();
+        jsonDiag["parseErrors"] = jd.parseErrors;
+        jsonDiag["lastError"] = jd.lastError.length() ? jd.lastError : nullptr;
+        jsonDiag["lastCapacity"] = (uint32_t)jd.lastCapacity;
+        jsonDiag["lastUsage"] = (uint32_t)jd.lastUsage;
+
+        JsonObject cfgDiag = diag.createNestedObject("config");
+        cfgDiag["ok"] = g_configOk;
+        cfgDiag["loadWarningsCount"] = g_configLoadWarningsCount;
+        cfgDiag["lastError"] = g_configLastError.length() ? g_configLastError : nullptr;
 
         JsonObject cfg = diag.createNestedObject("configApply");
         cfg["ok"] = logicGetConfigApplyOkCount();
@@ -665,6 +672,13 @@ void handleApiStatus() {
     JsonObject mqtt = doc.createNestedObject("mqtt");
     mqtt["configured"] = mqttIsConfigured();
     mqtt["connected"] = mqttIsConnected();
+
+    // --- BLE state ---
+    JsonObject ble = doc.createNestedObject("ble");
+    ble["state"] = bleGetStateName();
+    ble["lastDataAge"] = bleGetLastDataAgeMs();
+    ble["reconnects"] = bleGetReconnectCount();
+    ble["failCount"] = bleGetFailCount();
 
     // --- time ---
     JsonObject t = doc.createNestedObject("time");
@@ -820,7 +834,7 @@ void handleApiStatus() {
 
 void handleApiRelay() {
     if (!server.hasArg("id") || !server.hasArg("cmd")) {
-        server.send(400, "application/json", "{\"error\":\"missing id or cmd\"}");
+        sendApiError("validation_failed", "Chybí id nebo cmd.", nullptr, 400);
         return;
     }
 
@@ -829,7 +843,7 @@ void handleApiRelay() {
     cmd.toLowerCase();
 
     if (id < 1 || id > RELAY_COUNT) {
-        server.send(400, "application/json", "{\"error\":\"invalid id\"}");
+        sendApiError("validation_failed", "Neplatné id relé.", nullptr, 400);
         return;
     }
 
@@ -845,156 +859,242 @@ void handleApiRelay() {
     } else if (cmd == "toggle") {
         relayToggle(static_cast<RelayId>(id - 1));
     } else {
-        server.send(400, "application/json", "{\"error\":\"invalid cmd\"}");
+        sendApiError("validation_failed", "Neplatný příkaz.", nullptr, 400);
         return;
     }
 
-    String json = "{\"status\":\"ok\",\"id\":";
-    json += String(id);
-    json += ",\"state\":";
-    json += relayGetState(static_cast<RelayId>(id - 1)) ? "true" : "false";
-    json += "}";
-    server.send(200, "application/json", json);
+    DynamicJsonDocument data(128);
+    data["id"] = id;
+    data["state"] = relayGetState(static_cast<RelayId>(id - 1));
+    sendApiOk(data);
 }
 
 // ===== API config =====
 
 void handleApiConfigGet() {
-    server.send(200, "application/json", g_configJson);
+    DynamicJsonDocument cfgDoc(4096);
+    ValidationResult warnings;
+    String err;
+    if (!parseJsonBody(g_configJson, cfgDoc, 65536, err)) {
+        cfgDoc.clear();
+        cfgDoc.to<JsonObject>();
+        warnings.addIssue("config_load_failed_using_defaults", "$", "Načtení konfigurace selhalo, použity defaulty.");
+    }
+    applyDefaultsAndValidate(cfgDoc, warnings);
+    sendApiOk(cfgDoc, &warnings);
 }
 
 void handleApiConfigPost() {
+    constexpr size_t kMaxConfigBytes = 32768;
     String body = server.arg("plain");
-    body.trim();
-    if (!body.length()) {
-        server.send(400, "application/json", "{\"error\":\"empty body\"}");
+    String err;
+    DynamicJsonDocument incoming(2048);
+    if (!parseJsonBody(body, incoming, kMaxConfigBytes, err)) {
+        const bool tooLarge = err == "payload_too_large";
+        sendApiError(tooLarge ? "payload_too_large" : "bad_json",
+                     tooLarge ? "JSON payload je příliš velký." : "Neplatný JSON.",
+                     nullptr,
+                     tooLarge ? 413 : 400);
+        return;
+    }
+    if (!incoming.is<JsonObject>()) {
+        sendApiError("validation_failed", "JSON musí být objekt.", nullptr, 400);
         return;
     }
 
-    int first = 0;
-    while (first < (int)body.length() && isspace(static_cast<unsigned char>(body[first]))) first++;
-    if (first >= (int)body.length() || body[first] != '{') {
-        server.send(400, "application/json", "{\"error\":\"invalid json\"}");
-        return;
+    ValidationResult validation;
+    JsonObject inObj = incoming.as<JsonObject>();
+    const char* allowedKeys[] = {
+        "iofunc", "equitherm", "tuv", "dhwRecirc", "akuHeater", "system",
+        "sensors", "schedules", "mqtt", "time", "thermometers", "tempRoles",
+        "dallasGpios", "dallasAddrs", "dallasNames", "opentherm",
+        "relayNames", "inputNames", "inputActiveLevels", "inputs", "relayMap",
+        "modes", "modeNames", "modeDescriptions", "mode_names", "mode_descriptions",
+        "autoDefaultOffUnmapped", "auto_default_off_unmapped"
+    };
+
+    std::vector<String> unknownKeys;
+    for (JsonPair kv : inObj) {
+        bool known = false;
+        for (const char* key : allowedKeys) {
+            if (kv.key() == key) {
+                known = true;
+                break;
+            }
+        }
+        if (!known) {
+            unknownKeys.push_back(String(kv.key().c_str()));
+        }
+    }
+    for (const String& key : unknownKeys) {
+        inObj.remove(key);
+        validation.addIssue("unknown_key", String("$.") + key, "Neznámý klíč byl ignorován.");
     }
 
-    DynamicJsonDocument filter(2048);
-    filter["iofunc"] = true;
-    filter["equitherm"] = true;
-    filter["tuv"] = true;
-    filter["dhwRecirc"] = true;
-    filter["akuHeater"] = true;
-    filter["system"] = true;
-    filter["sensors"] = true;
-    filter["schedules"] = true;
-    filter["mqtt"] = true;
-    filter["time"] = true;
-    filter["thermometers"] = true;
-    filter["tempRoles"] = true;
-    filter["dallasGpios"] = true;
-    filter["dallasAddrs"] = true;
-    filter["dallasNames"] = true;
-    filter["opentherm"] = true;
-    filter["relayNames"] = true;
-    filter["inputNames"] = true;
-    filter["inputActiveLevels"] = true;
-    filter["inputs"] = true;
-    filter["relayMap"] = true;
-    filter["modes"] = true;
-    filter["modeNames"] = true;
-    filter["modeDescriptions"] = true;
-    filter["mode_names"] = true;
-    filter["mode_descriptions"] = true;
-    filter["autoDefaultOffUnmapped"] = true;
-    filter["auto_default_off_unmapped"] = true;
+    DynamicJsonDocument baseDoc(4096);
+    if (!parseJsonBody(g_configJson, baseDoc, 65536, err)) {
+        baseDoc.clear();
+        baseDoc.to<JsonObject>();
+        validation.addIssue("config_load_failed_using_defaults", "$", "Načtení stávající konfigurace selhalo, použity defaulty.");
+    }
 
-    DynamicJsonDocument doc(configJsonCapacityForSize(body.length()));
-    DeserializationError err = deserializeJson(doc, body, DeserializationOption::Filter(filter));
-    if (err) {
-        server.send(400, "application/json", "{\"error\":\"invalid json\"}");
-        return;
+    JsonObject baseObj = baseDoc.as<JsonObject>();
+    for (JsonPair kv : inObj) {
+        baseObj[kv.key()] = kv.value();
     }
-    if (!doc.is<JsonObject>()) {
-        server.send(400, "application/json", "{\"error\":\"invalid json\"}");
-        return;
-    }
+
+    applyDefaultsAndValidate(baseDoc, validation);
 
     // Validace: relé používaná pro 3c ventily nelze použít jako běžná relé v jiných funkcích
     {
         String errMsg;
         int errRelay = 0;
-        if (!validateNoRelayConflictsWithValves(doc, errMsg, errRelay)) {
-            DynamicJsonDocument out(512);
-            out["error"] = "relay_conflict_with_valve";
-            out["relay"] = errRelay;
-            out["message"] = errMsg;
-            String resp;
-            serializeJson(out, resp);
-            server.send(400, "application/json", resp);
+        if (!validateNoRelayConflictsWithValves(baseDoc, errMsg, errRelay)) {
+            ValidationResult errRes;
+            errRes.addIssue("relay_conflict_with_valve", "$.relayMap", errMsg, true);
+            sendApiError("validation_failed", "Konflikt relé s 3c ventilem.", &errRes, 400);
             return;
         }
     }
 
+    if (!validation.ok) {
+        sendApiError("validation_failed", "Konfigurace neprošla validací.", &validation, 400);
+        return;
+    }
+
     String sanitized;
-    serializeJson(doc, sanitized);
+    serializeJson(baseDoc, sanitized);
 
     String previous = g_configJson;
     g_configJson = sanitized;
     if (!saveConfigToFS()) {
         g_configJson = previous;
-        server.send(500, "application/json", "{\"error\":\"save failed\"}");
+        g_configOk = false;
+        g_configLastError = "save_failed";
+        sendApiError("internal_error", "Uložení konfigurace selhalo.", nullptr, 500);
         return;
     }
 
     applyAllConfig(g_configJson);
+    g_configOk = true;
+    g_configLastError = "";
+    g_configLoadWarningsCount = validation.issues.size();
 
-    server.send(200, "application/json", "{\"status\":\"ok\"}");
+    DynamicJsonDocument data(64);
+    data["saved"] = true;
+    sendApiOk(data, validation.issues.empty() ? nullptr : &validation);
 }
 
 
 // ===== API BLE =====
 
 void handleApiBleStatus() {
-    server.send(200, "application/json", bleGetStatusJson());
+    DynamicJsonDocument data(4096);
+    ValidationResult warnings;
+    String err;
+    if (!parseJsonBody(bleGetStatusJson(), data, 16384, err)) {
+        warnings.addIssue("bad_json", "$", "BLE status není validní JSON.");
+        data.clear();
+        data.to<JsonObject>();
+    }
+    sendApiOk(data, warnings.issues.empty() ? nullptr : &warnings);
 }
 
 void handleApiOpenThermStatus() {
     DynamicJsonDocument doc(512);
     JsonObject obj = doc.to<JsonObject>();
     openthermFillJson(obj);
-    String out;
-    serializeJson(doc, out);
-    server.send(200, "application/json", out);
+    sendApiOk(doc);
 }
 
 void handleApiBleConfigGet() {
-    server.send(200, "application/json", bleGetConfigJson());
+    DynamicJsonDocument data(4096);
+    ValidationResult warnings;
+    String err;
+    if (!parseJsonBody(bleGetConfigJson(), data, 16384, err)) {
+        warnings.addIssue("bad_json", "$", "BLE konfigurace není validní JSON.");
+        data.clear();
+        data.to<JsonObject>();
+    }
+    sendApiOk(data, warnings.issues.empty() ? nullptr : &warnings);
 }
 
 void handleApiBleConfigPost() {
+    constexpr size_t kMaxBleBytes = 8192;
     String body = server.arg("plain");
-    body.trim();
-    if (!body.length()) {
-        server.send(400, "application/json", "{\"error\":\"empty body\"}");
+    String err;
+    DynamicJsonDocument incoming(2048);
+    if (!parseJsonBody(body, incoming, kMaxBleBytes, err)) {
+        const bool tooLarge = err == "payload_too_large";
+        sendApiError(tooLarge ? "payload_too_large" : "bad_json",
+                     tooLarge ? "JSON payload je příliš velký." : "Neplatný JSON.",
+                     nullptr,
+                     tooLarge ? 413 : 400);
         return;
     }
+    if (!incoming.is<JsonObject>()) {
+        sendApiError("validation_failed", "JSON musí být objekt.", nullptr, 400);
+        return;
+    }
+
+    ValidationResult validation;
+    JsonObject obj = incoming.as<JsonObject>();
+    if (obj.containsKey("passkey") && !obj["passkey"].is<uint32_t>()) {
+        obj["passkey"] = 123456;
+        validation.addIssue("wrong_type", "$.passkey", "Hodnota passkey byla opravena.");
+    }
+    if (obj.containsKey("meteoConnectTimeoutMs")) {
+        uint32_t val = obj["meteoConnectTimeoutMs"] | 900;
+        if (val < 300) {
+            obj["meteoConnectTimeoutMs"] = 300;
+            validation.addIssue("out_of_range", "$.meteoConnectTimeoutMs", "Timeout navýšen na 300ms.");
+        } else if (val > 5000) {
+            obj["meteoConnectTimeoutMs"] = 5000;
+            validation.addIssue("out_of_range", "$.meteoConnectTimeoutMs", "Timeout omezen na 5000ms.");
+        }
+    }
+    if (obj.containsKey("meteoScanMs")) {
+        uint32_t val = obj["meteoScanMs"] | 4000;
+        if (val < 1000) {
+            obj["meteoScanMs"] = 1000;
+            validation.addIssue("out_of_range", "$.meteoScanMs", "Scan navýšen na 1000ms.");
+        } else if (val > 30000) {
+            obj["meteoScanMs"] = 30000;
+            validation.addIssue("out_of_range", "$.meteoScanMs", "Scan omezen na 30000ms.");
+        }
+    }
+
+    String sanitized;
+    serializeJson(incoming, sanitized);
     String errCode;
-    const bool ok = bleSetConfigJson(body, &errCode);
-    Serial.printf("[API] BLE config POST len=%u result=%s err=%s\n",
-                  (unsigned)body.length(), ok ? "ok" : "fail",
-                  errCode.length() ? errCode.c_str() : "-");
+    const bool ok = bleSetConfigJson(sanitized, &errCode);
+    LOGI("API BLE config POST len=%u result=%s err=%s",
+         (unsigned)sanitized.length(), ok ? "ok" : "fail",
+         errCode.length() ? errCode.c_str() : "-");
     if (!ok) {
         if (!errCode.length()) errCode = "save/apply_failed";
-        String out = String("{\"error\":\"") + errCode + "\"}";
-        const int status = (errCode == "bad_json") ? 400 : 500;
-        server.send(status, "application/json", out);
+        sendApiError((errCode == "bad_json") ? "bad_json" : "internal_error",
+                     "Uložení BLE konfigurace selhalo.",
+                     nullptr,
+                     (errCode == "bad_json") ? 400 : 500);
         return;
     }
-    server.send(200, "application/json", "{\"status\":\"ok\"}");
+
+    DynamicJsonDocument data(64);
+    data["saved"] = true;
+    sendApiOk(data, validation.issues.empty() ? nullptr : &validation);
 }
 
 void handleApiBlePairedGet() {
-    server.send(200, "application/json", bleGetPairedJson());
+    DynamicJsonDocument data(2048);
+    ValidationResult warnings;
+    String err;
+    if (!parseJsonBody(bleGetPairedJson(), data, 16384, err)) {
+        warnings.addIssue("bad_json", "$", "Seznam zařízení není validní JSON.");
+        data.clear();
+        data.to<JsonObject>();
+    }
+    sendApiOk(data, warnings.issues.empty() ? nullptr : &warnings);
 }
 
 void handleApiBlePairPost() {
@@ -1002,59 +1102,69 @@ void handleApiBlePairPost() {
     body.trim();
 
     DynamicJsonDocument doc(512);
-    deserializeJson(doc, body);
+    String err;
+    if (!parseJsonBody(body, doc, 1024, err)) {
+        sendApiError("bad_json", "Neplatný JSON.", nullptr, 400);
+        return;
+    }
 
     uint32_t seconds = doc["seconds"] | 120;
     const char* role = doc["role"] | "";
 
     if (!bleStartPairing(seconds, String(role))) {
-        server.send(500, "application/json", "{\"error\":\"pairing start failed\"}");
+        sendApiError("internal_error", "Spuštění párování selhalo.", nullptr, 500);
         return;
     }
-    server.send(200, "application/json", "{\"status\":\"ok\"}");
+    DynamicJsonDocument data(64);
+    data["pairing"] = true;
+    data["seconds"] = seconds;
+    sendApiOk(data);
 }
 
 void handleApiBleStopPairPost() {
     bleStopPairing();
-    server.send(200, "application/json", "{\"status\":\"ok\"}");
+    DynamicJsonDocument data(64);
+    data["pairing"] = false;
+    sendApiOk(data);
 }
 
 void handleApiBleMeteoRetryPost() {
     const bool enabled = bleMeteoRetryNow();
-    if (!enabled) {
-        server.send(200, "application/json", "{\"status\":\"ok\",\"meteoEnabled\":false}");
-        return;
-    }
-    server.send(200, "application/json", "{\"status\":\"ok\",\"meteoEnabled\":true}");
+    DynamicJsonDocument data(64);
+    data["meteoEnabled"] = enabled;
+    sendApiOk(data);
 }
 
 void handleApiBleRemovePost() {
     String body = server.arg("plain");
     body.trim();
     DynamicJsonDocument doc(512);
-    deserializeJson(doc, body);
+    String err;
+    if (!parseJsonBody(body, doc, 1024, err)) {
+        sendApiError("bad_json", "Neplatný JSON.", nullptr, 400);
+        return;
+    }
     const char* mac = doc["mac"] | "";
     if (!strlen(mac)) {
-        server.send(400, "application/json", "{\"error\":\"missing mac\"}");
+        sendApiError("validation_failed", "Chybí MAC adresa.", nullptr, 400);
         return;
     }
     if (!bleRemoveDevice(String(mac))) {
-        server.send(500, "application/json", "{\"error\":\"remove failed\"}");
+        sendApiError("internal_error", "Odebrání zařízení selhalo.", nullptr, 500);
         return;
     }
-    server.send(200, "application/json", "{\"status\":\"ok\"}");
+    DynamicJsonDocument data(64);
+    data["removed"] = true;
+    sendApiOk(data);
 }
 
 // ===== API mode_ctrl =====
 
 void handleApiModeCtrlGet() {
-    String json = "{";
-    json += "\"controlMode\":\"";
-    json += (logicGetControlMode() == ControlMode::AUTO) ? "auto" : "manual";
-    json += "\",\"systemMode\":\"";
-    json += logicModeToString(logicGetMode());
-    json += "\"}";
-    server.send(200, "application/json", json);
+    DynamicJsonDocument data(128);
+    data["controlMode"] = (logicGetControlMode() == ControlMode::AUTO) ? "auto" : "manual";
+    data["systemMode"] = logicModeToString(logicGetMode());
+    sendApiOk(data);
 }
 
 void handleApiModeCtrlPost() {
@@ -1065,7 +1175,7 @@ void handleApiModeCtrlPost() {
         StaticJsonDocument<512> doc;
         DeserializationError err = deserializeJson(doc, body);
         if (err) {
-            server.send(400, "application/json", "{\"error\":\"invalid json\"}");
+            sendApiError("bad_json", "Neplatný JSON.", nullptr, 400);
             return;
         }
 
@@ -1084,7 +1194,7 @@ void handleApiModeCtrlPost() {
         if (action == "manual_mode") {
             String v = (const char*)(doc["value"] | "");
             if (!logicSetManualModeByName(v)) {
-                server.send(400, "application/json", "{\"error\":\"invalid mode\"}");
+                sendApiError("validation_failed", "Neplatný režim.", nullptr, 400);
                 return;
             }
             logicSetControlMode(ControlMode::MANUAL);
@@ -1096,7 +1206,7 @@ void handleApiModeCtrlPost() {
             int rid = doc["relay"] | 0; // 1..8
             bool val = doc["value"] | false;
             if (rid < 1 || rid > RELAY_COUNT) {
-                server.send(400, "application/json", "{\"error\":\"relay must be 1-8\"}");
+                sendApiError("validation_failed", "Relé musí být 1-8.", nullptr, 400);
                 return;
             }
 
@@ -1105,12 +1215,10 @@ void handleApiModeCtrlPost() {
                 logicSetControlMode(ControlMode::MANUAL);
             }
             logicSetRelayOutput((uint8_t)rid, val);
-            String json = "{\"status\":\"ok\",\"relay\":";
-            json += String(rid);
-            json += ",\"value\":";
-            json += val ? "true" : "false";
-            json += "}";
-            server.send(200, "application/json", json);
+            DynamicJsonDocument data(128);
+            data["relay"] = rid;
+            data["value"] = val;
+            sendApiOk(data);
             return;
         }
 
@@ -1118,11 +1226,14 @@ void handleApiModeCtrlPost() {
             const uint8_t relay = (uint8_t)(doc["relay"] | 0); // 1..8
             const bool on = (bool)(doc["on"] | false);
             if (relay < 1 || relay > RELAY_COUNT) {
-                server.send(400, "application/json", "{\"error\":\"relay must be 1-8\"}");
+                sendApiError("validation_failed", "Relé musí být 1-8.", nullptr, 400);
                 return;
             }
             logicSetRelayRaw(relay, on);
-            server.send(200, "application/json", "{\"ok\":true}");
+            DynamicJsonDocument data(64);
+            data["relay"] = relay;
+            data["on"] = on;
+            sendApiOk(data);
             return;
         }
 
@@ -1134,7 +1245,7 @@ void handleApiModeCtrlPost() {
 
             const uint8_t master = (uint8_t)(doc["master"] | doc["relay"] | 0); // 1..8
             if (master < 1 || master > RELAY_COUNT) {
-                server.send(400, "application/json", "{\"error\":\"master must be 1-8\"}");
+                sendApiError("validation_failed", "Master musí být 1-8.", nullptr, 400);
                 return;
             }
 
@@ -1171,7 +1282,7 @@ void handleApiModeCtrlPost() {
                 const char defaultPos = (dp && dp[0]) ? dp[0] : 'A';
 
                 if (!logicValveManualConfigure(master, peer, singleRelay, invertDir, travelS, pulseS, guardS, minSwitchS, defaultPos)) {
-                    server.send(400, "application/json", "{\"error\":\"invalid valve cfg\"}");
+                    sendApiError("validation_failed", "Neplatná konfigurace ventilu.", nullptr, 400);
                     return;
                 }
             }
@@ -1180,19 +1291,23 @@ void handleApiModeCtrlPost() {
                 const int dirI = (int)(doc["dir"] | doc["direction"] | 0);
                 const int8_t dir = (dirI >= 0) ? (int8_t)1 : (int8_t)-1;
                 if (!logicValvePulse(master, dir)) {
-                    server.send(400, "application/json", "{\"error\":\"valve pulse failed\"}");
+                    sendApiError("internal_error", "Puls ventilu selhal.", nullptr, 500);
                     return;
                 }
-                server.send(200, "application/json", "{\"ok\":true}");
+                DynamicJsonDocument data(64);
+                data["action"] = "valve_pulse";
+                sendApiOk(data);
                 return;
             }
 
             if (action == "valve_stop") {
                 if (!logicValveStop(master)) {
-                    server.send(400, "application/json", "{\"error\":\"valve stop failed\"}");
+                    sendApiError("internal_error", "Zastavení ventilu selhalo.", nullptr, 500);
                     return;
                 }
-                server.send(200, "application/json", "{\"ok\":true}");
+                DynamicJsonDocument data(64);
+                data["action"] = "valve_stop";
+                sendApiOk(data);
                 return;
             }
 
@@ -1200,17 +1315,22 @@ void handleApiModeCtrlPost() {
                 const int pctI = (int)(doc["pct"] | doc["targetPct"] | 0);
                 uint8_t pct = (pctI < 0) ? 0 : (pctI > 100 ? 100 : (uint8_t)pctI);
                 if (!logicValveGotoPct(master, pct)) {
-                    server.send(400, "application/json", "{\"error\":\"valve goto failed\"}");
+                    sendApiError("internal_error", "Nastavení ventilu selhalo.", nullptr, 500);
                     return;
                 }
-                server.send(200, "application/json", "{\"ok\":true}");
+                DynamicJsonDocument data(96);
+                data["action"] = "valve_goto";
+                data["targetPct"] = pct;
+                sendApiOk(data);
                 return;
             }
         }
 
         if (action == "mqtt_discovery") {
             mqttRepublishDiscovery();
-            server.send(200, "application/json", "{\"status\":\"ok\"}");
+            DynamicJsonDocument data(64);
+            data["discovery"] = true;
+            sendApiOk(data);
             return;
         }
 
@@ -1220,7 +1340,7 @@ void handleApiModeCtrlPost() {
             return;
         }
 
-        server.send(400, "application/json", "{\"error\":\"unknown action\"}");
+        sendApiError("validation_failed", "Neznámá akce.", nullptr, 400);
         return;
     }
 
@@ -1238,7 +1358,7 @@ void handleApiModeCtrlPost() {
     if (server.hasArg("mode")) {
         String mode = server.arg("mode");
         if (!logicSetManualModeByName(mode)) {
-            server.send(400, "application/json", "{\"error\":\"invalid mode\"}");
+            sendApiError("validation_failed", "Neplatný režim.", nullptr, 400);
             return;
         }
         logicSetControlMode(ControlMode::MANUAL);
@@ -1260,10 +1380,13 @@ void handleApiRebootPost() {
         }
     }
     if (!doReboot) {
-        server.send(400, "application/json", "{\"error\":\"reboot=false\"}");
+        sendApiError("validation_failed", "reboot=false", nullptr, 400);
         return;
     }
-    server.send(200, "application/json", "{\"status\":\"ok\",\"msg\":\"Rebooting...\",\"whenMs\":250}");
+    DynamicJsonDocument data(128);
+    data["msg"] = "Rebooting...";
+    data["whenMs"] = 250;
+    sendApiOk(data);
     g_rebootPending = true;
     g_rebootAtMs = millis() + 250;
 }
@@ -1272,20 +1395,20 @@ void handleApiRebootPost() {
 
 void handleApiFsList() {
     if (!fsIsReady()) {
-        server.send(500, "application/json", "{\"error\":\"fs not mounted\"}");
+        sendApiError("internal_error", "Souborový systém není připojen.", nullptr, 500);
         return;
     }
     fsLock();
     File root = LittleFS.open("/");
     if (!root) {
         fsUnlock();
-        server.send(500, "application/json", "{\"error\":\"fs open failed\"}");
+        sendApiError("internal_error", "Nelze otevřít root.", nullptr, 500);
         return;
     }
 
     // Pozn.: ArduinoJson minimalizuje fragmentaci heapu oproti ručnímu lepení Stringů
     DynamicJsonDocument doc(2048);
-    JsonArray arr = doc.to<JsonArray>();
+    JsonArray arr = doc.createNestedArray("files");
 
     File file = root.openNextFile();
     while (file) {
@@ -1299,14 +1422,12 @@ void handleApiFsList() {
     root.close();
     fsUnlock();
 
-    String out;
-    serializeJson(arr, out);
-    server.send(200, "application/json", out);
+    sendApiOk(doc);
 }
 
 void handleApiFsDelete() {
     if (!server.hasArg("path")) {
-        server.send(400, "application/json", "{\"error\":\"missing path\"}");
+        sendApiError("validation_failed", "Chybí path.", nullptr, 400);
         return;
     }
     String path = server.arg("path");
@@ -1315,49 +1436,62 @@ void handleApiFsDelete() {
     fsLock();
     if (!LittleFS.exists(path)) {
         fsUnlock();
-        server.send(404, "application/json", "{\"error\":\"not found\"}");
+        sendApiError("not_found", "Soubor nenalezen.", nullptr, 404);
         return;
     }
 
     if (!LittleFS.remove(path)) {
         fsUnlock();
-        server.send(500, "application/json", "{\"error\":\"remove failed\"}");
+        sendApiError("internal_error", "Smazání selhalo.", nullptr, 500);
         return;
     }
     fsUnlock();
 
-    server.send(200, "application/json", "{\"status\":\"ok\"}");
+    DynamicJsonDocument data(128);
+    data["deleted"] = true;
+    data["path"] = path;
+    sendApiOk(data);
 }
 
 void handleApiFsUpload() {
     if (!handleFileUploadWrite()) {
-        server.send(500, "application/json", "{\"error\":\"upload failed\"}");
+        sendApiError("internal_error", "Upload selhal.", nullptr, 500);
     }
 }
 
 void handleApiFsUploadDone() {
-    server.send(200, "application/json", "{\"status\":\"ok\"}");
+    DynamicJsonDocument data(64);
+    data["uploaded"] = true;
+    sendApiOk(data);
 }
 
 // ===== API buzzer =====
 static void handleApiBuzzerGet() {
     String json;
     buzzerToJson(json);
-    server.send(200, "application/json", json);
+    DynamicJsonDocument data(1024);
+    String err;
+    ValidationResult warnings;
+    if (!parseJsonBody(json, data, 4096, err)) {
+        warnings.addIssue("bad_json", "$", "Buzzer status není validní JSON.");
+        data.clear();
+        data.to<JsonObject>();
+    }
+    sendApiOk(data, warnings.issues.empty() ? nullptr : &warnings);
 }
 
 static void handleApiBuzzerPost() {
     String body = server.arg("plain");
     body.trim();
     if (!body.length() || body[0] != '{') {
-        server.send(400, "application/json", "{\"error\":\"invalid json\"}");
+        sendApiError("bad_json", "Neplatný JSON.", nullptr, 400);
         return;
     }
 
     StaticJsonDocument<768> doc;
     DeserializationError err = deserializeJson(doc, body);
     if (err) {
-        server.send(400, "application/json", "{\"error\":\"invalid json\"}");
+        sendApiError("bad_json", "Neplatný JSON.", nullptr, 400);
         return;
     }
 
@@ -1379,7 +1513,7 @@ static void handleApiBuzzerPost() {
         // očekává {"action":"set_config","config":{...}}
         JsonObject cfg = doc["config"].as<JsonObject>();
         if (cfg.isNull()) {
-            server.send(400, "application/json", "{\"error\":\"missing config\"}");
+            sendApiError("validation_failed", "Chybí config.", nullptr, 400);
             return;
         }
         buzzerUpdateFromJson(cfg);
@@ -1388,7 +1522,7 @@ static void handleApiBuzzerPost() {
         return;
     }
 
-    server.send(400, "application/json", "{\"error\":\"unknown action\"}");
+    sendApiError("validation_failed", "Neznámá akce.", nullptr, 400);
 }
 
 
@@ -1404,9 +1538,7 @@ static void handleApiTime() {
     doc["rtcPresent"] = networkIsRtcPresent();
     doc["ip"] = networkGetIp();
 
-    String out;
-    serializeJson(doc, out);
-    server.send(200, "application/json", out);
+    sendApiOk(doc);
 }
 
 static void handleApiCaps() {
@@ -1420,9 +1552,7 @@ static void handleApiCaps() {
     doc["ble"] = true;
     doc["opentherm"] = true;
 
-    String out;
-    serializeJson(doc, out);
-    server.send(200, "application/json", out);
+    sendApiOk(doc);
 }
 
 void webserverLoadConfigFromFS() {
