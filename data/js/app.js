@@ -267,7 +267,19 @@ async function fetchJson(url, options = {}) {
     if (response.status === 204) {
       return null;
     }
-    return response.json();
+    const payload = await response.json();
+    if (payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "ok")) {
+      if (!payload.ok) {
+        const err = payload.error || {};
+        const msg = err.message || "API error";
+        throw new Error(`${msg} (${err.code || "unknown"})`);
+      }
+      if (Array.isArray(payload.warnings) && payload.warnings.length) {
+        console.warn("API warnings:", payload.warnings);
+      }
+      return payload.data ?? null;
+    }
+    return payload;
   } catch (error) {
     // Timeout / abort is expected; do not spam the console.
     if (error && (error.name === "AbortError" || error.code === 20)) {

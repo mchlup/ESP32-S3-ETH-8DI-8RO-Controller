@@ -36,3 +36,8 @@ bool bleGetMeteoTempC(float &outC); // true pokud je fix a hodnota je validní
 // Obecný getter podle id (rezerva do budoucna). Aktuálně podporuje minimálně:
 //  - "meteo" / "meteo.tempC" / "temp" / "tempC" / "" (default)
 bool bleGetTempCById(const String& id, float &outC);
+
+const char* bleGetStateName();
+uint32_t bleGetLastDataAgeMs();
+uint32_t bleGetReconnectCount();
+uint32_t bleGetFailCount();
