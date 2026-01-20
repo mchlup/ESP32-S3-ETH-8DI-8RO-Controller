@@ -177,6 +177,3 @@ Projekt je navržen jako **dlouhodobě udržitelný**, **neblokující** a **roz
 * 📈 Připraveno na další rozšíření (OpenTherm, další zóny…)
 
 ---
-
-řekni, kterou variantu chceš a v jakém rozsahu.
-```
