@@ -1,174 +1,182 @@
-# ESP-HeatAndDomesticController
 
-**Modulární řídicí jednotka pro chytré řízení topení a domácích technologií postavená na ESP32-S3**
+# ESP32 Heat & Domestic Water Controller
 
-Tento projekt představuje univerzální a rozšiřitelnou platformu pro řízení topných systémů, ventilů, relé a senzorů s důrazem na **ekvitermní regulaci**, integraci do **Home Assistant**, komunikaci přes **MQTT**, **BLE** a lokální **webové rozhraní**.
+Modulární řídicí jednotka pro **řízení topení a teplé užitkové vody (TUV / DHW)** postavená na **ESP32-S3** s podporou **Web UI, MQTT, Home Assistant, BLE senzorů a OpenTherm**.
 
-Projekt je navržen jako mezičlánek mezi kotlem, ventily, čidly a nadřazeným systémem (např. Home Assistant, chytrý termostat, vlastní logika).
-
----
-
-## ✨ Hlavní vlastnosti
-
-* ✅ Modulární architektura (oddělené controllery podle funkcí)
-* ✅ Neblokující běh (bez `delay()`)
-* ✅ Ekvitermní regulace topení (AUTO režim)
-* ✅ Podpora více typů teploměrů:
-
-  * DS18B20 (Dallas / OneWire)
-  * NTC (analogové vstupy)
-  * MQTT teploměry (virtuální)
-  * BLE (připraveno / rozšiřitelné)
-* ✅ Řízení relé a 3cestných ventilů (230 V) včetně kalibrace
-* ✅ Webové UI uložené v **LittleFS**
-* ✅ Konfigurace zařízení přes web (bez nutnosti rekompilace)
-* ✅ MQTT komunikace + Home Assistant auto-discovery
-* ✅ OTA aktualizace firmware
-* ✅ Wi-Fi konfigurace pomocí **WiFiManager**
-* ✅ Podpora RTC
-* ✅ Stavový dashboard (teploty, relé, režimy, ekviterm)
+Projekt je navržen jako **dlouhodobě udržitelný**, **neblokující** a **rozšiřitelný** systém pro reálné nasazení v topných soustavách.
 
 ---
 
-## 🧠 Typické použití
+## Hlavní funkce
 
-* Ekvitermní řízení kotle podle venkovní teploty
-* Řízení směšovacích (3c) ventilů
-* Ovládání kotle pomocí relé / OpenTherm (rozšiřitelné)
-* Integrace chytrého termostatu (např. Nest) přes MQTT
-* Zobrazení a řízení přes Home Assistant
-* Univerzální I/O modul pro chytrou domácnost
+- 🔥 Řízení topení
+  - 3c směšovací ventil (ekvitermní regulace)
+  - podpora akumulační nádrže
+  - řízení oběhových čerpadel
+- 🚿 Teplá užitková voda (TUV / DHW)
+  - přepínací ventil
+  - časové plánování
+  - cirkulace TUV
+- 🌡️ Snímání teplot
+  - DS18B20 (1-Wire, více senzorů na vstup)
+  - externí BLE venkovní senzor (ESP32-C3)
+  - MQTT senzory
+- 📡 Komunikace
+  - Web UI (LittleFS)
+  - REST API
+  - MQTT + Home Assistant auto-discovery
+  - BLE (NimBLE)
+  - OpenTherm (plánováno / rozšiřitelné)
+- ⚙️ Konfigurace
+  - webové rozhraní
+  - persistentní konfigurace v LittleFS
+  - validace a fallback na defaulty
+- 🧠 Architektura
+  - plně neblokující běh
+  - stavové automaty (BLE, retry)
+  - oddělení logiky, IO, UI a komunikace
 
 ---
 
-## 🧩 Použitý hardware
+## Použitý hardware
 
-Primárně cíleno na:
-
-* **Waveshare ESP32-S3-POE-ETH-8DI-8DO**
-  [https://www.waveshare.com/wiki/ESP32-S3-POE-ETH-8DI-8DO](https://www.waveshare.com/wiki/ESP32-S3-POE-ETH-8DI-8DO)
-
-Vlastnosti desky:
-
-* ESP32-S3
-* Ethernet + PoE
-* 8 digitálních vstupů
-* 8 reléových výstupů
-* Velká Flash (16 MB)
-* Vhodné pro průmyslovější nasazení
+- **ESP32-S3-POE-ETH-8DI-8DO**  
+  https://www.waveshare.com/wiki/ESP32-S3-POE-ETH-8DI-8DO
+- I2C expander pro relé / vstupy
+- DS18B20 teplotní senzory
+- ESP32-C3 BLE meteosenzor (venkovní)
 
 ---
 
-## 🗂️ Struktura projektu
+## Struktura projektu
 
+```text
+/
+├── ESP-D1-HeatControl/        # Hlavní firmware (ESP32-S3)
+│   ├── *.ino
+│   ├── controllers/          # Logic, BLE, MQTT, Web, FS, Dallas, OTA…
+│   ├── utils/                # JSON utils, retry policy, helpers
+│   ├── data/                 # Web UI (LittleFS)
+│   │   ├── index.html
+│   │   └── js/
+│   └── include/
+│
+├── ESP32C3_BLE_MeteoSensor/   # BLE venkovní senzor (ESP32-C3)
+│   └── ESP32C3_BLE_MeteoSensor.ino
+│
+└── README.md
+````
+
+---
+
+## Architektonické principy
+
+### Nezablokovaný běh
+
+* žádné `delay()` v produkční logice
+* všechny opakované operace řízeny časovačem / stavem
+* plynulý běh UI, MQTT i BLE i při chybách periferií
+
+### Stavové automaty
+
+* BLE client (scan → connect → subscribe → connected → retry)
+* retry/backoff pro I2C, BLE, síťové operace
+
+### Konfigurace & JSON
+
+* centrální práce s JSON (`ArduinoJson`)
+* dynamická kapacita dokumentů
+* validace vstupů + rozsahů
+* atomický zápis konfigurace (ochrana proti poškození)
+
+### Oddělení odpovědností
+
+* každý subsystém má vlastní controller
+* minimální vazby mezi moduly
+* jasně definované API
+
+---
+
+## Web UI
+
+* běží přímo na zařízení
+* uložené v LittleFS
+* responzivní dashboard
+* dynamické widgety podle aktivních funkcí
+* konfigurační stránky:
+
+  * Ekviterm
+  * ohřev TUV (DHW)
+  * Cirkulace TUV (DHW)
+  * podpora topení z Akumulační nádrže
+  * Senzory
+  * MQTT / Síť
+
+---
+
+## REST API
+
+* jednotný JSON response kontrakt:
+
+```json
+{ "ok": true, "data": { ... }, "warnings": [] }
 ```
-ESP-HeatAndDomesticController
-├── ESP-D1-HeatControl.ino        # Hlavní sketch
-├── config_pins.h                 # Mapování pinů
-├── ConfigStore.*                 # Ukládání konfigurace (FS)
-├── NetworkController.*           # WiFi / Ethernet / WiFiManager
-├── WebServerController.*         # Web UI + REST API
-├── FsController.*                # LittleFS
-├── MqttController.*              # MQTT + Home Assistant
-├── DallasController.*            # DS18B20
-├── NtcController.*               # NTC senzory
-├── ThermometerController.*       # Abstrakce teploměrů
-├── RelayController.*             # Relé
-├── InputController.*             # Digitální vstupy
-├── LogicController.*             # Hlavní logika
-├── ConditionEvaluator.*          # Vyhodnocování podmínek
-├── ActionExecutor.*              # Provádění akcí
-├── OpenThermController.*         # OpenTherm (rozšiřitelné)
-├── BleController.*               # BLE
-├── RtcController.*               # RTC
-├── OtaController.*               # OTA aktualizace
-├── BuzzerController.*            # Buzzer
-├── RgbLedController.*            # Stavová RGB LED
-├── LittleFS/
-│   └── index.html                # Webové rozhraní
+
+```json
+{ "ok": false, "error": { "code": "...", "message": "...", "details": [] } }
 ```
 
----
+* `/api/status` – aktuální stav systému
+* `/api/config/*` – konfigurace jednotlivých modulů
+* všechny endpointy:
 
-## 🌐 Webové rozhraní
-
-* Dashboard se stavem systému
-* Konfigurace:
-
-  * Síť (WiFi / MQTT)
-  * Vstupy a výstupy
-  * Teploměry
-  * Ekvitermní křivka
-  * Logika a pravidla
-* Responzivní rozložení
-* Automatické skrývání prvků podle aktivních funkcí
+  * validují vstup
+  * vrací defaulty při chybě
+  * nikdy neselžou „tiše“
 
 ---
 
-## 📡 BLE meteostanice (ověření adresy)
+## BLE meteosenzor
 
-Pokud používáš ESP32-C3 meteostanici, ověř si, že v S3 zařízení ukládáš správnou BLE adresu:
+* ESP32-C3 jako BLE server
+* periodické odesílání dat:
 
-1. V serial logu meteostanice hledej řádek ve tvaru `[BLE] Address: AA:BB:CC:DD:EE:FF`.
-2. V S3 (config `meteoMac`) musí být **stejná** adresa.
-3. Pokud se liší, v S3 použij **Rescan/Pair** nebo vymaž uložený `meteoMac` a nech zařízení znovu objevit.
+  * teplota
+  * vlhkost
+  * tlak
+  * trend
+* ESP32-S3 jako BLE client:
 
-Tím se vyhneš situaci, kdy je uložená Wi-Fi MAC nebo stará BLE adresa a připojení pak vždy selže.
-
----
-
-## 🌡️ Ekvitermní regulace
-
-* Aktivní pouze v režimu **AUTO**
-* Dynamický výběr zdroje venkovní teploty:
-
-  * DS18B20
-  * NTC
-  * MQTT teploměr
-* Výpočet požadované teploty topné vody podle křivky
-* Vizualizace křivky v UI (včetně aktuálního bodu)
-* Navrženo tak, aby:
-
-  * minimalizovalo cyklování kotle
-  * šetřilo energii
-  * bylo rozšiřitelné
+  * stavový automat
+  * řízený reconnect s backoffem
+  * watchdog na příjem dat
 
 ---
 
-## 🏠 MQTT & Home Assistant
+## MQTT & Home Assistant
 
-* MQTT publish / subscribe
-* Podpora až 2 MQTT teploměrů
-* Jednoduché JSON path parsování
-* Home Assistant auto-discovery:
+* MQTT publish:
 
-  * teploměry
-  * relé
-  * režimy
+  * teploty
+  * stavy relé
+  * diagnostika
+* Home Assistant:
+
+  * auto-discovery
+  * senzory
+  * přepínače
   * stavové entity
 
 ---
 
-## 🔧 Konfigurace & běh
+## Stav projektu
 
-* Veškerá konfigurace je ukládána do **LittleFS**
-* Po restartu se:
-
-  * načtou vstupy, výstupy, teploměry, ekviterm
-  * inicializují controllery ve správném pořadí
-* Senzory jsou vždy zpracovány **před logikou**
+* 🟢 Aktivně vyvíjeno
+* 🧪 Testováno v reálném provozu
+* 🔧 Průběžné refaktory zaměřené na stabilitu a čitelnost
+* 📈 Připraveno na další rozšíření (OpenTherm, další zóny…)
 
 ---
 
-## 🚀 Stav projektu
-
-Projekt je **aktivně vyvíjen**.
-Některé části (např. OpenTherm, pokročilé BLE scénáře) jsou připravené k dalšímu rozšíření.
-
-
-Pokud chceš, můžu:
-
-* připravit **zkrácenou verzi README**
-* doplnit **schéma zapojení**
-* přidat **sekci Build / Flash / Partition scheme**
-* nebo README rovnou **vygenerovat jako soubor ke stažení**
+řekni, kterou variantu chceš a v jakém rozsahu.
+```
