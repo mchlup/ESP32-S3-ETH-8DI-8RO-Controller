@@ -609,7 +609,7 @@ if (!g_meteoPairingActive && g_meteoPassiveBroadcastOnly && g_meteoLastBcastMs &
         g_meteoClient->disconnect();
     }
     g_meteoNextActionMs = now + 1000;
-    return false;
+    return;
 }
 
             g_meteoNextActionMs = now + 250;
@@ -704,7 +704,10 @@ public:
 
         // Passive mode: parse meteo broadcast frames from advertising (Manufacturer Data).
         // This provides meteo readings without connecting.
-        meteoTryParseBroadcast(dev);
+        const bool gotBcast = meteoTryParseBroadcast(dev);
+        if (gotBcast && (g_meteoRefreshOnlyActive || meteoFastBootstrapActive(millis()))) {
+            meteoScanRequestStop("got broadcast frame");
+        }
 
         const int rssi = dev->getRSSI();
         const String mac = normalizeMac(macToString(dev->getAddress()));
@@ -745,11 +748,16 @@ static bool meteoStartScanIfNeeded() {
     const bool pairing = g_meteoPairingActive;
     if (!g_cfg.meteoEnabled && !pairing) return false;
     const bool refreshOnly = g_meteoRefreshOnlyRequested;
-    if (!refreshOnly && !pairing && !meteoDiscoverAllowed()) return false;
-    if (!refreshOnly && !pairing && !g_meteoDiscoverRequested && meteoTargetMacCStr()[0]) return false; // prefer stored/runtime MAC
-    if (g_meteoScanning) return false;
 
     const uint32_t now = millis();
+
+    // During fast bootstrap (after boot, before the first fix), allow scanning even if
+    // auto-discovery is disabled. We only need to catch the advertising broadcast frame ASAP.
+    if (!refreshOnly && !pairing && !meteoDiscoverAllowed() && !meteoFastBootstrapActive(now)) return false;
+
+    // NOTE: We still scan even when a target MAC is already known. This allows the S3 to
+    // receive "adv broadcast" frames quickly without waiting for a full BLE connection.
+    if (g_meteoScanning) return false;
     if (meteoCooldownActive(now)) return false;
     if (g_meteoNextDiscoverMs && (int32_t)(now - g_meteoNextDiscoverMs) < 0) return false;
 
@@ -766,7 +774,10 @@ static bool meteoStartScanIfNeeded() {
     // callbacks-only scan (do not store results to save RAM)
     scan->setMaxResults(0);
     scan->setScanCallbacks(&g_meteoScanCbs, false);
-    scan->setActiveScan(true);
+    // For adv-broadcast refresh scans we prefer passive scanning (no scan requests) to get results ASAP.
+    // Active scan is useful mainly for pairing/discovery (to fetch scan response fields like name).
+    const bool activeScan = (!refreshOnly && !meteoFastBootstrapActive(now)) || pairing;
+    scan->setActiveScan(activeScan);
 
     const bool useFast = g_cfg.meteoFastScan && (refreshOnly || pairing || (g_cfg.meteoAutoPair && !g_cfg.meteoMac.length()));
     const uint16_t interval = useFast ? g_cfg.meteoFastScanInterval : g_cfg.meteoScanInterval;
@@ -782,8 +793,8 @@ static bool meteoStartScanIfNeeded() {
 
     uint32_t requestMs = g_cfg.meteoScanMs;
     if (refreshOnly) {
-        const uint32_t fastRefresh = meteoFastBootstrapActive(now) ? 900UL : 1500UL;
-        requestMs = min(requestMs, useFast ? fastRefresh : 3000UL);
+        const uint32_t fastRefresh = meteoFastBootstrapActive(now) ? 600UL : 1200UL;
+        requestMs = min(requestMs, useFast ? fastRefresh : 2000UL);
     }
     if (pairing) requestMs = min(requestMs, 2500UL);
     uint32_t durSec = (requestMs + 999) / 1000;
@@ -1454,7 +1465,13 @@ void bleInit() {
     g_meteoEverFix = false;
     g_meteoFastUntilMs = g_bleBootMs + 20000UL; // 20s to acquire first fix quickly
     g_meteoNextActionMs = g_bleBootMs + 50;
-    g_meteoNextBcastScanMs = g_bleBootMs + 200;
+    g_meteoNextBcastScanMs = g_bleBootMs +  20;
+    // If a target MAC is already known, request a short passive refresh scan right after boot
+    // to catch the first advertising broadcast frame ASAP (without waiting for connect).
+    if (g_cfg.meteoEnabled && meteoTargetMacCStr()[0]) {
+        g_meteoRefreshOnlyRequested = true;
+        g_meteoNextDiscoverMs = 0;
+    }
     g_bleInitialized = true;
 }
 
@@ -1496,7 +1513,8 @@ void bleLoop() {
 if (g_cfg.meteoEnabled && meteoTargetMacCStr()[0] && (!g_meteoClient || !g_meteoClient->isConnected())) {
     if (!g_meteoNextBcastScanMs) g_meteoNextBcastScanMs = now + 200;
     if ((int32_t)(now - g_meteoNextBcastScanMs) >= 0) {
-        g_meteoNextBcastScanMs = now + METEO_BCAST_SCAN_PERIOD_MS;
+        const uint32_t period = meteoFastBootstrapActive(now) ? 1200UL : METEO_BCAST_SCAN_PERIOD_MS;
+        g_meteoNextBcastScanMs = now + period;
         g_meteoRefreshOnlyRequested = true;
         g_meteoNextDiscoverMs = 0;
     }

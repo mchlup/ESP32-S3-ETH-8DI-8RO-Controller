@@ -243,7 +243,7 @@ static void sendApiOk(const JsonDocument& dataDoc, const ValidationResult* warni
     DynamicJsonDocument resp(dataDoc.memoryUsage() + extra);
     JsonObject root = resp.to<JsonObject>();
     root["ok"] = true;
-    root["data"] = dataDoc.as<JsonVariant>();
+    root["data"].set(dataDoc.as<JsonVariantConst>());
     JsonArray warnArr = root.createNestedArray("warnings");
     if (warnings) {
         appendValidationIssues(warnArr, *warnings, false);
@@ -637,14 +637,14 @@ void handleApiStatus() {
         JsonObject jsonDiag = diag.createNestedObject("json");
         const JsonDiagnostics& jd = jsonGetDiagnostics();
         jsonDiag["parseErrors"] = jd.parseErrors;
-        jsonDiag["lastError"] = jd.lastError.length() ? jd.lastError : nullptr;
+        if (jd.lastError.length()) jsonDiag["lastError"] = jd.lastError.c_str(); else jsonDiag["lastError"] = nullptr;
         jsonDiag["lastCapacity"] = (uint32_t)jd.lastCapacity;
         jsonDiag["lastUsage"] = (uint32_t)jd.lastUsage;
 
         JsonObject cfgDiag = diag.createNestedObject("config");
         cfgDiag["ok"] = g_configOk;
         cfgDiag["loadWarningsCount"] = g_configLoadWarningsCount;
-        cfgDiag["lastError"] = g_configLastError.length() ? g_configLastError : nullptr;
+        if (g_configLastError.length()) cfgDiag["lastError"] = g_configLastError.c_str(); else cfgDiag["lastError"] = nullptr;
 
         JsonObject cfg = diag.createNestedObject("configApply");
         cfg["ok"] = logicGetConfigApplyOkCount();

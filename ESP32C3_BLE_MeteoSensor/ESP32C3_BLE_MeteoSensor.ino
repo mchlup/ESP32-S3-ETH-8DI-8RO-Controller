@@ -400,6 +400,13 @@ void loop() {
         (unsigned)g_lux
       );
 
+      // Prime adv-broadcast immediately after the first valid reading (no need to wait for the periodic bcast tick).
+      if (!g_connected && g_haveReading && (int32_t)(now - g_nextAdvBcastMs) < 0) {
+        bleUpdateAdvBroadcast();
+        bleRequestAdvRestart();
+        g_nextAdvBcastMs = now + ADV_BCAST_PERIOD_MS;
+      }
+
       // 1) Kick po startu: první validní data -> okamžitě notify (pokud je klient už připojený)
       if (g_kickPending && !g_kickSent && g_connected) {
         meteoNotifyNow("kick_start_first_valid");
