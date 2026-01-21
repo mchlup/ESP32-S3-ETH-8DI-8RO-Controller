@@ -291,42 +291,64 @@ static bool handleFileRead(const String& path) {
     if (!fsIsReady()) return false;
     String p = path;
     if (p.endsWith("/")) p += "index.html";
+    const String basePath = p;
 
     String contentType = "text/plain";
-    if (p.endsWith(".html")) contentType = "text/html";
-    else if (p.endsWith(".css")) contentType = "text/css";
-    else if (p.endsWith(".js")) contentType = "application/javascript";
-    else if (p.endsWith(".json")) contentType = "application/json";
-    else if (p.endsWith(".png")) contentType = "image/png";
-    else if (p.endsWith(".jpg") || p.endsWith(".jpeg")) contentType = "image/jpeg";
-    else if (p.endsWith(".svg")) contentType = "image/svg+xml";
-    else if (p.endsWith(".ico")) contentType = "image/x-icon";
+    if (basePath.endsWith(".html")) contentType = "text/html";
+    else if (basePath.endsWith(".css")) contentType = "text/css";
+    else if (basePath.endsWith(".js")) contentType = "application/javascript";
+    else if (basePath.endsWith(".json")) contentType = "application/json";
+    else if (basePath.endsWith(".png")) contentType = "image/png";
+    else if (basePath.endsWith(".jpg") || basePath.endsWith(".jpeg")) contentType = "image/jpeg";
+    else if (basePath.endsWith(".svg")) contentType = "image/svg+xml";
+    else if (basePath.endsWith(".ico")) contentType = "image/x-icon";
+
+    const bool canGzip = basePath.endsWith(".js") || basePath.endsWith(".css");
+    bool useGzip = false;
+    String openPath = basePath;
+    if (canGzip && server.hasHeader("Accept-Encoding")) {
+        const String enc = server.header("Accept-Encoding");
+        if (enc.indexOf("gzip") >= 0) {
+            const String gzPath = basePath + ".gz";
+            fsLock();
+            const bool gzExists = LittleFS.exists(gzPath);
+            fsUnlock();
+            if (gzExists) {
+                useGzip = true;
+                openPath = gzPath;
+            }
+        }
+    }
 
     // FS zámek drž jen krátce (open/exists). Streamování může trvat dlouho a blokovalo by
     // paralelní FS operace (zápis konfigurace, upload atd.).
     fsLock();
-    if (!LittleFS.exists(p)) {
+    if (!LittleFS.exists(openPath)) {
         fsUnlock();
         return false;
     }
 
-    File f = LittleFS.open(p, "r");
+    File f = LittleFS.open(openPath, "r");
     fsUnlock();
     if (!f) {
         return false;
     }
 
-    // UI soubory nechceme cachovat – typicky řeší "změny se neprojevily".
-    // (index.html / app.js / styles.css / případně json configy)
-    if (p.endsWith(".html") || p.endsWith(".js") || p.endsWith(".css") || p.endsWith(".json")) {
+    if (basePath.endsWith(".html") || basePath.endsWith(".json")) {
         server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
         server.sendHeader("Pragma", "no-cache");
         server.sendHeader("Expires", "0");
+    } else if (basePath.endsWith(".js") || basePath.endsWith(".css")) {
+        server.sendHeader("Cache-Control", "public, max-age=31536000, immutable");
     } else {
         // Statické assety (obrázky) klidně cachuj – šetří to výkon.
         server.sendHeader("Cache-Control", "public, max-age=86400");
     }
 
+    if (useGzip) {
+        server.sendHeader("Content-Encoding", "gzip");
+        server.sendHeader("Vary", "Accept-Encoding");
+    }
     server.streamFile(f, contentType);
     fsLock();
     f.close();
@@ -1567,6 +1589,9 @@ void webserverInit() {
     if (fsIsReady() && !g_configLoaded) {
         loadConfigFromFS();
     }
+
+    const char* headerKeys[] = { "Accept-Encoding" };
+    server.collectHeaders(headerKeys, 1);
 
     server.on("/", HTTP_GET, []() {
         if (!fsIsReady()) {

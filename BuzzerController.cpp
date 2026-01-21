@@ -46,6 +46,55 @@ namespace {
   bool g_running = false;
 
   const char* CFG_PATH = "/buzzer.json";
+  const char* CFG_BAK_PATH = "/buzzer.json.bak";
+
+  bool loadBuzzerJsonFromPath(const char* path, StaticJsonDocument<768>& doc) {
+    if (!fsIsReady()) return false;
+    fsLock();
+    if (!LittleFS.exists(path)) {
+      fsUnlock();
+      return false;
+    }
+    File f = LittleFS.open(path, "r");
+    fsUnlock();
+    if (!f) return false;
+    DeserializationError err = deserializeJson(doc, f);
+    f.close();
+    if (err) return false;
+    return true;
+  }
+
+  bool writeBuzzerJsonAtomic(const String& data) {
+    return fsWriteAtomicKeepBak(CFG_PATH, data, CFG_BAK_PATH, true);
+  }
+
+  bool writeBuzzerJsonRestore(const String& data) {
+    if (!fsIsReady()) return false;
+    const String tmpPath = String(CFG_PATH) + ".tmp";
+    fsLock();
+    File f = LittleFS.open(tmpPath, "w");
+    if (!f) {
+      fsUnlock();
+      return false;
+    }
+    const size_t written = f.print(data);
+    f.flush();
+    f.close();
+    if (written != data.length()) {
+      LittleFS.remove(tmpPath);
+      fsUnlock();
+      return false;
+    }
+    if (LittleFS.exists(CFG_PATH)) {
+      LittleFS.remove(CFG_PATH);
+    }
+    const bool renamed = LittleFS.rename(tmpPath, CFG_PATH);
+    if (!renamed) {
+      LittleFS.remove(tmpPath);
+    }
+    fsUnlock();
+    return renamed;
+  }
 
   // --- PWM helpers (LEDC) ---
   // ESP32 Arduino core 3.x: LEDC API je pin-centric (ledcAttach/ledcWrite/ledcWriteTone/ledcDetach).
@@ -275,13 +324,6 @@ void buzzerUpdateFromJson(const JsonObject& cfg) {
 }
 
 bool buzzerSaveToFS() {
-  if (!fsIsReady()) return false;
-  fsLock();
-  File f = LittleFS.open(CFG_PATH, "w");
-  if (!f) {
-    fsUnlock();
-    return false;
-  }
   StaticJsonDocument<512> doc;
   doc["enabled"] = g_cfg.enabled;
   doc["activeHigh"] = g_cfg.activeHigh;
@@ -295,30 +337,28 @@ bool buzzerSaveToFS() {
   ev["relay_on"] = g_cfg.ev_relay_on;
   ev["relay_off"] = g_cfg.ev_relay_off;
   ev["error"] = g_cfg.ev_error;
-  serializeJson(doc, f);
-  f.close();
-  fsUnlock();
-  return true;
+  String payload;
+  serializeJson(doc, payload);
+  return writeBuzzerJsonAtomic(payload);
 }
 
 bool buzzerLoadFromFS() {
-  if (!fsIsReady()) return false;
-  fsLock();
-  if (!LittleFS.exists(CFG_PATH)) {
-    fsUnlock();
-    return false;
-  }
-  File f = LittleFS.open(CFG_PATH, "r");
-  if (!f) {
-    fsUnlock();
-    return false;
-  }
   StaticJsonDocument<768> doc;
-  DeserializationError err = deserializeJson(doc, f);
-  f.close();
-  fsUnlock();
-  if (err) return false;
+  bool usedBak = false;
+  if (!loadBuzzerJsonFromPath(CFG_PATH, doc)) {
+    StaticJsonDocument<768> bakDoc;
+    if (!loadBuzzerJsonFromPath(CFG_BAK_PATH, bakDoc)) {
+      return false;
+    }
+    doc.set(bakDoc.as<JsonObject>());
+    usedBak = true;
+  }
   JsonObject cfg = doc.as<JsonObject>();
   buzzerUpdateFromJson(cfg);
+  if (usedBak) {
+    String payload;
+    serializeJson(doc, payload);
+    writeBuzzerJsonRestore(payload);
+  }
   return true;
 }

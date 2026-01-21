@@ -1,1 +1,1 @@
-v3.3.11-p1 (DS18B20: multi sensors per GPIO0-3 + per-channel ROM dropdown; persist dallasGpios/dallasAddrs; tempRoles now applied in backend -> role-based sources for Ekviterm/DHW/Recirc)
+v3.3.12-p1 (WebUI cache+gzip, startup parallel fetch, polling throttling, buzzer atomic restore)

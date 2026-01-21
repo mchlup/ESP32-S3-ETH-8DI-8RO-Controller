@@ -7,6 +7,7 @@ const state = {
   bleStatus: null,
   blePaired: [],
   buzzerConfig: null,
+  activePage: "dashboard",
   polling: true,
   statusTimer: null,
   dashTimer: null,
@@ -20,6 +21,10 @@ const state = {
   backoff: {
     dashUntil: 0,
     bleUntil: 0,
+  },
+  curveThrottle: {
+    equitherm: { lastAt: 0, signature: "" },
+    dashEquitherm: { lastAt: 0, signature: "" },
   },
 };
 
@@ -1709,6 +1714,11 @@ A = 0%, B = 100%.`;
 function updateStatusUI() {
   const status = state.status || {};
   const network = status.wifi?.connected ? `Wi-Fi ${status.wifi.ip || ""}` : status.eth?.connected ? `ETH ${status.eth.ip || ""}` : "offline";
+  const page = getActivePage();
+  const onDashboard = page === "dashboard";
+  const onThermometers = page === "thermometers";
+  const onEquitherm = page === "equitherm";
+  const onValves = page === "valves";
   const setText = (id, text) => {
     const el = $(id);
     if (el) {
@@ -1729,52 +1739,60 @@ function updateStatusUI() {
   setText("dashMode", `${status.systemMode || "?"} • ${status.controlMode || "?"}`);
 
   const eq = status.equitherm || {};
-  setText("eqOutdoor", formatTemp(eq.outdoorC));
-  setText("eqTarget", formatTemp(eq.targetFlowC));
-  setText("eqFlow", formatTemp(eq.flowC));
-  setText("eqValve", eq.valvePosPct !== undefined ? `${eq.valvePosPct}%` : "—");
-  setText(
-    "dashEquitherm",
-    status.equitherm ? `${eq.enabled ? "ON" : "OFF"} / ${eq.active ? "active" : "idle"} / ${eq.reason || ""}` : "—",
-  );
+  if (onDashboard) {
+    setText("eqOutdoor", formatTemp(eq.outdoorC));
+    setText("eqTarget", formatTemp(eq.targetFlowC));
+    setText("eqFlow", formatTemp(eq.flowC));
+    setText("eqValve", eq.valvePosPct !== undefined ? `${eq.valvePosPct}%` : "—");
+    setText(
+      "dashEquitherm",
+      status.equitherm ? `${eq.enabled ? "ON" : "OFF"} / ${eq.active ? "active" : "idle"} / ${eq.reason || ""}` : "—",
+    );
 
-  // Mini status on Ekviterm page
-  setText("eqOutdoorMini", formatTemp(eq.outdoorC));
-  setText("eqTargetMini", formatTemp(eq.targetFlowC));
-  setText("eqFlowMini", formatTemp(eq.flowC));
-  setText("eqBoilerMini", formatTemp(eq.boilerInC));
-  updateValveDial($("eqValveDial"), eq.valvePosPct, eq.valveTargetPct, eq.valveMoving, { targetId: "eqValveTarget" });
-  updateValveDial($("dashEqValveDial"), eq.valvePosPct, null, eq.valveMoving, { moveId: "dashEqValveMove" });
+    updateValveDial($("dashEqValveDial"), eq.valvePosPct, null, eq.valveMoving, { moveId: "dashEqValveMove" });
 
-  const tuv = status.tuv || {};
-  setText("dashTuv", status.tuv ? `${tuv.enabled ? "ON" : "OFF"} / ${tuv.active ? "active" : "idle"} / ${tuv.reason || ""}` : "—");
-  setText("tuvDemand", tuv.demandActive ? "active" : "inactive");
-  setText("tuvRelay", tuv.boilerRelayOn ? "ON" : "OFF");
-  // Dashboard: 2-polohovy ventil (R3) jako 0/100%
-  updateValveDial($("dashTuvValveDial"), tuv.valvePosPct, null, tuv.valveMoving, { binary: true });
+    const tuv = status.tuv || {};
+    setText("dashTuv", status.tuv ? `${tuv.enabled ? "ON" : "OFF"} / ${tuv.active ? "active" : "idle"} / ${tuv.reason || ""}` : "—");
+    setText("tuvDemand", tuv.demandActive ? "active" : "inactive");
+    setText("tuvRelay", tuv.boilerRelayOn ? "ON" : "OFF");
+    // Dashboard: 2-polohovy ventil (R3) jako 0/100%
+    updateValveDial($("dashTuvValveDial"), tuv.valvePosPct, null, tuv.valveMoving, { binary: true });
 
-  const aku = status.akuHeater || {};
-  setText("dashAku", status.akuHeater ? `${aku.enabled ? "ON" : "OFF"} / ${aku.active ? "active" : "idle"} / ${aku.reason || ""}` : "—");
+    const aku = status.akuHeater || {};
+    setText("dashAku", status.akuHeater ? `${aku.enabled ? "ON" : "OFF"} / ${aku.active ? "active" : "idle"} / ${aku.reason || ""}` : "—");
 
-  setText("heapFree", status.heap?.free ?? "—");
-  setText("heapMin", status.heap?.minFree ?? "—");
-  setText("heapLargest", status.heap?.largest ?? "—");
+    setText("heapFree", status.heap?.free ?? "—");
+    setText("heapMin", status.heap?.minFree ?? "—");
+    setText("heapLargest", status.heap?.largest ?? "—");
 
-  renderRelayGrid(status.relays || [], status.valvesList || []);
-  renderInputGrid(status.inputs || []);
-  renderTempGrid(status.temps || []);
-  renderDashDhwTemps(status.temps || []);
-  renderDashAkuWidget(status.temps || [], status.relays || []);
-  updateThermometerTableLive();
-  drawEquithermCurve();
-  drawDashEquithermCurve();
+    renderRelayGrid(status.relays || [], status.valvesList || []);
+    renderInputGrid(status.inputs || []);
+    renderTempGrid(status.temps || []);
+    renderDashDhwTemps(status.temps || []);
+    renderDashAkuWidget(status.temps || [], status.relays || []);
+    drawDashEquithermCurveThrottled();
+  }
+
+  if (onEquitherm) {
+    // Mini status on Ekviterm page
+    setText("eqOutdoorMini", formatTemp(eq.outdoorC));
+    setText("eqTargetMini", formatTemp(eq.targetFlowC));
+    setText("eqFlowMini", formatTemp(eq.flowC));
+    setText("eqBoilerMini", formatTemp(eq.boilerInC));
+    updateValveDial($("eqValveDial"), eq.valvePosPct, eq.valveTargetPct, eq.valveMoving, { targetId: "eqValveTarget" });
+    drawEquithermCurveThrottled();
+  }
+
+  if (onThermometers) {
+    updateThermometerTableLive();
+  }
 
   const eqStatusEl = $("eqStatus");
-  if (eqStatusEl) {
+  if (eqStatusEl && onEquitherm) {
     eqStatusEl.textContent = JSON.stringify(eq || {}, null, 2);
   }
   const calStatusEl = $("calStatus");
-  if (calStatusEl) {
+  if (calStatusEl && onValves) {
     calStatusEl.textContent = JSON.stringify(status.valves || status.valvesList || {}, null, 2);
   }
 }
@@ -1794,7 +1812,9 @@ function updateDashUI() {
   if (bleMeteoAge) {
     bleMeteoAge.textContent = bleEntry?.ageMs ? `${bleEntry.ageMs} ms` : "—";
   }
-  updateThermometerTableLive();
+  if (getActivePage() === "thermometers") {
+    updateThermometerTableLive();
+  }
 }
 
 function renderRelayGrid(relays, valvesList) {
@@ -2793,10 +2813,58 @@ function drawDashEquithermCurve() {
   }
 }
 
+const curveThrottleMs = 10000;
+
+function getEquithermCurveSignature() {
+  const eq = state.config?.equitherm || {};
+  const refs = eq.refs || {};
+  const statusEq = state.status?.equitherm || {};
+  return JSON.stringify({
+    minFlow: eq.minFlow,
+    maxFlow: eq.maxFlow,
+    curveOffsetC: eq.curveOffsetC,
+    slopeDay: eq.slopeDay,
+    shiftDay: eq.shiftDay,
+    slopeNight: eq.slopeNight,
+    shiftNight: eq.shiftNight,
+    refsDay: refs.day || null,
+    refsNight: refs.night || null,
+    outdoorC: statusEq.outdoorC,
+    night: statusEq.night,
+  });
+}
+
+function shouldRedrawCurve(key, signature, force = false) {
+  const entry = state.curveThrottle[key] || { lastAt: 0, signature: "" };
+  const now = Date.now();
+  if (force || signature !== entry.signature || now - entry.lastAt >= curveThrottleMs) {
+    entry.lastAt = now;
+    entry.signature = signature;
+    state.curveThrottle[key] = entry;
+    return true;
+  }
+  return false;
+}
+
+function drawEquithermCurveThrottled(force = false) {
+  const signature = getEquithermCurveSignature();
+  if (shouldRedrawCurve("equitherm", signature, force)) {
+    drawEquithermCurve();
+  }
+}
+
+function drawDashEquithermCurveThrottled(force = false) {
+  const signature = getEquithermCurveSignature();
+  if (shouldRedrawCurve("dashEquitherm", signature, force)) {
+    drawDashEquithermCurve();
+  }
+}
+
 function setActiveSection(hash) {
   const page = (hash || "#dashboard").replace("#", "");
   const sections = Array.from(document.querySelectorAll(".section"));
   const active = sections.some((section) => section.id === page) ? page : "dashboard";
+  state.activePage = active;
   sections.forEach((section) => {
     section.classList.toggle("hidden", section.id !== active);
   });
@@ -2813,11 +2881,25 @@ function formatTemp(value) {
 }
 
 async function loadAll() {
-  try {
-    state.caps = await fetchJson("/api/caps");
-  } catch (error) {
-    console.warn(error);
-  }
+  state.caps = {};
+  const capsPromise = fetchJson("/api/caps")
+    .then((caps) => {
+      state.caps = caps || {};
+    })
+    .catch(() => {});
+
+  const blePromise = fetchJson("/api/ble/config")
+    .then((config) => {
+      state.bleConfig = config || {};
+    })
+    .catch(() => {});
+
+  const buzzerPromise = fetchJson("/api/buzzer")
+    .then((config) => {
+      state.buzzerConfig = config || {};
+    })
+    .catch(() => {});
+
   try {
     const cfg = await fetchJson("/api/config", { timeoutMs: 15000 });
     if (!cfg) {
@@ -2854,21 +2936,12 @@ async function loadAll() {
   initTuvTooltips();
   initTuvBindings();
   renderModeSelect();
-  drawEquithermCurve();
+  drawEquithermCurveThrottled(true);
 
-  try {
-    state.bleConfig = await fetchJson("/api/ble/config");
-    renderBleConfig();
-  } catch (error) {
-    console.warn(error);
-  }
-
-  try {
-    state.buzzerConfig = await fetchJson("/api/buzzer");
-    renderBuzzerConfig();
-  } catch (error) {
-    console.warn(error);
-  }
+  await Promise.allSettled([capsPromise, blePromise, buzzerPromise]);
+  renderCaps();
+  renderBleConfig();
+  renderBuzzerConfig();
 
   renderAdvancedJsonEditors();
   await refreshStatus();
@@ -2914,9 +2987,6 @@ async function refreshDash() {
       await loadBleStatus();
     }
 
-    renderEquithermSources();
-    renderAkuSources();
-    renderThermometers();
     updateDashUI();
   } finally {
     state.inFlight.dash = false;
