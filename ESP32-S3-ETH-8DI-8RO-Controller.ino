@@ -188,10 +188,10 @@ void setup() {
     }
 
     DallasController::begin();
-    DallasController::configureGpio(0, TEMP_INPUT_AUTO);
-    DallasController::configureGpio(1, TEMP_INPUT_AUTO);
-    DallasController::configureGpio(2, TEMP_INPUT_AUTO);
-    DallasController::configureGpio(3, TEMP_INPUT_AUTO);
+    DallasController::configureGpio(DALLAS_IO0_PIN, TEMP_INPUT_AUTO);
+    DallasController::configureGpio(DALLAS_IO1_PIN, TEMP_INPUT_AUTO);
+    DallasController::configureGpio(DALLAS_IO2_PIN, TEMP_INPUT_AUTO);
+    DallasController::configureGpio(DALLAS_IO3_PIN, TEMP_INPUT_AUTO);
 
     webserverInit();
     mqttInit();

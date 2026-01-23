@@ -1,3 +1,6 @@
+const API_TIMEOUT_STATUS_MS = 12000;
+const API_TIMEOUT_DASH_MS = 15000;
+
 const state = {
   config: null,
   caps: {},
@@ -322,6 +325,31 @@ function shouldPollDash() {
   return page === "dashboard" || page === "thermometers";
 }
 
+
+// ---- Dashboard temps helper ----
+// Dashboard expects TEMP1..8 primarily from /api/dash (temps + tempsValid).
+// Fallback to /api/status temps (object entries {valid,tempC}).
+function getDashTempsAsObjects() {
+  const temps = Array.isArray(state.dash?.temps) ? state.dash.temps : null;
+  if (!temps) return null;
+  const valid = Array.isArray(state.dash?.tempsValid) ? state.dash.tempsValid : null;
+  const out = [];
+  for (let i = 0; i < 8; i += 1) {
+    const t = temps[i];
+    const v = valid ? !!valid[i] : (t !== null && t !== undefined);
+    out.push({ tempC: t ?? null, valid: v });
+  }
+  return out;
+}
+
+function getTempsForDashboard() {
+  const dash = getDashTempsAsObjects();
+  if (dash) return dash;
+  const statusTemps = Array.isArray(state.status?.temps) ? state.status.temps : null;
+  return statusTemps || [];
+}
+
+
 function getPath(obj, path) {
   return path.split(".").reduce((acc, key) => {
     if (acc === null || acc === undefined) {
@@ -398,6 +426,66 @@ function bindInputs(container, data) {
   });
 }
 
+
+// Convert { "0": "x", "1": "y", ... } OR sparse objects into fixed-length array
+function indexedObjectToArray(value, len, fillValue = "") {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return Array.isArray(value) ? value.slice() : [];
+  }
+  const out = Array(len).fill(fillValue);
+  for (let i = 0; i < len; i += 1) {
+    const v = value[i] ?? value[String(i)];
+    if (v !== undefined) out[i] = v;
+  }
+  return out;
+}
+
+// Convert array -> { "0": ..., "1": ... } (backend-friendly for tempRoles)
+function arrayToIndexedObject(arr, len) {
+  const out = {};
+  const a = Array.isArray(arr) ? arr : [];
+  for (let i = 0; i < len; i += 1) {
+    out[String(i)] = a[i] ?? "";
+  }
+  return out;
+}
+
+function buildConfigForSave(cfg) {
+  const copy = JSON.parse(JSON.stringify(cfg || {}));
+  // Backend expects tempRoles as object (see API warnings: wrong_type -> "Přepsáno na objekt")
+  const tempRolesArr = indexedObjectToArray(copy.tempRoles, 8, "");
+  copy.tempRoles = arrayToIndexedObject(tempRolesArr, 8);
+  return copy;
+}
+
+function validateConfigPayload(payload, contextLabel = "config") {
+  const errs = [];
+  const warns = [];
+
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    errs.push(`${contextLabel}: payload must be an object`);
+  }
+
+  const tr = payload?.tempRoles;
+  if (tr !== undefined) {
+    if (!tr || typeof tr !== "object" || Array.isArray(tr)) {
+      errs.push(`${contextLabel}: tempRoles must be an object (not array)`);
+    } else {
+      for (let i = 0; i < 8; i += 1) {
+        const v = tr[String(i)];
+        if (v === undefined) warns.push(`${contextLabel}: tempRoles missing key "${i}"`);
+        if (v !== undefined && v !== null && typeof v !== "string") warns.push(`${contextLabel}: tempRoles["${i}"] should be string`);
+      }
+    }
+  }
+
+  if (warns.length) console.warn("Config payload warnings:", warns);
+  if (errs.length) {
+    console.error("Config payload errors:", errs);
+    throw new Error(errs[0]);
+  }
+}
+
 function ensureConfigDefaults() {
   state.config = state.config || {};
   if (!state.config.inputNames && Array.isArray(state.config.inputs)) {
@@ -413,19 +501,29 @@ function ensureConfigDefaults() {
   state.config.relayNames = state.config.relayNames || Array(8).fill("");
   state.config.inputActiveLevels = state.config.inputActiveLevels || Array(8).fill(0);
   state.config.relayMap = state.config.relayMap || Array.from({ length: 8 }, () => ({ input: 0, polarity: false }));
-  state.config.iofunc = state.config.iofunc || { inputs: [], outputs: [] };
-  state.config.iofunc.inputs = state.config.iofunc.inputs.length
-    ? state.config.iofunc.inputs
-    : Array.from({ length: 8 }, () => ({ role: "" }));
-  state.config.iofunc.outputs = state.config.iofunc.outputs.length
-    ? state.config.iofunc.outputs
-    : Array.from({ length: 8 }, () => ({ role: "", params: {} }));
+  state.config.iofunc = state.config.iofunc || {};
+  // Ensure arrays exist before accessing .length (prevents runtime crash when backend returns partial config)
+  state.config.iofunc.inputs =
+    Array.isArray(state.config.iofunc.inputs) && state.config.iofunc.inputs.length
+      ? state.config.iofunc.inputs
+      : Array.from({ length: 8 }, () => ({ role: "" }));
+  state.config.iofunc.outputs =
+    Array.isArray(state.config.iofunc.outputs) && state.config.iofunc.outputs.length
+      ? state.config.iofunc.outputs
+      : Array.from({ length: 8 }, () => ({ role: "", params: {} }));
   state.config.thermometers = state.config.thermometers || { mqtt: [{}, {}], ble: {} };
   state.config.thermometers.mqtt = state.config.thermometers.mqtt || [{}, {}];
   if (state.config.thermometers.mqtt.length < 2) {
     state.config.thermometers.mqtt = [state.config.thermometers.mqtt[0] || {}, {}];
   }
-  state.config.tempRoles = Array.isArray(state.config.tempRoles) ? state.config.tempRoles : [];
+  // Accept both array and object shapes (backend may sanitize to object)
+  if (Array.isArray(state.config.tempRoles)) {
+    state.config.tempRoles = state.config.tempRoles.slice();
+  } else if (state.config.tempRoles && typeof state.config.tempRoles === "object") {
+    state.config.tempRoles = indexedObjectToArray(state.config.tempRoles, 8, "");
+  } else {
+    state.config.tempRoles = [];
+  }
   if (state.config.tempRoles.length < 8) {
     state.config.tempRoles = state.config.tempRoles.concat(Array(8 - state.config.tempRoles.length).fill(""));
   } else if (state.config.tempRoles.length > 8) {
@@ -943,16 +1041,26 @@ function roleOptionsHtml(selected) {
 }
 
 function formatThermoStatus(entry) {
-  if (!entry) {
+  if (entry === undefined || entry === null) {
     return { text: "—", muted: true };
   }
-  const valid = entry.valid !== false;
-  if (entry.tempC === undefined || entry.tempC === null) {
-    const age = entry.ageMs !== undefined ? ` • age ${entry.ageMs} ms` : "";
-    return { text: (valid ? "no data" : "invalid") + age, muted: !valid };
+
+  // Unify different payload shapes (backend + legacy UI variants)
+  const normalized = normalizeTempEntry(entry);
+  const valid = normalized.valid !== false;
+
+  // Preserve age if present (BLE/MQTT may report ageMs)
+  const ageMs =
+    (entry && typeof entry === "object" && (entry.ageMs ?? entry.age ?? entry.age_ms) !== undefined)
+      ? (entry.ageMs ?? entry.age ?? entry.age_ms)
+      : normalized.ageMs;
+  const age = ageMs !== undefined && ageMs !== null ? ` • age ${ageMs} ms` : "";
+
+  if (normalized.tempC === undefined || normalized.tempC === null || Number.isNaN(Number(normalized.tempC))) {
+    return { text: (valid ? "—" : "invalid") + age, muted: !valid };
   }
-  const age = entry.ageMs !== undefined ? ` • age ${entry.ageMs} ms` : "";
-  return { text: `${entry.tempC} °C${valid ? "" : " • invalid"}${age}`, muted: !valid };
+
+  return { text: `${formatTemp(normalized.tempC)}${valid ? "" : " • invalid"}${age}`, muted: !valid };
 }
 
 function escapeHtml(value) {
@@ -1017,9 +1125,42 @@ function renderThermometerOverviewTable() {
   }
 
   // GPIO TEMP1..8 (DS18B20 via GPIO0..3, per-channel ROM selection)
-  const temps = state.status?.temps || [];
+  // Prefer /api/dash temps (more reliable + already normalized), fallback to /api/status.
+  const dashTemps = Array.isArray(state.dash?.temps) ? state.dash.temps : null;
+  const dashValid = Array.isArray(state.dash?.tempsValid) ? state.dash.tempsValid : null;
+  const statusTemps = Array.isArray(state.status?.temps) ? state.status.temps : [];
   for (let i = 0; i < 8; i += 1) {
-    const raw = temps[i];
+    if (dashTemps) {
+      const t = dashTemps[i];
+      const v = dashValid ? !!dashValid[i] : (t !== null && t !== undefined);
+      const entry = { tempC: t, valid: v };
+      const role = state.config?.tempRoles?.[i] ?? "";
+      const defGpio = i <= 3 ? String(i) : "";
+      const selectedGpio = state.config?.dallasGpios?.[i];
+      const gpioStr = selectedGpio === undefined || selectedGpio === null ? defGpio : String(selectedGpio);
+      const gpioNum = gpioStr === "" ? -1 : Number(gpioStr);
+      const selectedRom = state.config?.dallasAddrs?.[i] || "";
+      let idTitle = "";
+      if (gpioNum >= 0 && gpioNum <= 3) {
+        const bus = getDallasBusByGpio(gpioNum);
+        const roms = listDallasRomsOnBus(bus);
+        if (roms.length) idTitle = `Detekované ROM na ${gpioStr}: ${roms.join(", ")}`;
+      }
+      rows.push({
+        source: "GPIO",
+        nameCell: `<span class="mono">TEMP${i + 1}</span>`,
+        roleCell: `<select data-path="tempRoles.${i}">${roleOptionsHtml(role)}</select>`,
+        idCell: `<div class="inline wrap">
+          <select class="mono" data-path="dallasGpios.${i}">${buildDallasGpioOptions(gpioStr)}</select>
+          <select class="mono" data-path="dallasAddrs.${i}" title="${escapeHtml(idTitle)}">${buildDallasRomOptions(gpioNum, selectedRom)}</select>
+        </div>`,
+        tempCell: `<span id="thermoLive_gpio_${i}" class="mono">—</span>`,
+        liveEntry: entry,
+        liveId: `thermoLive_gpio_${i}`,
+      });
+      continue;
+    }
+    const raw = statusTemps[i];
     const entry = typeof raw === "number" ? { tempC: raw, valid: true } : raw || {};
 
     const role = state.config?.tempRoles?.[i] ?? "";
@@ -1713,7 +1854,19 @@ A = 0%, B = 100%.`;
 
 function updateStatusUI() {
   const status = state.status || {};
-  const network = status.wifi?.connected ? `Wi-Fi ${status.wifi.ip || ""}` : status.eth?.connected ? `ETH ${status.eth.ip || ""}` : "offline";
+
+  // /api/status provides network under `wifi` with { connected, ip, link: "wifi"|"eth"|"down" }.
+  // Older UI variants used `eth.*` which is not present.
+  let network = "offline";
+  if (status.wifi?.connected) {
+    const link = String(status.wifi?.link || "").toLowerCase();
+    const ip = status.wifi?.ip || "";
+    let label = "NET";
+    if (link === "wifi") label = "Wi‑Fi";
+    else if (link === "eth") label = "ETH";
+    else if (link === "down") label = "offline";
+    network = `${label} ${ip}`.trim();
+  }
   const page = getActivePage();
   const onDashboard = page === "dashboard";
   const onThermometers = page === "thermometers";
@@ -1735,6 +1888,63 @@ function updateStatusUI() {
   const bleLabel = ble?.enabled === false ? "disabled" : bleOnline ? "online" : "offline";
   setText("statusBle", `BLE: ${bleLabel}`);
   setText("statusMode", `Režim: ${status.systemMode || "?"} / ${status.controlMode || "?"}`);
+
+// ---- Advanced diagnostics (optional UI elements) ----
+// Network details
+if ($("diagNet")) {
+  const link = String(status.wifi?.link || "").toLowerCase();
+  const ip = status.wifi?.ip || "—";
+  const rssi = typeof status.wifi?.rssi === "number" ? `${status.wifi.rssi} dBm` : "—";
+  setText("diagNet", `Síť: ${link || "?"} • IP ${ip}`);
+  setText("diagWifiRssi", `Wi‑Fi RSSI: ${rssi}`);
+}
+
+// Time / RTC
+if ($("diagTime")) {
+  const t = status.time || {};
+  const valid = t.valid ? "OK" : "neplatný";
+  const iso = t.iso || "—";
+  const src = t.source || "—";
+  const rtc = t.rtcPresent ? "RTC: ano" : "RTC: ne";
+  setText("diagTime", `Čas: ${valid} • ${iso} • ${src} • ${rtc}`);
+}
+
+// BLE transport health
+if ($("diagBle")) {
+  const b = status.ble || {};
+  const st = b.state || "—";
+  const age = typeof b.lastDataAge === "number" ? `${b.lastDataAge} ms` : "—";
+  const rec = typeof b.reconnects === "number" ? b.reconnects : "—";
+  const fail = typeof b.failCount === "number" ? b.failCount : "—";
+  setText("diagBle", `BLE: ${st} • age ${age} • recon ${rec} • fail ${fail}`);
+}
+
+// I2C / relay expander diagnostics
+if ($("diagI2c")) {
+  const i2c = status.diag?.i2c || {};
+  const ok = i2c.ok ? "OK" : "FAIL";
+  const err = typeof i2c.relayErrors === "number" ? i2c.relayErrors : "—";
+  const rec = typeof i2c.relayRecoveries === "number" ? i2c.relayRecoveries : "—";
+  const fc = typeof i2c.failCount === "number" ? i2c.failCount : "—";
+  const last = i2c.relayLastError ? ` • last: ${i2c.relayLastError}` : "";
+  setText("diagI2c", `I2C/Relé: ${ok} • err ${err} • rec ${rec} • failCount ${fc}${last}`);
+}
+
+// JSON diagnostics (parsing/config)
+if ($("diagJson")) {
+  const j = status.diag?.json || {};
+  const pe = typeof j.parseErrors === "number" ? j.parseErrors : "—";
+  const le = j.lastError ? ` • last: ${j.lastError}` : "";
+  setText("diagJson", `JSON: parseErrors ${pe}${le}`);
+}
+
+if ($("diagConfig")) {
+  const c = status.diag?.config || {};
+  const ok = c.ok ? "OK" : "FAIL";
+  const w = typeof c.loadWarningsCount === "number" ? c.loadWarningsCount : "—";
+  const le = c.lastError ? ` • last: ${c.lastError}` : "";
+  setText("diagConfig", `Config: ${ok} • warnings ${w}${le}`);
+}
 
   setText("dashMode", `${status.systemMode || "?"} • ${status.controlMode || "?"}`);
 
@@ -1767,9 +1977,10 @@ function updateStatusUI() {
 
     renderRelayGrid(status.relays || [], status.valvesList || []);
     renderInputGrid(status.inputs || []);
-    renderTempGrid(status.temps || []);
-    renderDashDhwTemps(status.temps || []);
-    renderDashAkuWidget(status.temps || [], status.relays || []);
+    const tempsForDash = getTempsForDashboard();
+    renderTempGrid(tempsForDash);
+    renderDashDhwTemps(tempsForDash);
+    renderDashAkuWidget(tempsForDash, status.relays || []);
     drawDashEquithermCurveThrottled();
   }
 
@@ -1802,15 +2013,26 @@ function updateDashUI() {
   const bleEntry = bleTemps[0];
   const bleMeteoTemp = $("bleMeteoTemp");
   if (bleMeteoTemp) {
-    bleMeteoTemp.textContent = bleEntry ? formatTemp(bleEntry.tempC) : "—";
+    const tempC = bleEntry?.tempC ?? state.dash?.ble?.meteoTempC;
+    bleMeteoTemp.textContent = formatTemp(tempC);
   }
   const bleMeteoFix = $("bleMeteoFix");
   if (bleMeteoFix) {
-    bleMeteoFix.textContent = state.status?.ble?.meteoFix ?? bleEntry?.valid ?? "—";
+    // NOTE:
+    // /api/dash provides { ble: { meteoFix, meteoTempC } } and bleTemps[].valid.
+    // /api/status provides BLE transport health (state/age), but not meteoFix.
+    bleMeteoFix.textContent = state.dash?.ble?.meteoFix ?? bleEntry?.valid ?? "—";
   }
   const bleMeteoAge = $("bleMeteoAge");
   if (bleMeteoAge) {
-    bleMeteoAge.textContent = bleEntry?.ageMs ? `${bleEntry.ageMs} ms` : "—";
+    const ageMs = state.status?.ble?.lastDataAge ?? bleEntry?.ageMs;
+    bleMeteoAge.textContent = typeof ageMs === "number" ? `${ageMs} ms` : "—";
+  }
+  if (getActivePage() === "dashboard") {
+    const tempsForDash = getTempsForDashboard();
+    renderTempGrid(tempsForDash);
+    renderDashDhwTemps(tempsForDash);
+    renderDashAkuWidget(tempsForDash, state.status?.relays || []);
   }
   if (getActivePage() === "thermometers") {
     updateThermometerTableLive();
@@ -1850,13 +2072,80 @@ function renderInputGrid(inputs) {
   }
 }
 
+
+// Normalize temperature entry from /api/status (supports legacy shapes)
+function normalizeTempEntry(raw) {
+  const parseTempNumber = (value) => {
+    if (value === undefined || value === null) return null;
+    if (typeof value === "number") return Number.isFinite(value) ? value : null;
+    if (typeof value === "string") {
+      const cleaned = value.trim().replace(",", ".");
+      const n = Number(cleaned);
+      if (Number.isFinite(n)) return n;
+      const f = parseFloat(cleaned);
+      return Number.isFinite(f) ? f : null;
+    }
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  if (raw === undefined || raw === null) return { tempC: null, valid: false, ageMs: undefined };
+  if (typeof raw === "number") return { tempC: raw, valid: true, ageMs: undefined };
+
+  // Legacy/compact shapes: [tempC, valid] or [valid, tempC]
+  if (Array.isArray(raw)) {
+    const a = raw;
+    let tempCandidate = null;
+    let validCandidate = true;
+
+    if (a.length >= 2) {
+      if (typeof a[0] === "boolean") {
+        validCandidate = a[0];
+        tempCandidate = a[1];
+      } else if (typeof a[1] === "boolean") {
+        tempCandidate = a[0];
+        validCandidate = a[1];
+      } else {
+        tempCandidate = a[0];
+        validCandidate = true;
+      }
+    } else if (a.length === 1) {
+      tempCandidate = a[0];
+      validCandidate = true;
+    }
+
+    return { tempC: parseTempNumber(tempCandidate), valid: validCandidate !== false, ageMs: undefined };
+  }
+
+  if (typeof raw !== "object") return { tempC: null, valid: false, ageMs: undefined };
+
+  // Common shapes: { valid, tempC } or { value, valid } or { c, valid }
+  const tempCandidate =
+    raw.tempC !== undefined
+      ? raw.tempC
+      : raw.value !== undefined
+        ? raw.value
+        : raw.c !== undefined
+          ? raw.c
+          : raw.t !== undefined
+            ? raw.t
+            : raw.temp !== undefined
+              ? raw.temp
+              : null;
+
+  const valid = raw.valid !== false && raw.ok !== false;
+  const ageMs = raw.ageMs ?? raw.age ?? raw.age_ms;
+
+  return { tempC: parseTempNumber(tempCandidate), valid, ageMs };
+}
+
 function buildThermometerEntries(temps) {
   const entries = [];
 
   // TEMP1..8 (GPIO)
   for (let i = 0; i < 8; i += 1) {
     const raw = temps?.[i];
-    const entry = typeof raw === "number" ? { tempC: raw, valid: true } : raw || {};
+    const entry = normalizeTempEntry(raw);
     const role = state.config?.tempRoles?.[i] ?? "";
     entries.push({
       title: `TEMP${i + 1}`,
@@ -1902,17 +2191,25 @@ function buildThermometerEntries(temps) {
 
 function renderTempGrid(temps) {
   const container = $("tempGrid");
+  if (!container) return;
   container.innerHTML = "";
 
   const entries = buildThermometerEntries(temps);
 
-  // Render
+  // Render (always show 8 slots so user sees wiring/health even if missing data)
   entries.forEach((e) => {
     const chip = document.createElement("div");
     chip.className = `temp-chip ${e.valid ? "" : "invalid"}`;
     const roleLabel = getThermoRoleLabel(e.role);
+
+    // Use formatTemp when we have a number; otherwise show placeholder
+    const mainValue =
+      e.tempC === undefined || e.tempC === null || Number.isNaN(Number(e.tempC))
+        ? "—"
+        : formatTemp(e.tempC);
+
     chip.innerHTML = `
-      <div class="temp-main">${escapeHtml(e.title)} ${e.tempC ?? "—"} °C</div>
+      <div class="temp-main">${escapeHtml(e.title)} ${escapeHtml(mainValue)}</div>
       <div class="temp-role">${escapeHtml(roleLabel)}</div>
     `;
     container.appendChild(chip);
@@ -2950,14 +3247,20 @@ async function loadAll() {
 
 async function refreshStatus() {
   // Avoid fighting with heavier endpoints (/api/dash, BLE)
-  if (state.inFlight.status || state.inFlight.dash || state.inFlight.bleStatus) {
+  if (state.inFlight.status) {
     return;
   }
   state.inFlight.status = true;
   try {
-    const result = await fetchJson("/api/status", { timeoutMs: 2000 });
-    state.status = result || {};
-    $("statusDump").textContent = JSON.stringify(state.status, null, 2);
+    const result = await fetchJson("/api/status", { timeoutMs: API_TIMEOUT_STATUS_MS });
+
+    // If timeout/abort -> fetchJson returns null. Do NOT wipe last known status.
+    if (result) {
+      state.status = result;
+    }
+    if (!state.status) state.status = {};
+    const dumpEl = $("statusDump");
+    if (dumpEl) dumpEl.textContent = JSON.stringify(state.status, null, 2);
     updateStatusUI();
   } finally {
     state.inFlight.status = false;
@@ -2975,7 +3278,7 @@ async function refreshDash() {
   state.inFlight.dash = true;
   try {
     // /api/dash can occasionally be slower when ESP is busy (BLE, FS, MQTT)
-    const result = await fetchJson("/api/dash", { timeoutMs: 7000 });
+    const result = await fetchJson("/api/dash", { timeoutMs: API_TIMEOUT_DASH_MS });
     if (!result) {
       // Temporary backoff to avoid hammering ESP32 when it is busy
       state.backoff.dashUntil = Date.now() + 8000;
@@ -3065,10 +3368,12 @@ async function saveConfigSection(section) {
 
   try {
     // Backend očekává celé config JSON (ne wrapper). Filtruje pouze povolené klíče.
+    const payload = buildConfigForSave(state.config);
+    validateConfigPayload(payload, `save:${section}`);
     const result = await fetchJson("/api/config", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(state.config),
+      body: JSON.stringify(payload),
       timeoutMs: 15000,
     });
 
@@ -3936,6 +4241,23 @@ function setupEvents() {
     await refreshDash();
     await loadBleStatus();
   });
+
+  const runWebTest = $("runWebTest");
+  if (runWebTest) {
+    runWebTest.addEventListener("click", async () => {
+      const dump = $("webTestDump");
+      if (dump) dump.textContent = "Načítám...";
+      try {
+        const res = await fetchJson("/api/webtest", { timeoutMs: 15000 });
+        if (dump) dump.textContent = JSON.stringify(res, null, 2);
+        toast("Webtest OK");
+      } catch (e) {
+        if (dump) dump.textContent = `Chyba: ${e?.message || e}`;
+        toast("Webtest selhal", "error");
+      }
+    });
+  }
+
   $("pausePolling").addEventListener("click", () => {
     state.polling = !state.polling;
     $("pausePolling").textContent = state.polling ? "Pozastavit" : "Spustit";
@@ -4105,6 +4427,42 @@ function initRoleLists() {
   });
   document.body.appendChild(thermoList);
 }
+
+
+// Debug helper: run from DevTools console:
+//   await window.__runConfigRoundtripTest("thermometers")
+window.__runConfigRoundtripTest = async function __runConfigRoundtripTest(section = "all") {
+  const payload = buildConfigForSave(state.config);
+  validateConfigPayload(payload, `test:${section}`);
+  const before = JSON.parse(JSON.stringify(payload));
+  const res = await fetchJson("/api/config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    timeoutMs: 15000,
+  });
+  const after = await fetchJson("/api/config", { timeoutMs: 15000 });
+  const diffs = [];
+  function walk(a, b, p) {
+    if (a === b) return;
+    if (a && b && typeof a === "object" && typeof b === "object" && !Array.isArray(a) && !Array.isArray(b)) {
+      const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+      for (const k of keys) walk(a[k], b[k], p ? `${p}.${k}` : k);
+      return;
+    }
+    if (Array.isArray(a) && Array.isArray(b)) {
+      const n = Math.max(a.length, b.length);
+      for (let i = 0; i < n; i += 1) walk(a[i], b[i], `${p}[${i}]`);
+      return;
+    }
+    diffs.push({ path: p, before: a, after: b });
+  }
+  walk(before, after, "");
+  if (diffs.length) console.warn("Config roundtrip diffs:", diffs);
+  else console.log("Config roundtrip OK");
+  return { ok: true, diffs, response: res };
+};
+
 
 document.addEventListener("DOMContentLoaded", async () => {
   initRoleLists();

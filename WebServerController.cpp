@@ -40,10 +40,17 @@ static bool g_configLoaded = false;
 static DynamicJsonDocument g_dashDoc(32768);
 // /api/status narostlo (equitherm + TUV + recirc + opentherm + valves). 12k bývá na hraně a
 // vede k neúplným odpovědím (ArduinoJson při nedostatku kapacity tiše "ořeže" vnořené části).
-static DynamicJsonDocument g_statusDoc(24576);
+static DynamicJsonDocument g_statusDoc(32768);
 static bool g_configOk = false;
 static String g_configLastError = "";
 static uint32_t g_configLoadWarningsCount = 0;
+
+// --- Web JSON build diagnostics (for /api/webtest) ---
+static uint32_t g_statusBuildMs = 0;
+static bool g_statusOverflowed = false;
+static uint32_t g_dashBuildMs = 0;
+static bool g_dashOverflowed = false;
+static uint32_t g_dashBuiltAtMs = 0;
 
 
 // --- Validation helpers: reserve relays used by 3-way valves so they cannot be used elsewhere ---
@@ -441,6 +448,7 @@ static void loadConfigFromFS() {
 
 // ===== API dash (Dashboard V2) =====
 static void handleApiDash() {
+    const uint32_t t0 = (uint32_t)millis();
     DynamicJsonDocument& doc = g_dashDoc;
     doc.clear();
 
@@ -486,6 +494,7 @@ static void handleApiDash() {
         const BleThermometerCfg& bc = thermometersGetBle();
         float tC = NAN;
         bool ok = bleGetTempCById(bc.id, tC);
+        const uint32_t bleAgeMs = bleGetLastDataAgeMs();
 
         {
             JsonObject o = bleTemps.createNestedObject();
@@ -493,6 +502,7 @@ static void handleApiDash() {
             o["label"] = bc.name.length() ? bc.name : "BLE";
             o["valid"] = ok && isfinite(tC);
             if (ok && isfinite(tC)) o["tempC"] = tC; else o["tempC"] = nullptr;
+            o["ageMs"] = bleAgeMs;
         }
 
         // stručný stav (pro rychlé kontroly)
@@ -546,6 +556,9 @@ static void handleApiDash() {
     }
 
     // ✅ Stream JSON bez String out
+    g_dashBuildMs = (uint32_t)((uint32_t)millis() - t0);
+    g_dashOverflowed = doc.overflowed();
+    g_dashBuiltAtMs = (uint32_t)millis();
     sendJsonStreamed200(doc);
 }
 
@@ -571,6 +584,8 @@ void handleApiStatus() {
         sendJsonStreamed200(g_statusDoc);
         return;
     }
+
+    const uint32_t t0 = (uint32_t)millis();
 
     // Stabilní status přes ArduinoJson (bez ručního skládání Stringů)
     DynamicJsonDocument& doc = g_statusDoc;
@@ -847,6 +862,9 @@ void handleApiStatus() {
     // Aktualizuj cache timestamp pro případ, že UI pošle několik requestů těsně po sobě.
     g_statusCacheAtMs = nowMs;
     g_statusCacheValid = true;
+
+    g_statusBuildMs = (uint32_t)((uint32_t)millis() - t0);
+    g_statusOverflowed = doc.overflowed();
 
     // ✅ Stream JSON bez String out
     sendJsonStreamed200(doc);
@@ -1551,7 +1569,67 @@ static void handleApiBuzzerPost() {
 
 // ===== API time/caps =====
 
-static void handleApiTime() {
+static 
+// ===== API webtest =====
+// Lightweight runtime diagnostics for Web UI troubleshooting.
+// Reports JSON sizes, ArduinoJson overflow flags and build times for /api/status and /api/dash.
+void handleApiWebTest() {
+    DynamicJsonDocument data(4096);
+    JsonObject root = data.to<JsonObject>();
+
+    root["uptimeMs"] = (uint32_t)millis();
+
+    // Heap snapshot
+    JsonObject heap = root.createNestedObject("heap");
+    heap["free"] = (uint32_t)ESP.getFreeHeap();
+    heap["minFree"] = (uint32_t)ESP.getMinFreeHeap();
+    heap["largest"] = (uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+
+    // Status doc snapshot (last built)
+    JsonObject st = root.createNestedObject("status");
+    st["cacheValid"] = g_statusCacheValid;
+    st["cacheAgeMs"] = g_statusCacheValid ? (uint32_t)((uint32_t)millis() - g_statusCacheAtMs) : 0;
+    st["bytes"] = (uint32_t)measureJson(g_statusDoc);
+    st["capacity"] = (uint32_t)g_statusDoc.capacity();
+    st["memoryUsage"] = (uint32_t)g_statusDoc.memoryUsage();
+    st["overflowed"] = g_statusOverflowed || g_statusDoc.overflowed();
+    st["buildMs"] = g_statusBuildMs;
+
+    // Basic required-shape checks (helps catch doc truncation/overflow)
+    JsonObject stReq = st.createNestedObject("required");
+    stReq["hasWifi"] = g_statusDoc.containsKey("wifi");
+    stReq["hasMqtt"] = g_statusDoc.containsKey("mqtt");
+    stReq["hasBle"]  = g_statusDoc.containsKey("ble");
+    stReq["hasDiag"] = g_statusDoc.containsKey("diag");
+    stReq["tempsCount"] = g_statusDoc["temps"].is<JsonArray>() ? (uint32_t)g_statusDoc["temps"].as<JsonArray>().size() : 0;
+    stReq["relaysCount"] = g_statusDoc["relays"].is<JsonArray>() ? (uint32_t)g_statusDoc["relays"].as<JsonArray>().size() : 0;
+
+    // Dash doc snapshot (last built)
+    JsonObject dh = root.createNestedObject("dash");
+    dh["cacheValid"] = g_dashBuiltAtMs != 0;
+    dh["cacheAgeMs"] = g_dashBuiltAtMs ? (uint32_t)((uint32_t)millis() - g_dashBuiltAtMs) : 0;
+    dh["bytes"] = (uint32_t)measureJson(g_dashDoc);
+    dh["capacity"] = (uint32_t)g_dashDoc.capacity();
+    dh["memoryUsage"] = (uint32_t)g_dashDoc.memoryUsage();
+    dh["overflowed"] = g_dashOverflowed || g_dashDoc.overflowed();
+    dh["buildMs"] = g_dashBuildMs;
+
+    JsonObject dhReq = dh.createNestedObject("required");
+    dhReq["tempsCount"] = g_dashDoc["temps"].is<JsonArray>() ? (uint32_t)g_dashDoc["temps"].as<JsonArray>().size() : 0;
+    dhReq["tempsValidCount"] = g_dashDoc["tempsValid"].is<JsonArray>() ? (uint32_t)g_dashDoc["tempsValid"].as<JsonArray>().size() : 0;
+
+    // Config snapshot
+    JsonObject cfg = root.createNestedObject("config");
+    cfg["loaded"] = g_configLoaded;
+    cfg["ok"] = g_configOk;
+    cfg["warnings"] = g_configLoadWarningsCount;
+    cfg["jsonBytes"] = (uint32_t)g_configJson.length();
+
+    sendApiOk(data);
+}
+
+
+void handleApiTime() {
     StaticJsonDocument<512> doc;
     doc["valid"] = networkIsTimeValid();
     doc["epoch"] = (uint32_t)networkGetTimeEpoch();
@@ -1634,6 +1712,7 @@ void webserverInit() {
     // API
     server.on("/api/dash", HTTP_GET, handleApiDash);
     server.on("/api/status", HTTP_GET, handleApiStatus);
+    server.on("/api/webtest", HTTP_GET, handleApiWebTest);
     server.on("/api/time", HTTP_GET, handleApiTime);
     server.on("/api/caps", HTTP_GET, handleApiCaps);
 

@@ -1,1 +1,1 @@
-v3.3.12-p1 (WebUI cache+gzip, startup parallel fetch, polling throttling, buzzer atomic restore)
+v3.3.12-p2 (WebUI diag fields for /api/status, network link fix)

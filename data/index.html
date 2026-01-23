@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>ESP32-S3 Topný systém</title>
-  <link rel="stylesheet" href="/css/app.css?v=v3.3.12-p1" />
+  <link rel="stylesheet" href="/css/app.css?v=v3.3.12-p3" />
   <link rel="icon" href="/favicon.ico" />
 </head>
 <body>
@@ -153,7 +153,20 @@
           </div>
           <div class="card">
             <h2>Diagnostika</h2>
-            <div class="metric-grid">
+            <div class="grid two" style="margin-bottom: 12px;">
+              <div class="stack">
+                <div class="status-pill" id="diagNet">Síť: —</div>
+                <div class="status-pill" id="diagWifiRssi">Wi‑Fi RSSI: —</div>
+                <div class="status-pill" id="diagTime">Čas: —</div>
+              </div>
+              <div class="stack">
+                <div class="status-pill" id="diagBle">BLE: —</div>
+                <div class="status-pill" id="diagI2c">I2C/Relé: —</div>
+                <div class="status-pill" id="diagJson">JSON: —</div>
+                <div class="status-pill" id="diagConfig">Config: —</div>
+              </div>
+            </div>
+<div class="metric-grid">
               <div><span class="label">Heap free</span><span id="heapFree">—</span></div>
               <div><span class="label">Heap min</span><span id="heapMin">—</span></div>
               <div><span class="label">Heap largest</span><span id="heapLargest">—</span></div>
@@ -643,6 +656,12 @@
           <pre id="capsDump" class="code-block"></pre>
           <pre id="statusDump" class="code-block"></pre>
         </div>
+        <div class="card">
+          <h2>Test dat webserveru</h2>
+          <p class="hint">Ověření velikosti JSON a případného overflow (ArduinoJson) pro /api/status a /api/dash.</p>
+          <button class="btn" id="runWebTest">Spustit test</button>
+          <pre id="webTestDump" class="code-block"></pre>
+        </div>
         <div class="card danger">
           <h2>Reboot zařízení</h2>
           <p>Vyžaduje potvrzení.</p>
@@ -654,6 +673,6 @@
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
-  <script src="/js/app.js?v=v3.3.12-p1"></script>
+  <script src="/js/app.js?v=v3.3.12-p3"></script>
 </body>
 </html>
