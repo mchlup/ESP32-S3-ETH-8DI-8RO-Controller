@@ -827,6 +827,20 @@ function ensureConfigDefaults() {
   if (aku.relay === undefined) aku.relay = 8;
   aku.windows = Array.isArray(aku.windows) ? aku.windows : [];
 
+  // --- OpenTherm defaulty (UI-only, backend může klíče ignorovat pokud nejsou podporované) ---
+  state.config.opentherm = state.config.opentherm || {};
+  const ot = state.config.opentherm;
+  if (ot.enabled === undefined) ot.enabled = false;
+  if (!ot.mode) ot.mode = "gateway"; // gateway | monitor | thermostat
+  if (ot.invert === undefined) ot.invert = false;
+  // rxGpio/txGpio necháváme bez defaultu (HW závislé)
+  if (ot.pollMs === undefined) ot.pollMs = 2000;
+  if (ot.publishMs === undefined) ot.publishMs = 5000;
+  ot.mqtt = ot.mqtt || {};
+  if (ot.mqtt.enabled === undefined) ot.mqtt.enabled = false;
+  if (ot.mqtt.baseTopic === undefined) ot.mqtt.baseTopic = "opentherm";
+  if (ot.haDiscovery === undefined) ot.haDiscovery = true;
+
   // Keep Equitherm sources aligned with roles from "Teploměry".
   autoAssignEquithermSourcesFromRoles();
 }
@@ -1889,6 +1903,13 @@ function updateStatusUI() {
   setText("statusBle", `BLE: ${bleLabel}`);
   setText("statusMode", `Režim: ${status.systemMode || "?"} / ${status.controlMode || "?"}`);
 
+  // OpenTherm diagnostics (optional)
+  const ot = status.opentherm || status.openTherm || status.ot || null;
+  const otPre = $("openthermStatus");
+  if (otPre) {
+    otPre.textContent = ot ? JSON.stringify(ot, null, 2) : "—";
+  }
+
 // ---- Advanced diagnostics (optional UI elements) ----
 // Network details
 if ($("diagNet")) {
@@ -2796,6 +2817,57 @@ Typicky 0 % (zavřít topný okruh).`,
   });
 }
 
+function initOpenThermTooltips() {
+  const section = $("opentherm");
+  if (!section) return;
+
+  // Stejný přístup jako u TUV: toggly mají tooltip přes title, ne přes "i" ikonu.
+  section.querySelectorAll('label.toggle .tip-i').forEach((el) => el.remove());
+  section.querySelectorAll('label.toggle span').forEach((span) => {
+    if (span && span.dataset) span.dataset.tipApplied = "0";
+  });
+
+  const tips = {
+    "opentherm.enabled": `Zapne OpenTherm modul (pokud je ve firmware podporován).`,
+    "opentherm.mode": `Režim komunikace.
+Gateway = aktivní řízení kotle,
+Monitor = pouze čtení,
+Thermostat = chování jako termostat (záleží na firmware).`,
+    "opentherm.rxGpio": `GPIO pro RX (příjem). Záleží na hardware zapojení.`,
+    "opentherm.txGpio": `GPIO pro TX (vysílání). Záleží na hardware zapojení.`,
+    "opentherm.invert": `Invertuje logiku směru/úrovní, pokud je rozhraní zapojeno obráceně.`,
+    "opentherm.pollMs": `Perioda dotazování/čtení (ms). Nižší = rychlejší reakce, vyšší zátěž.`,
+    "opentherm.mqtt.enabled": `Publikovat OpenTherm hodnoty do MQTT (pokud firmware publikuje).`,
+    "opentherm.mqtt.baseTopic": `Základní MQTT topic.
+Příklad: opentherm (výsledné topic: opentherm/...).`,
+    "opentherm.haDiscovery": `Zapne Home Assistant MQTT discovery pro entity z OpenTherm (pokud je firmware umí).`,
+    "opentherm.publishMs": `Jak často publikovat do MQTT (ms).`,
+  };
+
+  const addTip = (span, tipText) => {
+    if (!span || !tipText) return;
+    if (span.dataset.tipApplied === "1") return;
+    const icon = document.createElement("span");
+    icon.className = "tip-i";
+    icon.textContent = "i";
+    icon.dataset.tip = tipText;
+    span.prepend(icon);
+    span.dataset.tipApplied = "1";
+  };
+
+  section.querySelectorAll('[data-path]').forEach((input) => {
+    const path = input.dataset.path;
+    const tipText = tips[path];
+    if (!tipText) return;
+
+    const field = input.closest('label.field');
+    if (field) {
+      const span = field.querySelector('span');
+      addTip(span, tipText);
+    }
+  });
+}
+
 
 
 function eqSlopeShiftFromRefs(refs, fallbackSlope, fallbackShift) {
@@ -3229,8 +3301,10 @@ async function loadAll() {
   bindInputs($("dhwRecirc"), state.config);
   bindInputs($("aku"), state.config);
   bindInputs($("boiler"), state.config);
+  bindInputs($("opentherm"), state.config);
   initEquithermTooltips();
   initTuvTooltips();
+  initOpenThermTooltips();
   initTuvBindings();
   renderModeSelect();
   drawEquithermCurveThrottled(true);
@@ -3358,6 +3432,7 @@ async function saveConfigSection(section) {
   const labelMap = {
     equitherm: "Ekviterm",
     tuv: "TUV / DHW",
+    opentherm: "OpenTherm",
     io: "I/O",
     valves: "Ventily",
     thermometers: "Teploměry",

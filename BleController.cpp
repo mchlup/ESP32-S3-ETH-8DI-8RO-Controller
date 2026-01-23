@@ -117,6 +117,28 @@ struct PairedDevice {
 
 static std::vector<PairedDevice> g_allow;
 
+// Lazy-load config/allowlist from FS even when BLE is disabled (UI still needs /api/ble/config and /api/ble/paired).
+static bool g_cfgLoadedFromFs = false;
+static bool g_allowLoadedFromFs = false;
+
+static bool loadConfigFS();
+static bool loadAllowlistFS();
+
+static void ensureBleCfgLoaded() {
+    if (g_cfgLoadedFromFs) return;
+    if (!fsIsReady()) return;
+    loadConfigFS();
+    g_cfgLoadedFromFs = true;
+}
+
+static void ensureAllowlistLoaded() {
+    if (g_allowLoadedFromFs) return;
+    if (!fsIsReady()) return;
+    loadAllowlistFS();
+    g_allowLoadedFromFs = true;
+}
+
+
 // meteo readings
 static bool g_meteoFix = false;
 static int16_t g_meteoTempX10 = 0;
@@ -1397,8 +1419,8 @@ static bool meteoConnectIfNeeded() {
 
 // ---------- Public API ----------
 void bleInit() {
-    loadConfigFS();
-    loadAllowlistFS();
+    ensureBleCfgLoaded();
+    ensureAllowlistLoaded();
     updateBleLed();
 
     if (!g_cfg.enabled) {
@@ -1609,6 +1631,7 @@ meteoObj["bcastFramesInWindow"] = g_meteoBcastFramesInWindow;
 }
 
 String bleGetConfigJson() {
+    ensureBleCfgLoaded();
     DynamicJsonDocument doc(2048);
     doc["enabled"] = g_cfg.enabled;
     doc["deviceName"] = g_cfg.deviceName;
@@ -1645,6 +1668,7 @@ String bleGetConfigJson() {
 
 bool bleSetConfigJson(const String& json, String* errorCode) {
     if (errorCode) *errorCode = "";
+    ensureBleCfgLoaded();
     Serial.printf("[BLE] Config JSON len=%u\n", (unsigned)json.length());
     size_t capacity = json.length();
     capacity = capacity + (capacity / 5) + 512;
@@ -1789,6 +1813,7 @@ bool bleMeteoRetryNow() {
 }
 
 String bleGetPairedJson() {
+    ensureAllowlistLoaded();
     DynamicJsonDocument doc(8192);
     doc["schemaVersion"] = 1;
     JsonArray arr = doc.createNestedArray("devices");

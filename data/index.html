@@ -46,6 +46,7 @@
         <a href="#thermometers">Teploměry</a>
         <a href="#ble">BLE</a>
         <a href="#buzzer">Buzzer</a>
+        <a href="#opentherm" data-cap="opentherm">OpenTherm</a>
         <a href="#advanced">Pokročilé</a>
       </nav>
     </aside>
@@ -625,6 +626,75 @@
             <div id="buzzerTests" class="inline wrap"></div>
             <button class="btn secondary" id="buzzerStop">Stop</button>
           </div>
+        </div>
+      </section>
+
+      <section id="opentherm" class="section" data-cap="opentherm">
+        <h1>OpenTherm</h1>
+
+        <div class="thermo-action-row right">
+          <div class="action-right">
+            <label class="toggle" title="Povolí komunikaci přes OpenTherm (pokud je ve firmware zapnuta/podporována).">
+              <input type="checkbox" data-path="opentherm.enabled" />
+              <span>Povolit OpenTherm</span>
+            </label>
+            <button class="btn primary" data-save="opentherm">Uložit OpenTherm</button>
+          </div>
+        </div>
+
+        <div class="grid two">
+          <div class="card">
+            <h2>Rozhraní</h2>
+            <div class="form-grid compact">
+              <label class="field"><span>Režim</span>
+                <select data-path="opentherm.mode">
+                  <option value="gateway">Gateway</option>
+                  <option value="monitor">Monitor</option>
+                  <option value="thermostat">Thermostat</option>
+                </select>
+              </label>
+
+              <label class="field"><span>RX GPIO</span>
+                <input type="number" min="0" max="48" step="1" data-path="opentherm.rxGpio" placeholder="(dle HW)" />
+              </label>
+              <label class="field"><span>TX GPIO</span>
+                <input type="number" min="0" max="48" step="1" data-path="opentherm.txGpio" placeholder="(dle HW)" />
+              </label>
+              <label class="field"><span>Invert</span>
+                <input type="checkbox" data-path="opentherm.invert" />
+              </label>
+
+              <label class="field"><span>Poll period (ms)</span>
+                <input type="number" min="250" step="250" data-path="opentherm.pollMs" placeholder="2000" />
+              </label>
+            </div>
+            <p class="hint">Pozn.: konkrétní chování závisí na firmware. UI posílá nastavení do <span class="mono">/api/config</span>.</p>
+          </div>
+
+          <div class="card">
+            <h2>MQTT / Home Assistant</h2>
+            <div class="form-grid compact">
+              <label class="toggle" title="Publikovat OpenTherm hodnoty do MQTT (pokud je to ve firmware implementováno).">
+                <input type="checkbox" data-path="opentherm.mqtt.enabled" />
+                <span>Publikovat přes MQTT</span>
+              </label>
+              <label class="field"><span>Base topic</span>
+                <input data-path="opentherm.mqtt.baseTopic" placeholder="opentherm" />
+              </label>
+              <label class="toggle" title="Zapne Home Assistant MQTT discovery pro OpenTherm entity (pokud je podporováno).">
+                <input type="checkbox" data-path="opentherm.haDiscovery" />
+                <span>Home Assistant discovery</span>
+              </label>
+              <label class="field"><span>Publish period (ms)</span>
+                <input type="number" min="500" step="500" data-path="opentherm.publishMs" placeholder="5000" />
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Diagnostika</h2>
+          <pre id="openthermStatus" class="code-block">—</pre>
         </div>
       </section>
 
