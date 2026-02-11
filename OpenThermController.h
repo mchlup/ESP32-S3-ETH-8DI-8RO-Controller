@@ -1,74 +1,36 @@
 #pragma once
 
 #include <Arduino.h>
-#include <ArduinoJson.h>
 
-// --- OpenTherm support (boiler comm) ---
+// ---------------------------------------------------------------------------
+// OpenTherm is an optional module.
 //
-// Poznámka:
-// Tento modul je zatím navržen tak, aby projekt šel zkompilovat a UI mělo
-// konfigurační + status API. Samotná fyzická komunikace OpenTherm vyžaduje
-// transceiver (OT interface) a doplnění konkrétního driveru (ESP32-S3).
+// Enable it by defining FEATURE_OPENTHERM (typically from Features.h).
 //
-// Rozhraní je připravené pro budoucí rozšíření (čtení/zápis rámců, polling,...)
-// a současně umožňuje navázat řízení setpointu z ekvitermu.
-
-enum class OpenThermMode : uint8_t {
-    OFF = 0,
-    MANUAL = 1,
-    EQUITHERM = 2,
-};
-
-struct OpenThermCfg {
-    bool enabled = false;
-    OpenThermMode mode = OpenThermMode::OFF;
-
-    // GPIO piny pro OT interface (logická úroveň dle použitého transceiveru)
-    int8_t inPin = -1;
-    int8_t outPin = -1;
-
-    uint32_t pollIntervalMs = 1000;
-
-    bool chEnable = true;
-    float manualSetpointC = 45.0f;
-
-    // ochrana proti spamování (zápis setpointu)
-    float minDeltaWriteC = 0.5f;
-    uint32_t minWriteIntervalMs = 5000;
-};
+// If FEATURE_OPENTHERM is NOT defined, this header still compiles and provides
+// tiny no-op stubs so any accidental includes won't break the build.
+// ---------------------------------------------------------------------------
 
 struct OpenThermStatus {
-    bool enabled = false;
-    OpenThermMode mode = OpenThermMode::OFF;
-
-    bool ready = false;
-    uint32_t lastPollMs = 0;
-    uint32_t lastWriteMs = 0;
-
-    // poslední nastavený setpoint (CH)
-    float setpointC = NAN;
-
-    // telemetrie (pokud dostupná)
-    float boilerTempC = NAN;
-    float returnTempC = NAN;
-    float modulationPct = NAN;
-    uint16_t faultCode = 0;
-
-    uint32_t okFrames = 0;
-    uint32_t errFrames = 0;
-
-    String lastError;
+  bool present = false;
+  bool ready = false;
+  bool fault = false;
+  float boilerTempC = NAN;
+  float returnTempC = NAN;
+  uint32_t lastUpdateMs = 0;
+  String reason = "";
 };
 
-void openthermInit();
-void openthermApplyConfig(const String& json);
-void openthermLoop();
+#if defined(FEATURE_OPENTHERM)
 
-OpenThermCfg openthermGetConfig();
+void openthermInit();
+void openthermLoop();
 OpenThermStatus openthermGetStatus();
 
-// Fill status into already created JSON object
-void openthermFillJson(JsonObject obj);
+#else
 
-// Force setpoint write (manual override)
-bool openthermRequestSetpoint(float tempC);
+inline void openthermInit() {}
+inline void openthermLoop() {}
+inline OpenThermStatus openthermGetStatus() { return OpenThermStatus(); }
+
+#endif

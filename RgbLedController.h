@@ -1,30 +1,41 @@
 #pragma once
+
 #include <Arduino.h>
 
-// Jednoduchý neblokující "driver" pro 1× WS2812 RGB LED (GPIO dle config_pins.h).
-// Umožňuje přepínat předdefinované režimy (např. BLE párování/připojeno).
-
 enum class RgbLedMode : uint8_t {
-    OFF = 0,
-    SOLID,          // trvalá barva (rgbLedSetColor)
-    BLE_IDLE,       // slabá modrá (BLE povoleno, bez klienta)
-    BLE_PAIRING,    // bliká modře (párovací okno)
-    BLE_CONNECTED,  // trvalá modrá (klient připojen)
-    BLE_DISABLED,   // zhasnuto
-    ERROR,          // bliká červeně
+  OFF = 0,
+  SOLID,
+  BLINK,
+
+  // Status modes used by Logic/BLE diagnostics
+  BLE_DISABLED,
+  BLE_IDLE,
+  BLE_CONNECTED,
+  BLE_PAIRING,
+  ERROR
 };
+
+#if defined(FEATURE_RGB_LED)
 
 void rgbLedInit();
 void rgbLedLoop();
 
-// Nastavení barvy (0–255) a režimu SOLID
+void rgbLedOff();
 void rgbLedSetColor(uint8_t r, uint8_t g, uint8_t b);
 
-// Nastavení předdefinovaného režimu
+// High-level state setter (used by LogicController)
 void rgbLedSetMode(RgbLedMode mode);
 
-// Pro BLE modul – helper (jen mapuje na režimy výše)
-inline void rgbLedSetBleEnabled(bool enabled) {
-    if (!enabled) rgbLedSetMode(RgbLedMode::BLE_DISABLED);
-    else rgbLedSetMode(RgbLedMode::BLE_IDLE);
-}
+// Blink with on/off period in ms
+void rgbLedBlink(uint8_t r, uint8_t g, uint8_t b, uint16_t periodMs = 500);
+
+#else
+
+inline void rgbLedInit() {}
+inline void rgbLedLoop() {}
+inline void rgbLedOff() {}
+inline void rgbLedSetColor(uint8_t, uint8_t, uint8_t) {}
+inline void rgbLedSetMode(RgbLedMode) {}
+inline void rgbLedBlink(uint8_t, uint8_t, uint8_t, uint16_t = 0) {}
+
+#endif

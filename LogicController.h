@@ -33,6 +33,14 @@ struct EquithermStatus {
     bool  active  = false;
     bool  night   = false;
 
+    // Konfigurační validace (pro UI/diagnostiku)
+    // - configOk: splněné minimální podmínky pro řízení v AUTO (ventil + feedback)
+    // - configReason: proč nelze řídit (pokud configOk=false)
+    // - configWarning: upozornění (např. venek není nastaven a používá se auto BLE fallback)
+    bool  configOk = true;
+    String configReason = "";
+    String configWarning = "";
+
     // Sources + measured temps
     float outdoorC = NAN;
     bool  outdoorValid = false;

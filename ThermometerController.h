@@ -2,41 +2,28 @@
 
 #include <Arduino.h>
 
-// Konfigurace a stav "virtuálních" teploměrů (MQTT/BLE), které jsou v UI
-// zobrazované společně s Dallas teploměry.
-
 struct MqttThermometerCfg {
-    String name;
-    String topic;
-    String jsonKey;
-    String role; // canonical role key (outdoor/flow/return/dhw/aku_*)
+  String topic;
+  String role;
+  // Optional JSON key to extract temperature from payload.
+  // If empty, parser will try to extract the first numeric value.
+  String jsonKey;
 };
 
 struct BleThermometerCfg {
-    String name;
-    String id;   // např. "meteo.tempC"
-    String role; // canonical role key
+  String id;   // optional device id
+  String role; // e.g. "outdoor"
 };
 
 void thermometersInit();
 
-// Aplikuje konfiguraci z celého config.json (string JSON)
+// Apply thermometer-related configuration from the whole /config.json payload.
+// This updates in-memory BLE/MQTT thermometer roles immediately (no restart needed).
 void thermometersApplyConfig(const String& json);
 
-// Konfigurace
-const MqttThermometerCfg& thermometersGetMqtt(uint8_t index); // 0..1
+const MqttThermometerCfg& thermometersGetMqtt(uint8_t idx); // idx 0..1
 const BleThermometerCfg&  thermometersGetBle();
 
-// MQTT: seznam topiců k odběru (z konfigurace MQTT teploměrů)
+// Subscribe topics required by thermometer config.
+// If outTopics == nullptr, only returns the count.
 uint8_t thermometersGetMqttSubscribeTopics(String* outTopics, uint8_t maxTopics);
-
-// MQTT: callback z MqttController (uživatelské MQTT teploměry)
-// Pozn.: Aktuálně MqttController už ukládá hodnoty do interní cache pro
-// mqttGetLastValue*(), takže tato funkce je dnes best-effort/no-op a slouží
-// hlavně pro budoucí rozšíření (validace, mapování, expiry).
-void thermometersMqttOnMessage(const String& topic, const String& payload);
-
-// BLE: callback z BleController při přijetí nové hodnoty.
-// Aktuálně BLE hodnoty drží BleController (bleGetTempCById), takže je to
-// best-effort/no-op pro budoucí rozšíření.
-void thermometersBleOnReading(const String& id, float tempC);

@@ -2,21 +2,22 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+// Force Arduino IDE library resolver to pull NimBLE include paths when installed.
+// (BleController.cpp relies on NimBLE; gating by __has_include() breaks on Arduino.
+#include <NimBLEDevice.h>
+
 #include "RelayController.h"
 #include "config_pins.h"
 #include "InputController.h"
 #include "LogicController.h"
-#include "OtaController.h"
+#include "Features.h"
 #include "NetworkController.h"
 #include "WebServerController.h"
 #include "MqttController.h"
 #include "BleController.h"
-#include "RgbLedController.h"
-#include "BuzzerController.h"
 #include "DallasController.h"
 #include "FsController.h"
 #include "ThermometerController.h"
-#include "OpenThermController.h"
 #include <LittleFS.h>
 
 String inputBuffer;
@@ -157,16 +158,21 @@ void setup() {
     } else {
         Serial.println(F("[FS] LittleFS není připravený, WebUI nebude dostupné."));
     }
+    // Teploměry (role + zdroje) musí být načtené dřív než se aplikuje logika,
+    // protože logika používá role fallback (TEMP1..8/BLE/MQTT) pro ekviterm apod.
+    thermometersInit();
+
     webserverLoadConfigFromFS();
 
     inputSetCallback([](InputId id, bool state){
-        Serial.printf("Zmena vstupu %d -> %s\n", id + 1, state ? "ACTIVE" : "INACTIVE");
+        Serial.printf("Zmena vstupu %d -> %s\n", (int)id + 1, state ? "ACTIVE" : "INACTIVE");
         logicOnInputChanged(id, state);
     });
 
     logicInit();
+    #if defined(FEATURE_RGB_LED)
     rgbLedInit();       // RGB LED
-    thermometersInit(); // MQTT/BLE teploměry (konfigurace)
+    #endif
 
     // BLE init ASAP (before NetworkController/WiFiManager) so we can acquire meteo temperature quickly.
     bleInit();
@@ -175,7 +181,9 @@ void setup() {
     s_bleBootstrapRun = true;
     xTaskCreatePinnedToCore(bleBootstrapTaskFn, "bleBoot", 8192, nullptr, 1, &s_bleBootstrapTask, 0);
 
+    #if defined(FEATURE_OPENTHERM)
     openthermInit();    // OpenTherm (boiler)
+    #endif
 
     // Network can block (WiFiManager). BLE bootstrap task keeps running.
     networkInit();
@@ -195,8 +203,12 @@ void setup() {
 
     webserverInit();
     mqttInit();
+    #if defined(FEATURE_BUZZER)
     buzzerInit();
+    #endif
+    #if defined(FEATURE_OTA)
     OTA::init();
+    #endif
 
     printHelp();
 }
@@ -231,11 +243,19 @@ void loop() {
     webserverLoop();
 
     logicUpdate();              // logika (AUTO/MANUAL + ventily + equitherm)
+    #if defined(FEATURE_OPENTHERM)
     openthermLoop();            // OpenTherm (polling + setpoint)
+    #endif
 
+    #if defined(FEATURE_RGB_LED)
     rgbLedLoop();
+    #endif
+    #if defined(FEATURE_BUZZER)
     buzzerLoop();
+    #endif
 
     webserverLoop();            // web server
+    #if defined(FEATURE_OTA)
     OTA::loop();
+    #endif
 }

@@ -61,6 +61,7 @@ IRAM_ATTR bool owrxdone(rmt_channel_handle_t ch, const rmt_rx_done_event_data_t 
 
 void OneWire32::cleanup() {
   alive = false;
+  drv = false;
   // order matters: disable -> delete
   if (owbenc) {
     rmt_del_encoder(owbenc);
@@ -127,7 +128,13 @@ OneWire32::OneWire32(uint8_t pin) {
     .mem_block_symbols = MAX_BLOCKS,
     .trans_queue_depth = 4,
     .flags = {
-      .io_loop_back = 1,
+      // IMPORTANT:
+      // Do NOT enable io_loop_back here.
+      // When TX and RX share the same GPIO, RX already samples the real 1-Wire
+      // line state (including the sensor's presence pulse). Enabling loopback
+      // can mask/warp the presence timing on some ESP32-S3 builds and lead to
+      // "NO_SENSOR" even when devices are connected.
+      .io_loop_back = 0,
       .io_od_mode = 1
     }
   };
@@ -173,12 +180,13 @@ OneWire32::OneWire32(uint8_t pin) {
   };
   rmt_transmit(owtx, owcenc, &release_symbol, sizeof(rmt_symbol_word_t), &owtxconf);
 
-  drv = 1;
+  alive = true;
+  drv = true;
 }
 
 OneWire32::~OneWire32() {
   cleanup();
-  drv = 0;
+  drv = false;
 }
 
 bool OneWire32::reset() {

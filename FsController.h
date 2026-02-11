@@ -1,8 +1,12 @@
 #pragma once
+
 #include <Arduino.h>
 
 bool fsInit();
-bool fsIsReady();
-bool fsWriteAtomicKeepBak(const char* path, const String& data, const char* bakPath, bool keepBak);
+
+// LittleFS mutex guards (WebServer + MQTT + logic config may access FS).
 void fsLock();
 void fsUnlock();
+
+bool fsReadTextFile(const char* path, String& out);
+bool fsWriteTextFile(const char* path, const String& data);

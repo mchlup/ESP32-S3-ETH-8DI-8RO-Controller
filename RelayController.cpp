@@ -232,7 +232,8 @@ void relaySetMask(uint8_t mask) {
   processPending(millis());
 }
 
-void relayPrintStates(Stream &out) {
+// !!! Print& (ne Stream&) – aby sedělo na LogicController/.ino
+void relayPrintStates(Print &out) {
   out.print(F("[RELAY] mask=0b"));
   for (int i = 7; i >= 0; i--) out.print((s_mask >> i) & 1);
   out.print(F(" ["));

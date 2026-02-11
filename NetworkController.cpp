@@ -1,4 +1,10 @@
+// Feature gate first (keeps WiFi/ETH libs out of the build when disabled).
+#include "Features.h"
+
 #include "NetworkController.h"
+
+#if defined(FEATURE_NETWORK)
+
 #include "RtcController.h"
 
 #include <Arduino.h>
@@ -426,3 +432,5 @@ String networkGetTimeSource() {
 bool networkIsRtcPresent() {
     return rtcIsPresent();
 }
+
+#endif // FEATURE_NETWORK

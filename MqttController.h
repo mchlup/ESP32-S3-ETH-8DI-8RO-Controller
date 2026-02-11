@@ -1,25 +1,31 @@
 #pragma once
+
 #include <Arduino.h>
 
-// Inicializace MQTT (po WiFi)
-void mqttInit();
+// ---------------------------------------------------------------------------
+// Optional module flag
+//
+// MQTT support is controlled by FEATURE_MQTT (defined by FeatureMqtt.h).
+// When the feature is disabled, this header provides lightweight no-op stubs so
+// other modules can still compile without #ifdef noise.
+// ---------------------------------------------------------------------------
 
-// Volat v hlavní smyčce (neblokující)
+#if defined(FEATURE_MQTT)
+
+void mqttInit();
 void mqttLoop();
 
-// Aplikace konfigurace z /config.json (celý JSON string)
-void mqttApplyConfig(const String& json);
+bool mqttPublish(const String& topic, const String& payload, bool retain = false);
 
-// Info o stavu MQTT
-bool mqttIsConfigured();
-bool mqttIsConnected();
+// Returns true if we have a cached last value for a topic.
+bool mqttGetLastValueInfo(const String& topic, String* outPayload, uint32_t* outLastMs);
 
-// Publikace celého aktuálního stavu (pro HA po reconnectu)
-void mqttPublishFullState();
-// Republish Home Assistant discovery + full state (pokud je připojeno)
-void mqttRepublishDiscovery();
-// Vrátí poslední přijatou hodnotu pro daný topic (pokud existuje).
-bool mqttGetLastValue(const String& topic, String* outValue);
+#else
 
-// Jako mqttGetLastValue(), navíc vrací millis() timestamp posledního příjmu.
-bool mqttGetLastValueInfo(const String& topic, String* outValue, uint32_t* outLastMs);
+inline void mqttInit() {}
+inline void mqttLoop() {}
+
+inline bool mqttPublish(const String&, const String&, bool = false) { return false; }
+inline bool mqttGetLastValueInfo(const String&, String*, uint32_t*) { return false; }
+
+#endif

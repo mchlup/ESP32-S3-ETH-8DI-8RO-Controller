@@ -1,4 +1,9 @@
+// IMPORTANT: include Features.h first so FEATURE_RGB_LED is visible before
+// including the header (which provides stubs when the feature is disabled).
+#include "Features.h"
 #include "RgbLedController.h"
+
+#if defined(FEATURE_RGB_LED)
 
 #include <Adafruit_NeoPixel.h>
 #include "config_pins.h"
@@ -105,3 +110,5 @@ void rgbLedLoop() {
 
     // ostatní režimy jsou statické – nic nedělej
 }
+
+#endif // FEATURE_RGB_LED

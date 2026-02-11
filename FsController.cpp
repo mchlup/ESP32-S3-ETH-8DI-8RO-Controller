@@ -1,97 +1,61 @@
 #include "FsController.h"
+
 #include <LittleFS.h>
+#include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
-static bool s_fsReady = false;
-static SemaphoreHandle_t s_fsMutex = nullptr;
+#include "Log.h"
 
-bool fsInit() {
-    if (s_fsReady) return true;
-    bool formatted = false;
-    if (!LittleFS.begin()) {
-        Serial.println(F("[FS] LittleFS mount failed, trying format..."));
-        if (!LittleFS.format()) {
-            s_fsReady = false;
-            Serial.println(F("[FS] LittleFS format failed."));
-            return false;
-        }
-        formatted = true;
-        if (!LittleFS.begin()) {
-            s_fsReady = false;
-            Serial.println(F("[FS] LittleFS mount failed after format."));
-            return false;
-        }
-    }
-    if (!s_fsMutex) {
-        s_fsMutex = xSemaphoreCreateMutex();
-        if (!s_fsMutex) {
-            Serial.println(F("[FS] Mutex create failed."));
-        }
-    }
-    s_fsReady = true;
-    if (formatted) {
-        Serial.println(F("[FS] LittleFS formatted."));
-    }
-    Serial.println(F("[FS] LittleFS mounted."));
-    return true;
+namespace {
+  SemaphoreHandle_t g_fsMtx = nullptr;
+  bool g_inited = false;
 }
 
-bool fsIsReady() {
-    return s_fsReady;
+bool fsInit() {
+  if (!g_fsMtx) g_fsMtx = xSemaphoreCreateMutex();
+  if (g_inited) return LittleFS.begin(); // idempotent
+
+  g_inited = true;
+  bool ok = LittleFS.begin(true);
+  LOGI("LittleFS begin: %s", ok ? "ok" : "fail");
+  return ok;
 }
 
 void fsLock() {
-    if (s_fsMutex) {
-        xSemaphoreTake(s_fsMutex, portMAX_DELAY);
-    }
+  if (!g_fsMtx) g_fsMtx = xSemaphoreCreateMutex();
+  xSemaphoreTake(g_fsMtx, portMAX_DELAY);
 }
 
 void fsUnlock() {
-    if (s_fsMutex) {
-        xSemaphoreGive(s_fsMutex);
-    }
+  if (!g_fsMtx) return;
+  xSemaphoreGive(g_fsMtx);
 }
 
-bool fsWriteAtomicKeepBak(const char* path, const String& data, const char* bakPath, bool keepBak) {
-    if (!fsIsReady()) return false;
-
-    fsLock();
-
-    String tmpPath = String(path) + ".tmp";
-    File f = LittleFS.open(tmpPath, "w");
-    if (!f) {
-        fsUnlock();
-        return false;
-    }
-
-    const size_t written = f.print(data);
-    f.flush();
-    f.close();
-
-    if (written != data.length()) {
-        LittleFS.remove(tmpPath);
-        fsUnlock();
-        return false;
-    }
-
-    if (LittleFS.exists(bakPath)) LittleFS.remove(bakPath);
-    if (LittleFS.exists(path)) {
-        if (!LittleFS.rename(path, bakPath)) {
-            LittleFS.remove(tmpPath);
-            fsUnlock();
-            return false;
-        }
-    }
-
-    if (!LittleFS.rename(tmpPath, path)) {
-        if (LittleFS.exists(bakPath)) LittleFS.rename(bakPath, path);
-        LittleFS.remove(tmpPath);
-        fsUnlock();
-        return false;
-    }
-
-    if (!keepBak && LittleFS.exists(bakPath)) LittleFS.remove(bakPath);
-
+bool fsReadTextFile(const char* path, String& out) {
+  out = "";
+  if (!path) return false;
+  fsLock();
+  File f = LittleFS.open(path, "r");
+  if (!f) {
     fsUnlock();
-    return true;
+    return false;
+  }
+  out = f.readString();
+  f.close();
+  fsUnlock();
+  return true;
+}
+
+bool fsWriteTextFile(const char* path, const String& data) {
+  if (!path) return false;
+  fsLock();
+  File f = LittleFS.open(path, "w");
+  if (!f) {
+    fsUnlock();
+    return false;
+  }
+  f.print(data);
+  f.close();
+  fsUnlock();
+  return true;
 }

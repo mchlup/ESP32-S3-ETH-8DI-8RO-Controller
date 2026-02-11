@@ -2,10 +2,10 @@
 #include "RelayController.h"
 #include "InputController.h"
 #include "ConfigStore.h"
-#include "BuzzerController.h"
+#include "Features.h"
 #include "DallasController.h"
 #include "MqttController.h"
-#include "OpenThermController.h"
+// OpenTherm is pulled via Features.h (optional)
 
 #include "ThermometerController.h"
 #include "ThermoRoles.h"
@@ -25,35 +25,42 @@
 //  R1 = 3c směšovací ventil (směr A)
 //  R2 = 3c směšovací ventil (směr B)
 //  R3 = 3c přepínací ventil (0%/100%) – single relay (pružina nebo interní návrat)
-//  R4 = REZERVA
+//  R4 = cirkulační čerpadlo
 //  R5 = požadavek ohřevu TUV do kotle (DHW request)
 //  R6 = požadavek Denní/Noční křivka do kotle
-//  R7 = cirkulační čerpadlo
+//  R7 = Omezovací relé výkonu kotle (rezerva)
 //  R8 = stykač topné spirály akumulační nádrže
 //
 // Vstupy (IN1..IN8):
 //  IN1 = požadavek ohřevu TUV (DHW demand)
-//  IN2 = přepnutí Denní/Noční křivka
+//  IN2 = přepnutí Denní/Noční křivka (aktivní = noční)
 //  IN3 = požadavek cirkulace
 //  IN4..IN8 = REZERVA
 // ============================================================================
 static constexpr uint8_t FIX_RELAY_MIX_A0           = 0; // R1
 static constexpr uint8_t FIX_RELAY_MIX_B0           = 1; // R2
 static constexpr uint8_t FIX_RELAY_TUV_VALVE0       = 2; // R3
-static constexpr uint8_t FIX_RELAY_RESERVED_4_0     = 3; // R4
+static constexpr uint8_t FIX_RELAY_RECIRC_PUMP0     = 3; // R4
 static constexpr uint8_t FIX_RELAY_BOILER_DHW_REQ0  = 4; // R5
 static constexpr uint8_t FIX_RELAY_BOILER_NIGHT0    = 5; // R6
-static constexpr uint8_t FIX_RELAY_RECIRC_PUMP0     = 6; // R7
+static constexpr uint8_t FIX_RELAY_RESERVED_7_0     = 6; // R7 (rezerva / omezovací relé)
 static constexpr uint8_t FIX_RELAY_AKU_HEATER0      = 7; // R8
 
-static constexpr int8_t  FIX_IN_DHW_DEMAND0         = 0; // IN1
+// Vstupy dle zadání projektu:
+//  IN1 = požadavek ohřevu TUV (DHW demand)
+//  IN2 = přepnutí Denní/Noční křivka (aktivní = noční)
+//  IN3 = požadavek cirkulace
 static constexpr int8_t  FIX_IN_NIGHT_MODE0         = 1; // IN2
-static constexpr int8_t  FIX_IN_RECIRC_DEMAND0      = 2; // IN3
+static constexpr int8_t  FIX_IN_DHW_DEMAND0         = 0; // IN1
+static constexpr int8_t  FIX_IN_RECIRC_DEMAND0      = 2; // IN3 (požadavek cirkulace)
+
 
 static inline bool isFixedFunctionRelay(uint8_t r0) {
-    return (r0 == FIX_RELAY_MIX_A0 || r0 == FIX_RELAY_MIX_B0 || r0 == FIX_RELAY_TUV_VALVE0 ||
+    // Pevně vyhrazené systémové relé (nelze použít pro relayMap/profily ani 3c směšovací ventil).
+    // R3 = TUV přepínací ventil (single relay, fix), R4..R8 = recirc/boiler/AKU.
+    return (r0 == FIX_RELAY_TUV_VALVE0 ||
             r0 == FIX_RELAY_BOILER_DHW_REQ0 || r0 == FIX_RELAY_BOILER_NIGHT0 ||
-            r0 == FIX_RELAY_RECIRC_PUMP0 || r0 == FIX_RELAY_AKU_HEATER0);
+            r0 == FIX_RELAY_RECIRC_PUMP0 || r0 == FIX_RELAY_RESERVED_7_0 || r0 == FIX_RELAY_AKU_HEATER0);
 }
 
 // Každý režim má profil pro všechna relé (RELAY_COUNT = 8).
@@ -124,7 +131,7 @@ struct Valve3WayState {
     uint8_t relayA = 0;  // 0..7 (směr A)
     uint8_t relayB = 0;  // 0..7 (směr B)
     uint32_t travelMs = 6000;   // doba přeběhu ventilu (ms)
-    uint32_t pulseMs  = 800;    // krátký puls pro test/kalibraci (ms)
+    uint32_t pulseMs  = 600;    // krátký puls pro test/kalibraci (ms)
     uint32_t guardMs  = 300;    // pauza mezi směry (ms)
 
     // Min. perioda mezi starty přestavení (ochrana proti častému přepínání)
@@ -610,6 +617,15 @@ static bool     s_eqNoFlowActive = false;
 static uint32_t s_eqNoFlowLastTestMs = 0;
 
 static float    s_eqFallbackOutdoorC = 0.0f;
+static bool     s_eqHomingEnabled = false;
+static bool     s_eqHomingOnBoot = true;
+static bool     s_eqHomingOnConfigChange = true;
+static uint32_t s_eqHomingPeriodMs = 86400000UL; // 24h
+static uint8_t  s_eqHomingTargetPct = 0;         // typically 0% (A)
+static bool     s_eqHomingPending = false;
+static uint32_t s_eqLastHomingMs = 0;
+static bool     s_eqBootHomingArmed = true;
+static bool     s_eqValveConfigChanged = false;
 static uint32_t s_eqOutdoorMaxAgeMs = 900000;
 static float    s_eqLastOutdoorC = NAN;
 static uint32_t s_eqLastOutdoorMs = 0;
@@ -617,6 +633,11 @@ static uint32_t s_eqLastOutdoorMs = 0;
 static String   s_systemProfile = "standard";
 static String   s_nightModeSource = "heat_call"; // heat_call | input | schedule | manual
 static bool     s_nightModeManual = false;
+
+// Equitherm config validation (minimální podmínky pro AUTO řízení)
+static bool     s_eqConfigOk = true;
+static String   s_eqConfigReason = "";
+static String   s_eqConfigWarning = "";
 
 static uint32_t s_eqLastAdjustMs = 0;
 static String   s_eqReason = "";
@@ -754,18 +775,24 @@ static bool tryGetTempFromSource(const EqSourceCfg& src, float &outC, EqSourceDi
     }
 
     if (s == "ble"){
-        // BLE: aktuálně je k dispozici minimálně "meteo.tempC".
-        // bleId může být prázdné (default) nebo např. "meteo", "meteo.tempC".
-        const String id = src.bleId;
-        const bool ok = bleGetTempCById(id, outC);
-        if (diag) {
-            diag->valid = ok && isfinite(outC);
-            if (!diag->valid) diag->reason = "ble invalid";
-        }
-        return ok;
+    // BLE: default "meteo.tempC".
+    // bleId může být prázdné (default) nebo např. "meteo", "meteo.tempC".
+    // maxAgeMs nyní platí i pro BLE (override proti ble.maxAgeMs).
+    const String id = src.bleId;
+    uint32_t ageMs = 0;
+    const uint32_t maxAge = src.maxAgeMs; // 0 = použij ble.maxAgeMs
+    const bool ok = bleGetTempCByIdEx(id, outC, maxAge, diag ? &ageMs : nullptr);
+    if (diag) {
+        diag->ageMs = ageMs;
+        diag->valid = ok && isfinite(outC);
+        if (!diag->valid) diag->reason = ok ? "ble non-finite" : "ble invalid/stale";
     }
+    return ok;
+}
+
 
     if (s.startsWith("opentherm")){
+        #if defined(FEATURE_OPENTHERM)
         OpenThermStatus ot = openthermGetStatus();
         if (!ot.ready) {
             if (diag) diag->reason = "OT not ready";
@@ -782,6 +809,10 @@ static bool tryGetTempFromSource(const EqSourceCfg& src, float &outC, EqSourceDi
         }
         if (diag) diag->valid = true;
         return true;
+        #else
+        if (diag) diag->reason = "OT disabled";
+        return false;
+        #endif
     }
 
     // BLE do budoucna
@@ -855,11 +886,21 @@ static void equithermRecompute(){
     s_eqStatus.enabled = s_eqEnabled;
     s_eqStatus.night   = s_nightMode;
     s_eqStatus.valveMaster = (s_eqValveMaster0 >= 0) ? (uint8_t)(s_eqValveMaster0 + 1) : 0;
+    s_eqStatus.configOk = s_eqConfigOk;
+    s_eqStatus.configReason = s_eqConfigReason;
+    s_eqStatus.configWarning = s_eqConfigWarning;
     s_eqReason = "";
     s_eqStatus.reason = "";
     s_eqStatus.akuSupportActive = false;
 
     if (!s_eqEnabled) { s_eqReason = "disabled"; s_eqStatus.reason = s_eqReason; return; }
+
+    // Pokud konfigurace není OK, ekviterm může stále počítat cílovou teplotu pro diagnostiku,
+    // ale v AUTO řízení nezasahuje (bez ventilu/feedbacku by to nebylo bezpečné).
+    if (!s_eqConfigOk) {
+        s_eqReason = s_eqConfigReason.length() ? s_eqConfigReason : "config invalid";
+        s_eqStatus.reason = s_eqReason;
+    }
 
     // Outdoor temperature (venek)
     float tout = NAN;
@@ -1032,12 +1073,58 @@ static uint8_t equithermEffectiveStepPct(const Valve3WayState& v) {
     return step;
 }
 
+
+static void equithermRequestHoming(const char* why){
+    if (!s_eqHomingEnabled) return;
+    if (!s_eqEnabled) return;
+    if (s_eqValveMaster0 < 0 || s_eqValveMaster0 >= (int8_t)RELAY_COUNT) return;
+    if (!s_valves[(uint8_t)s_eqValveMaster0].configured) return;
+    if (s_tuvModeActive) return;
+    // avoid stacking multiple requests
+    s_eqHomingPending = true;
+    // optional: store reason into warning (non-fatal)
+    if (why && strlen(why)) {
+        s_eqConfigWarning = String("homing: ") + why;
+    }
+}
+
 static void equithermControlTick(uint32_t nowMs){
     if (!s_eqEnabled) return;
     if (currentControlMode != ControlMode::AUTO) return;
     if (s_tuvModeActive) return;
 
-    // musí být spočtený target
+    
+// --- Homing (synchronizace modelu polohy ventilu se skutečností) ---
+// Arm on boot: pokud je povoleno, proveď 1x homing po startu (až když je ventil nakonfigurován).
+if (s_eqBootHomingArmed && s_eqHomingEnabled && s_eqHomingOnBoot) {
+    if (s_eqValveMaster0 >= 0 && s_eqValveMaster0 < (int8_t)RELAY_COUNT) {
+        const uint8_t m0 = (uint8_t)s_eqValveMaster0;
+        if (s_valves[m0].configured) {
+            equithermRequestHoming("boot");
+            s_eqBootHomingArmed = false;
+        }
+    }
+}
+
+// Periodický homing (např. 1x denně) – jen pokud systém běží v AUTO a není aktivní TUV.
+if (s_eqHomingEnabled && s_eqHomingPeriodMs > 0 && s_eqLastHomingMs != 0) {
+    if ((uint32_t)(nowMs - s_eqLastHomingMs) >= s_eqHomingPeriodMs) {
+        equithermRequestHoming("periodic");
+    }
+}
+
+// Pokud je homing pending, proveď ho před regulací.
+if (s_eqHomingPending) {
+    if (s_eqValveMaster0 >= 0 && s_eqValveMaster0 < (int8_t)RELAY_COUNT) {
+        valveMoveToPct((uint8_t)s_eqValveMaster0, (int)s_eqHomingTargetPct);
+        s_eqLastHomingMs = nowMs;
+        s_eqHomingPending = false;
+        // po homingu nastavíme model polohy konzistentně
+        s_valves[(uint8_t)s_eqValveMaster0].posPct = s_eqHomingTargetPct;
+    }
+}
+
+// musí být spočtený target
     if (!s_eqStatus.active || !isfinite(s_eqStatus.targetFlowC)) return;
     if (!s_eqStatus.outdoorValid) {
         if (s_eqValveMaster0 >= 0 && s_eqValveMaster0 < (int8_t)RELAY_COUNT) {
@@ -1049,7 +1136,23 @@ static void equithermControlTick(uint32_t nowMs){
 
     // nutný feedback senzor (FLOW)
     float flow = NAN;
-    if (!tryGetTempFromSource(s_eqFlowCfg, flow)) return;
+    if (!tryGetTempFromSource(s_eqFlowCfg, flow)) {
+        // Bez feedbacku je bezpečnější ventil zavřít (0%), než ho nechat v poslední poloze.
+        if (s_eqValveMaster0 >= 0 && s_eqValveMaster0 < (int8_t)RELAY_COUNT) {
+            const uint8_t m0 = (uint8_t)s_eqValveMaster0;
+            if (isValveMaster(m0)) {
+                // respektuj periodu korekcí (stejná pojistka proti cvakání)
+                if (s_eqLastAdjustMs == 0 || (uint32_t)(nowMs - s_eqLastAdjustMs) >= s_eqPeriodMs) {
+                    Valve3WayState &v = s_valves[m0];
+                    if (!v.moving) {
+                        valveMoveToPct(m0, 0);
+                        s_eqLastAdjustMs = nowMs;
+                    }
+                }
+            }
+        }
+        return;
+    }
     if (isfinite(flow)) {
         if (!isfinite(s_eqLastFlowC) || fabsf(flow - s_eqLastFlowC) >= 0.1f) {
             s_eqLastFlowC = flow;
@@ -1262,6 +1365,30 @@ static uint8_t effectiveTuvValvePct(bool active) {
     return clampPctInt(pct);
 }
 
+static void applyTuvValvePct(bool active) {
+    if (s_tuvValveMaster0 < 0 || s_tuvValveMaster0 >= (int8_t)RELAY_COUNT) return;
+
+    const uint8_t pct = effectiveTuvValvePct(active);
+    s_tuvValveCurrentPct = pct;
+    s_tuvValveMode = active ? "dhw" : "ch";
+
+    const uint8_t m0 = (uint8_t)s_tuvValveMaster0;
+    // If the valve is configured as a 3-way master but is actually single-relay (switching valve),
+    // do NOT run the motorized timing state machine. We must directly drive the relay state,
+    // otherwise the configured invertDir/defaultPos can keep the output latched ON.
+    if (isValveMaster(m0) && !s_valves[m0].singleRelay) {
+        valveMoveToPct(m0, pct);
+        return;
+    }
+
+    bool on = (pct >= 50);
+    // keep support for per-valve invertDir if user set it (single-relay valve config)
+    if (isValveMaster(m0) && s_valves[m0].singleRelay) {
+        on = (on ^ s_valves[m0].invertDir);
+    }
+    relaySet((RelayId)m0, on);
+}
+
 static void applyTuvModeValves(uint32_t nowMs) {
     if (!s_tuvModeActive) return;
     if (s_tuvLastValveCmdMs != 0 && (uint32_t)(nowMs - s_tuvLastValveCmdMs) < 500) return;
@@ -1271,11 +1398,8 @@ static void applyTuvModeValves(uint32_t nowMs) {
         valveMoveToPct((uint8_t)s_eqValveMaster0, s_tuvEqValveTargetPct);
         issued = true;
     }
-    if (s_tuvValveMaster0 >= 0 && s_tuvValveMaster0 < (int8_t)RELAY_COUNT && isValveMaster((uint8_t)s_tuvValveMaster0)) {
-        const uint8_t pct = effectiveTuvValvePct(true);
-        s_tuvValveCurrentPct = pct;
-        s_tuvValveMode = "dhw";
-        valveMoveToPct((uint8_t)s_tuvValveMaster0, pct);
+    if (s_tuvValveMaster0 >= 0 && s_tuvValveMaster0 < (int8_t)RELAY_COUNT) {
+        applyTuvValvePct(true);
         issued = true;
     }
     if (issued) s_tuvLastValveCmdMs = nowMs;
@@ -1304,7 +1428,7 @@ static void updateTuvModeState(uint32_t nowMs) {
     if (newActive && !s_tuvPrevModeActive) {
         // právě začal ohřev TUV
         if (s_eqValveMaster0 >= 0 && isValveMaster((uint8_t)s_eqValveMaster0)) {
-            s_tuvEqValveSavedPct = s_valves[(uint8_t)s_eqValveMaster0].targetPct;
+            s_tuvEqValveSavedPct = clampPctInt((int)valveComputePosPct(s_valves[(uint8_t)s_eqValveMaster0], nowMs));
             s_tuvEqValveSavedValid = true;
         } else {
             s_tuvEqValveSavedValid = false;
@@ -1319,17 +1443,21 @@ static void updateTuvModeState(uint32_t nowMs) {
             s_eqLastAdjustMs = nowMs;
         }
         s_tuvEqValveSavedValid = false;
-        if (s_tuvValveMaster0 >= 0 && s_tuvValveMaster0 < (int8_t)RELAY_COUNT && isValveMaster((uint8_t)s_tuvValveMaster0)) {
-            const uint8_t pct = effectiveTuvValvePct(false);
-            s_tuvValveCurrentPct = pct;
-            s_tuvValveMode = "ch";
-            valveMoveToPct((uint8_t)s_tuvValveMaster0, pct);
+        if (s_tuvValveMaster0 >= 0 && s_tuvValveMaster0 < (int8_t)RELAY_COUNT) {
+            // Force valve to CH position immediately when DHW ends.
+            applyTuvValvePct(false);
         }
     }
 
     s_tuvModeActive = newActive;
     s_tuvPrevModeActive = newActive;
     applyTuvModeValves(nowMs);
+
+    // When DHW is inactive, ensure the fixed switching valve (R3) is not left latched ON.
+    // This makes R3 effectively follow the same active state as the DHW request (R5).
+    if (!s_tuvModeActive) {
+        applyTuvValvePct(false);
+    }
 }
 
 static void recircUpdate(uint32_t nowMs) {
@@ -1519,7 +1647,7 @@ static void updateRelaysForMode(SystemMode mode) {
         // R1..R3 + R5..R8 jsou systémové (ventily/boiler/recirc/AKU) a řídí je
         // specializovaná logika. Režimy (MODE1..MODE5) a relay profily se na ně
         // nesmí aplikovat, aby nedocházelo ke konfliktům.
-        if (isFixedFunctionRelay(r)) continue;
+        if (isFixedFunctionRelay(r) || isValveMaster(r) || isValvePeer(r)) continue;
         relayApplyLogical(r, p->states[r]);
     }
 }
@@ -1651,7 +1779,7 @@ static void applyRelayMapFromInputs(bool defaultOffUnmapped) {
     for (uint8_t r = 0; r < RELAY_COUNT; r++) {
         // FIXED mapping: systémové relé nejsou řízené relayMap (AUTO) – pouze
         // jejich dedikovanou logikou (ventily, boiler signály, recirkulace, AKU).
-        if (isFixedFunctionRelay(r)) continue;
+        if (isFixedFunctionRelay(r) || isValveMaster(r) || isValvePeer(r)) continue;
         const uint8_t in = relayMap[r].input;
         if (in == 0 || in > INPUT_COUNT) {
             // bez přiřazení
@@ -1702,11 +1830,15 @@ void logicSetControlMode(ControlMode mode) {
 
     if (currentControlMode == ControlMode::AUTO) {
         Serial.println(F("[LOGIC] Control mode -> AUTO"));
+        #if defined(FEATURE_BUZZER)
         buzzerOnControlModeChanged(true);
+        #endif
         logicRecomputeFromInputs();
     } else {
         Serial.println(F("[LOGIC] Control mode -> MANUAL"));
+        #if defined(FEATURE_BUZZER)
         buzzerOnControlModeChanged(false);
+        #endif
         currentMode = manualMode;
         updateRelaysForMode(currentMode);
         Serial.print(F("[LOGIC] MANUAL mode = "));
@@ -1726,7 +1858,9 @@ bool logicSetManualMode(SystemMode mode) {
         Serial.println(logicModeToString(currentMode));
         relayPrintStates(Serial);
     }
+    #if defined(FEATURE_BUZZER)
     buzzerOnManualModeChanged(logicModeToString(mode));
+    #endif
     return true;
 }
 
@@ -1758,6 +1892,7 @@ void logicInit() {
     currentMode        = manualMode;
 
     s_autoStatus = AutoStatus{ false, 0, currentMode, false };
+    s_eqBootHomingArmed = true;
 
     // V AUTO rovnou dopočítej výstupy podle vstupů (ať po bootu odpovídá skutečnému stavu).
     logicRecomputeFromInputs();
@@ -2009,7 +2144,8 @@ void logicApplyConfig(const String& json) {
         return;
     }
 
-    // success
+    s_eqValveConfigChanged = false;
+// success
     g_logicApplyOk++;
     g_logicApplyLastErr[0] = 0;
     // reset relayMap + triggers (umožní "smazat" mapování v UI)
@@ -2116,39 +2252,66 @@ void logicApplyConfig(const String& json) {
             }
         }
 
-        // Outputs: trojcestné ventily (2 relé)
+        // Outputs: iofunc.outputs + 3c ventily
         JsonArray out = iof["outputs"].as<JsonArray>();
         if (!out.isNull()) {
             const uint8_t cnt = (out.size() > RELAY_COUNT) ? RELAY_COUNT : (uint8_t)out.size();
-            bool fixedMixConfigured = false;
-            bool fixedTuvConfigured = false;
+            bool mixConfigured = false;
 
             auto configureValve2Rel = [&](uint8_t master0, uint8_t peer0, JsonObject params) {
                 if (master0 >= RELAY_COUNT || peer0 >= RELAY_COUNT || peer0 == master0) return;
+                if (isFixedFunctionRelay(master0) || isFixedFunctionRelay(peer0)) return;
+
+                // peer nesmí být už použitý
+                if (s_valvePeerOf[peer0] >= 0) return;
+                // peer nesmí být zároveň master jiného ventilu
+                if (s_valves[peer0].configured) return;
 
                 Valve3WayState &v = s_valves[master0];
+const bool oldConfigured = v.configured;
+const uint32_t oldTravelMs = v.travelMs;
+const uint32_t oldPulseMs  = v.pulseMs;
+const uint32_t oldGuardMs  = v.guardMs;
+const uint32_t oldMinSwitchMs = v.minSwitchMs;
+const bool oldInvert = v.invertDir;
+const bool oldDefaultB = v.defaultB;
+const uint8_t oldRelayB = v.relayB;
+
                 v.configured = true;
                 v.singleRelay = false;
                 v.relayA = master0;
                 v.relayB = peer0;
-                // Defaulty musí být konzistentní s UI (jinak UI ukáže placeholder, ale firmware se chová jinak).
-                // Typické hodnoty pro směšovací 3c ventil: ~120 s plný přeběh.
-                v.travelMs = (uint32_t)(jsonGetFloat2(params, "travelTime", "travelTimeS", 120.0f) * 1000.0f);
-                v.pulseMs  = (uint32_t)(jsonGetFloat2(params, "pulseTime", "pulseTimeS", 1.5f) * 1000.0f);
-                v.guardMs  = (uint32_t)(jsonGetFloat2(params, "guardTime", "guardTimeS", 2.0f) * 1000.0f);
-                v.minSwitchMs = (uint32_t)(jsonGetFloat2(params, "minSwitchS", "minSwitch", 3.0f) * 1000.0f);
+
+                // Defaulty musí být konzistentní s UI.
+                // Směšovací ventil v tomto projektu: A→B cca 6 s, pulz ~0.6 s.
+                v.travelMs = (uint32_t)(jsonGetFloat2(params, "travelTime", "travelTimeS", 6.0f) * 1000.0f);
+                v.pulseMs  = (uint32_t)(jsonGetFloat2(params, "pulseTime",  "pulseTimeS",  0.6f) * 1000.0f);
+                v.guardMs  = (uint32_t)(jsonGetFloat2(params, "guardTime",  "guardTimeS",  0.3f) * 1000.0f);
+                v.minSwitchMs = (uint32_t)(jsonGetFloat2(params, "minSwitchS", "minSwitch", 1.0f) * 1000.0f);
                 if (v.minSwitchMs > 3600000UL) v.minSwitchMs = 3600000UL;
+
                 v.lastCmdMs = 0;
                 v.hasPending = false;
                 v.invertDir = (bool)(params["invertDir"] | false);
                 const String defPos = String((const char*)(params["defaultPos"] | "A"));
                 v.defaultB = (defPos.equalsIgnoreCase("B"));
 
-                uint8_t initPct = v.defaultB ? 100 : 0;
+// detect config change (used for homing)
+if (master0 == FIX_RELAY_MIX_A0) {
+    const bool changed =
+        (!oldConfigured) ||
+        (oldRelayB != v.relayB) ||
+        (oldTravelMs != v.travelMs) ||
+        (oldPulseMs  != v.pulseMs) ||
+        (oldGuardMs  != v.guardMs) ||
+        (oldMinSwitchMs != v.minSwitchMs) ||
+        (oldInvert != v.invertDir) ||
+        (oldDefaultB != v.defaultB);
+    if (changed) s_eqValveConfigChanged = true;
+}
 
-                if (snap[master0].valid) {
-                    initPct = snap[master0].posPct;
-                }
+                uint8_t initPct = v.defaultB ? 100 : 0;
+                if (snap[master0].valid) initPct = snap[master0].posPct;
 
                 v.posPct = initPct;
                 v.startPct = initPct;
@@ -2172,27 +2335,49 @@ void logicApplyConfig(const String& json) {
                 if (master0 >= RELAY_COUNT) return;
 
                 Valve3WayState &v = s_valves[master0];
+const bool oldConfigured = v.configured;
+const uint32_t oldTravelMs = v.travelMs;
+const uint32_t oldPulseMs  = v.pulseMs;
+const uint32_t oldGuardMs  = v.guardMs;
+const uint32_t oldMinSwitchMs = v.minSwitchMs;
+const bool oldInvert = v.invertDir;
+const bool oldDefaultB = v.defaultB;
+const uint8_t oldRelayB = v.relayB;
+
                 v.configured = true;
                 v.singleRelay = true;
                 v.relayA = master0;
                 v.relayB = master0;
-                // Pro přepínací/spring-return ventil jsou časy méně kritické, ale držíme stejné defaulty jako UI.
+
+                // Přepínací ventil (single relay): A→B cca 6 s.
                 v.travelMs = (uint32_t)(jsonGetFloat2(params, "travelTime", "travelTimeS", 6.0f) * 1000.0f);
-                v.pulseMs  = (uint32_t)(jsonGetFloat2(params, "pulseTime", "pulseTimeS", 0.8f) * 1000.0f);
-                v.guardMs  = (uint32_t)(jsonGetFloat2(params, "guardTime", "guardTimeS", 0.3f) * 1000.0f);
-                v.minSwitchMs = (uint32_t)(jsonGetFloat2(params, "minSwitchS", "minSwitch", 3.0f) * 1000.0f);
+                v.pulseMs  = (uint32_t)(jsonGetFloat2(params, "pulseTime",  "pulseTimeS",  0.8f) * 1000.0f);
+                v.guardMs  = (uint32_t)(jsonGetFloat2(params, "guardTime",  "guardTimeS",  0.3f) * 1000.0f);
+                v.minSwitchMs = (uint32_t)(jsonGetFloat2(params, "minSwitchS", "minSwitch", 1.0f) * 1000.0f);
                 if (v.minSwitchMs > 3600000UL) v.minSwitchMs = 3600000UL;
+
                 v.lastCmdMs = 0;
                 v.hasPending = false;
                 v.invertDir = (bool)(params["invertDir"] | false);
                 const String defPos = String((const char*)(params["defaultPos"] | "A"));
                 v.defaultB = (defPos.equalsIgnoreCase("B"));
 
-                uint8_t initPct = v.defaultB ? 100 : 0;
+// detect config change (used for homing)
+if (master0 == FIX_RELAY_MIX_A0) {
+    const bool changed =
+        (!oldConfigured) ||
+        (oldRelayB != v.relayB) ||
+        (oldTravelMs != v.travelMs) ||
+        (oldPulseMs  != v.pulseMs) ||
+        (oldGuardMs  != v.guardMs) ||
+        (oldMinSwitchMs != v.minSwitchMs) ||
+        (oldInvert != v.invertDir) ||
+        (oldDefaultB != v.defaultB);
+    if (changed) s_eqValveConfigChanged = true;
+}
 
-                if (snap[master0].valid) {
-                    initPct = snap[master0].posPct;
-                }
+                uint8_t initPct = v.defaultB ? 100 : 0;
+                if (snap[master0].valid) initPct = snap[master0].posPct;
 
                 v.posPct = initPct;
                 v.startPct = initPct;
@@ -2212,121 +2397,26 @@ void logicApplyConfig(const String& json) {
             for (uint8_t i=0;i<cnt;i++){
                 JsonObject oo = out[i].as<JsonObject>();
                 JsonObject params = oo["params"].as<JsonObject>();
-
-                // ----------------------------------------------------------------
-                // FIXED mapping: ventily jsou pevně svázané s relé:
-                //  - R1+R2 = směšovací ventil (2 relé)
-                //  - R3    = přepínací ventil (0/100, single relay)
-                // ----------------------------------------------------------------
-                if (i == FIX_RELAY_MIX_A0) {
-                    configureValve2Rel(FIX_RELAY_MIX_A0, FIX_RELAY_MIX_B0, params);
-                    fixedMixConfigured = true;
-                    continue;
-                }
-                if (i == FIX_RELAY_TUV_VALVE0) {
-                    configureValveSingle(FIX_RELAY_TUV_VALVE0, params);
-                    fixedTuvConfigured = true;
-                    continue;
-                }
-
                 const String role = String((const char*)(oo["role"] | "none"));
 
-                // 3c ventil master – podporujeme nové rozdělení i legacy
-                if (role == "valve_3way_mix" || role == "valve_3way_2rel" || role == "valve_3way_spring") {
-                    // FIXED mapping: na relé R1..R3 žádné jiné ventily nekonfigurujeme
-                    if (isFixedFunctionRelay(i)) continue;
-                    // peer relé (1-based v UI), default je i+2 = "další relé"
-                    uint8_t peerRel = (uint8_t)(params["peerRel"] | params["peer"] | 0);
-                    if (peerRel == 0) {
-                        // legacy config key
-                        peerRel = (uint8_t)(params["partnerRelay"] | (int)(i+2));
-                    }
-                    const int peer0 = (int)peerRel - 1;
-                    if (peer0 < 0 || peer0 >= RELAY_COUNT || peer0 == (int)i) continue;
+                // Směšovací ventil (Ekviterm) je v tomto projektu pevně na R1+R2.
+                // Konfigurovatelné jsou pouze parametry (travel/pulse/guard/minSwitch/invert/defaultPos).
+                if (i == (uint8_t)FIX_RELAY_MIX_A0 && (role == "valve_3way_mix" || role == "valve_3way_2rel")) {
+                    configureValve2Rel(FIX_RELAY_MIX_A0, FIX_RELAY_MIX_B0, params);
+                    if (s_valves[FIX_RELAY_MIX_A0].configured) mixConfigured = true;
+                    continue;
+                }
+                // Pokud je role směšovacího ventilu omylem uložená jinde, ignoruj ji.
+                if (role == "valve_3way_mix" || role == "valve_3way_2rel") {
+                    continue;
+                }
 
-                    // Pokud už je relé použité jako peer jiné instance, vynecháme.
-                    if (s_valvePeerOf[peer0] >= 0) continue;
-                    // A nechceme, aby peer byl zároveň master jiného ventilu.
-                    if (s_valves[peer0].configured) continue;
+                // TUV přepínací ventil je pevně R3 (single relay). Případné role v configu ignorujeme.
+                if (role == "valve_3way_tuv" || role == "valve_3way_dhw" || role == "valve_3way_spring") {
+                    continue;
+                }
 
-                    Valve3WayState &v = s_valves[i];
-                    v.configured = true;
-                    v.singleRelay = false;
-                    v.relayA = i;
-                    v.relayB = (uint8_t)peer0;
-                    v.travelMs = (uint32_t)(jsonGetFloat2(params, "travelTime", "travelTimeS", 120.0f) * 1000.0f);
-                    v.pulseMs  = (uint32_t)(jsonGetFloat2(params, "pulseTime", "pulseTimeS", 1.5f) * 1000.0f);
-                    v.guardMs  = (uint32_t)(jsonGetFloat2(params, "guardTime", "guardTimeS", 2.0f) * 1000.0f);
-                    // Ochranná perioda mezi přestaveními (default 3s; lze zvýšit podle potřeby)
-                    v.minSwitchMs = (uint32_t)(jsonGetFloat2(params, "minSwitchS", "minSwitch", 3.0f) * 1000.0f);
-                    if (v.minSwitchMs > 3600000UL) v.minSwitchMs = 3600000UL;
-                    v.lastCmdMs = 0;
-                    v.hasPending = false;
-                    v.invertDir = (bool)(params["invertDir"] | false);
-                    const String defPos = String((const char*)(params["defaultPos"] | "A"));
-                    v.defaultB = (defPos.equalsIgnoreCase("B"));
-
-                    // Zachovej odhad polohy (ventil může fyzicky zůstat jinde i po změně konfigurace)
-                    uint8_t initPct = v.defaultB ? 100 : 0;
-                    if (snap[i].valid) {
-                        initPct = snap[i].posPct;
-                    }
-
-                    v.posPct = initPct;
-                    v.startPct = initPct;
-                    v.targetPct = initPct;
-                    v.currentB = (initPct >= 50);
-                    v.pendingTargetPct = initPct;
-                    v.hasPending = false;
-
-                    v.moving = false;
-                    v.moveStartMs = 0;
-                    v.moveEndMs = 0;
-                    v.guardEndMs = 0;
-
-                    s_valvePeerOf[peer0] = (int8_t)i;
-
-                    // jistota: peer relé vypnout
-                    relaySet(static_cast<RelayId>(v.relayA), false);
-                    relaySet(static_cast<RelayId>(v.relayB), false);
-                } else if (role == "valve_3way_tuv" || role == "valve_3way_dhw") {
-                    // FIXED mapping: na relé R1..R3 žádné jiné ventily nekonfigurujeme
-                    if (isFixedFunctionRelay(i)) continue;
-                    Valve3WayState &v = s_valves[i];
-                    v.configured = true;
-                    v.singleRelay = true;
-                    v.relayA = i;
-                    v.relayB = i;
-                    v.travelMs = (uint32_t)(jsonGetFloat2(params, "travelTime", "travelTimeS", 6.0f) * 1000.0f);
-                    v.pulseMs  = (uint32_t)(jsonGetFloat2(params, "pulseTime", "pulseTimeS", 0.8f) * 1000.0f);
-                    v.guardMs  = (uint32_t)(jsonGetFloat2(params, "guardTime", "guardTimeS", 0.3f) * 1000.0f);
-                    v.minSwitchMs = (uint32_t)(jsonGetFloat2(params, "minSwitchS", "minSwitch", 3.0f) * 1000.0f);
-                    if (v.minSwitchMs > 3600000UL) v.minSwitchMs = 3600000UL;
-                    v.lastCmdMs = 0;
-                    v.hasPending = false;
-                    v.invertDir = (bool)(params["invertDir"] | false);
-                    const String defPos = String((const char*)(params["defaultPos"] | "A"));
-                    v.defaultB = (defPos.equalsIgnoreCase("B"));
-
-                    uint8_t initPct = v.defaultB ? 100 : 0;
-                    if (snap[i].valid) {
-                        initPct = snap[i].posPct;
-                    }
-
-                    v.posPct = initPct;
-                    v.startPct = initPct;
-                    v.targetPct = initPct;
-                    v.currentB = (initPct >= 50);
-                    v.pendingTargetPct = initPct;
-                    v.hasPending = false;
-
-                    v.moving = false;
-                    v.moveStartMs = 0;
-                    v.moveEndMs = 0;
-                    v.guardEndMs = 0;
-
-                    relaySet(static_cast<RelayId>(v.relayA), false);
-                } else if (role == "boiler_enable_dhw") {
+                if (role == "boiler_enable_dhw") {
                     s_boilerDhwRelay = (int8_t)i;
                 } else if (role == "boiler_enable_nm") {
                     s_boilerNightRelay = (int8_t)i;
@@ -2337,18 +2427,68 @@ void logicApplyConfig(const String& json) {
                 }
             }
 
-            // Pokud pole iofunc.outputs nemá položku na indexu, zajistíme alespoň
-            // default konfiguraci pro pevné ventily.
             StaticJsonDocument<8> emptyDoc;
             JsonObject emptyParams = emptyDoc.to<JsonObject>();
-            if (!fixedMixConfigured) {
-                configureValve2Rel(FIX_RELAY_MIX_A0, FIX_RELAY_MIX_B0, emptyParams);
+
+            // Pevně nastavený TUV přepínací ventil: R3 (single relay)
+            JsonObject r3Params;
+            if (out.size() > FIX_RELAY_TUV_VALVE0) {
+                JsonObject r3Obj = out[FIX_RELAY_TUV_VALVE0].as<JsonObject>();
+                r3Params = r3Obj["params"].as<JsonObject>();
             }
-            if (!fixedTuvConfigured) {
-                configureValveSingle(FIX_RELAY_TUV_VALVE0, emptyParams);
+            configureValveSingle(FIX_RELAY_TUV_VALVE0, r3Params.isNull() ? emptyParams : r3Params);
+
+            // Fallback (pokud není v configu žádný směšovací ventil): R1+R2
+            if (!mixConfigured) {
+                JsonObject r1Params;
+                if (out.size() > FIX_RELAY_MIX_A0) {
+                    JsonObject r1Obj = out[FIX_RELAY_MIX_A0].as<JsonObject>();
+                    r1Params = r1Obj["params"].as<JsonObject>();
+                }
+                configureValve2Rel(FIX_RELAY_MIX_A0, FIX_RELAY_MIX_B0, r1Params.isNull() ? emptyParams : r1Params);
             }
         }
     }
+
+
+// Safety fallback: ensure the Ekviterm mixing 3-way valve (R1+R2) is configured
+// even if the config.json is missing iofunc.outputs (e.g. partial PATCH save from UI).
+if (!s_valves[FIX_RELAY_MIX_A0].configured) {
+    Valve3WayState &v = s_valves[FIX_RELAY_MIX_A0];
+    v.configured = true;
+    v.singleRelay = false;
+    v.relayA = FIX_RELAY_MIX_A0; // R1
+    v.relayB = FIX_RELAY_MIX_B0; // R2
+
+    // Use defaults consistent with UI (can be overridden when iofunc.outputs is present).
+    v.travelMs = 6000;
+    v.pulseMs  = 600;
+    v.guardMs  = 300;
+    v.minSwitchMs = 1000;
+
+    v.lastCmdMs = 0;
+    v.hasPending = false;
+    v.invertDir = false;
+    v.defaultB = false;
+
+    uint8_t initPct = 0;
+    v.posPct = initPct;
+    v.startPct = initPct;
+    v.targetPct = initPct;
+    v.currentB = false;
+    v.pendingTargetPct = initPct;
+    v.hasPending = false;
+
+    v.moving = false;
+    v.moveStartMs = 0;
+    v.moveEndMs = 0;
+    v.guardEndMs = 0;
+
+    s_valvePeerOf[FIX_RELAY_MIX_B0] = (int8_t)FIX_RELAY_MIX_A0;
+
+    relaySet(static_cast<RelayId>(v.relayA), false);
+    relaySet(static_cast<RelayId>(v.relayB), false);
+}
 
     // Enforce fixed mapping (nesmí být přepsáno konfigurací)
     s_nightModeInput = (int8_t)FIX_IN_NIGHT_MODE0;
@@ -2553,14 +2693,17 @@ void logicApplyConfig(const String& json) {
             (void)derive(s_eqNightTout1, s_eqNightTflow1, s_eqNightTout2, s_eqNightTflow2, s_eqSlopeNight, s_eqShiftNight);
         }
 
-        // 3c směšovací ventil – FIXED mapping: R1+R2
-        // (Nastavení v UI/configu se ignoruje.)
-        s_eqValveMaster0 = (int8_t)FIX_RELAY_MIX_A0;
-        if (!isValveMaster((uint8_t)s_eqValveMaster0)) {
-            // Pojistka – pokud ventil není nakonfigurovaný, equitherm se raději deaktivuje.
+        // 3c směšovací ventil pro Ekviterm je v tomto projektu pevně na R1 (master) + R2 (peer).
+        // Konfigurovatelné jsou jen parametry ventilu, ne výběr relé.
+        s_eqValveMaster0 = -1;
+        if (isValveMaster(FIX_RELAY_MIX_A0) && s_valves[FIX_RELAY_MIX_A0].configured && !s_valves[FIX_RELAY_MIX_A0].singleRelay) {
+            s_eqValveMaster0 = (int8_t)FIX_RELAY_MIX_A0;
+        } else {
+            // Pojistka – pokud ventil není nakonfigurovaný, ekviterm se nebude řídit v AUTO.
+            // (Necháme ho zapnutý kvůli diagnostice v UI.)
             s_eqValveMaster0 = -1;
-            s_eqEnabled = false;
         }
+
 
         // control params
         JsonObject ctrl = eq["control"].as<JsonObject>();
@@ -2612,12 +2755,57 @@ void logicApplyConfig(const String& json) {
         s_eqNoFlowLastTestMs = 0;
 
         // pokud vybraný ventil není nakonfigurovaný jako 3c master, ignoruj
-        if (s_eqValveMaster0 >= 0 && !isValveMaster((uint8_t)s_eqValveMaster0)) s_eqValveMaster0 = -1;
+        if (s_eqValveMaster0 >= 0 && (!isValveMaster((uint8_t)s_eqValveMaster0) || s_valves[(uint8_t)s_eqValveMaster0].singleRelay)) s_eqValveMaster0 = -1;
+
+        
+// homing config (volitelné)
+JsonObject hom = eq["homing"].as<JsonObject>();
+if (!hom.isNull()) {
+    s_eqHomingEnabled = (bool)(hom["enabled"] | s_eqHomingEnabled);
+    s_eqHomingOnBoot = (bool)(hom["onBoot"] | s_eqHomingOnBoot);
+    s_eqHomingOnConfigChange = (bool)(hom["onConfigChange"] | hom["on_config_change"] | s_eqHomingOnConfigChange);
+    s_eqHomingPeriodMs = (uint32_t)(hom["periodMs"] | hom["period_ms"] | s_eqHomingPeriodMs);
+    const int pct = (int)(hom["positionPct"] | hom["position_pct"] | (int)s_eqHomingTargetPct);
+    s_eqHomingTargetPct = (uint8_t)clampPctInt(pct);
+}
+
+// Pokud se změnila konfigurace směšovacího ventilu (IOFUNC), můžeme provést homing,
+// abychom sladili skutečný stav s interním modelem (bez koncáků jde o nejlepší dostupnou synchronizaci).
+if (s_eqValveConfigChanged && s_eqHomingEnabled && s_eqHomingOnConfigChange) {
+    equithermRequestHoming("config");
+    // pokud jsme ještě nikdy nehomovali, nastav poslední čas na 0 – první tick provede homing hned
+    s_eqLastHomingMs = 0;
+}
+
+// --- Konfigurační validace (pro UI/diagnostiku) ---
+        s_eqConfigOk = true;
+        s_eqConfigReason = "";
+        s_eqConfigWarning = "";
+
+        const bool flowCfgOk = s_eqFlowCfg.source.length() && s_eqFlowCfg.source != "none";
+        const bool valveOk = (s_eqValveMaster0 >= 0) && isValveMaster((uint8_t)s_eqValveMaster0) && s_valves[(uint8_t)s_eqValveMaster0].configured;
+        const bool outdoorCfgSet = s_eqOutdoorCfg.source.length() && s_eqOutdoorCfg.source != "none";
+
+        if (!flowCfgOk) {
+            s_eqConfigOk = false;
+            s_eqConfigReason = "flow source not configured";
+        } else if (!valveOk) {
+            s_eqConfigOk = false;
+            s_eqConfigReason = "3-way valve not configured";
+        }
+
+        if (!outdoorCfgSet) {
+            // Ekviterm může použít auto BLE meteo fallback (pokud je k dispozici). Bereme jako warning.
+            s_eqConfigWarning = "outdoor source not set (auto BLE fallback if available)";
+        }
 
         equithermRecompute();
     } else {
         s_eqEnabled = false;
         s_eqValveMaster0 = -1;
+        s_eqConfigOk = true;
+        s_eqConfigReason = "";
+        s_eqConfigWarning = "";
     }
     JsonObject sys = doc["system"].as<JsonObject>();
     if (!sys.isNull()) {
@@ -2742,7 +2930,7 @@ void logicApplyConfig(const String& json) {
 
     
     // --- TUV config (schedule / dhw_enable -> DO request) ---
-    // FIXED mapping: IN1 = DHW demand
+    // FIXED mapping: IN2 = DHW demand
     s_tuvDemandInput = (int8_t)FIX_IN_DHW_DEMAND0;
     s_tuvRequestRelay = -1;
     // FIXED mapping: R3 = přepínací ventil (0/100)
@@ -2750,8 +2938,9 @@ void logicApplyConfig(const String& json) {
     s_tuvValveTargetPct = 0;
     s_tuvEqValveTargetPct = 0;
     s_tuvBypassEnabled = true;
-    s_tuvBypassPct = 100;
-    s_tuvChPct = 0;
+    // Project requirement: DHW active -> 0%, inactive -> 100%
+    s_tuvBypassPct = 0;
+    s_tuvChPct = 100;
     s_tuvBypassInvert = false;
     s_tuvValveCurrentPct = 0;
     s_tuvValveMode = "ch";
@@ -2769,7 +2958,7 @@ void logicApplyConfig(const String& json) {
         int rel = tuv["relay"] | tuv["requestRelay"] | tuv["request_relay"] | 0;
         if (rel >= 1 && rel <= RELAY_COUNT) s_tuvRequestRelay = (int8_t)(rel - 1);
         if (tuv.containsKey("enabled")) s_tuvScheduleEnabled = (bool)tuv["enabled"];
-        // FIXED mapping: IN1 = DHW demand (konfigurační hodnoty ignorujeme)
+        // FIXED mapping: IN2 = DHW demand (konfigurační hodnoty ignorujeme)
         s_tuvDemandInput = (int8_t)FIX_IN_DHW_DEMAND0;
 
         // FIXED mapping: R3 = přepínací ventil (0/100)
@@ -2796,7 +2985,10 @@ void logicApplyConfig(const String& json) {
         s_tuvValveTargetPct = clampPctInt((int)(doc["tuvValveTargetPct"] | doc["tuv_valve_target_pct"] | s_tuvValveTargetPct));
         s_tuvEqValveTargetPct = clampPctInt((int)(doc["tuvEqValveTargetPct"] | doc["tuv_eq_valve_target_pct"] | s_tuvEqValveTargetPct));
     }
-    if (s_tuvValveMaster0 >= 0 && !isValveMaster((uint8_t)s_tuvValveMaster0)) s_tuvValveMaster0 = -1;
+    // NOTE: In this project R3 is a *switching* 3-way valve (binary). It does not have to be
+    // configured as a "valve master" (2-relay motorized valve). Therefore we keep the relay index
+    // even if it is not configured in s_valves[]. The logic below will fall back to direct relay
+    // control when the valve master isn't configured.
     s_tuvDemandActive = false;
     updateInputBasedModes();
     s_tuvValveCurrentPct = effectiveTuvValvePct(s_tuvModeActive);
