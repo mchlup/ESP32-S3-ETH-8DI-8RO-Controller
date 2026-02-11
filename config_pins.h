@@ -2,6 +2,7 @@
 #include <Arduino.h>
 
 
+
 // Waveshare ESP32-S3-ETH-8DI-8RO pin map (Waveshare Wiki)
 //
 // Relays are driven by TCA9554 (EXIO1..EXIO8) 
@@ -28,12 +29,17 @@
 #define RGB_LED_PIN 38
 #define BUZZER_PIN 46
 
-// DS18B20 (OneWire) sběrnice – GPIO0..GPIO3
-// Na každé sběrnici mohou být až 3 teploměry (dle návrhu projektu).
-#define DALLAS_IO0_PIN 0
-#define DALLAS_IO1_PIN 1
-#define DALLAS_IO2_PIN 2
-#define DALLAS_IO3_PIN 3
+// DS18B20 (OneWire) sběrnice
+// - ESP32-S3-ETH-8DI-8RO: GPIO0..GPIO3 (pevně)
+#define DS18B20_PIN_1 0
+#define DS18B20_PIN_2 1
+#define DS18B20_PIN_3 2
+#define DS18B20_PIN_4 3
+
+#define DALLAS_IO0_PIN DS18B20_PIN_1
+#define DALLAS_IO1_PIN DS18B20_PIN_2
+#define DALLAS_IO2_PIN DS18B20_PIN_3
+#define DALLAS_IO3_PIN DS18B20_PIN_4
 
 // TCA9554 default I2C address on many boards
 #ifndef TCA9554_ADDR

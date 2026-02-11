@@ -3,6 +3,8 @@
 // Local copy of https://github.com/junkfix/esp32-ds18b20 (RMT-based OneWire)
 #include "OneWireESP32.h"
 
+#include <ArduinoJson.h>
+
 // Ensure 1-Wire line has a pull-up even if the external resistor is missing.
 // (External ~4.7k to 3V3 is still strongly recommended for reliability.)
 #include <driver/gpio.h>
@@ -133,6 +135,7 @@ static bool probeAndDiscover(uint8_t gpio) {
     for (uint8_t i = 0; i < found; i++) {
         DallasDeviceInfo d{};
         d.rom = addrs[i];
+        d.address = d.rom;
         d.temperature = NAN;
         d.valid = false;
         g_bus[gpio].devices.push_back(d);
@@ -345,6 +348,10 @@ struct DallasInputCfg {
 DallasInputCfg s_cfg[INPUT_COUNT];
 bool s_inited = false;
 
+// For UI/diagnostics: ROM actually used for the last successful read per logical slot.
+// In AUTO mode (no explicit ROM configured), this lets the UI show which sensor is being read.
+uint64_t s_slotLastRom[INPUT_COUNT] = {0};
+
 static inline int hexNibble(char c) {
   if (c >= '0' && c <= '9') return c - '0';
   if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
@@ -369,7 +376,7 @@ static bool parseRomHex(const char* s, uint64_t &out) {
   return true;
 }
 
-static bool pickDeviceTemp(uint8_t gpio, bool hasAddr, uint64_t addr, float& outTemp) {
+static bool pickDeviceTemp(uint8_t gpio, bool hasAddr, uint64_t addr, float& outTemp, uint64_t* outRom) {
   const DallasGpioStatus* st = DallasController::getStatus(gpio);
   if (!st) return false;
   if (st->devices.empty()) return false;
@@ -378,6 +385,7 @@ static bool pickDeviceTemp(uint8_t gpio, bool hasAddr, uint64_t addr, float& out
     for (auto &d : st->devices) {
       if (d.valid && isfinite(d.temperature)) {
         outTemp = d.temperature;
+        if (outRom) *outRom = d.rom;
         return true;
       }
     }
@@ -388,6 +396,7 @@ static bool pickDeviceTemp(uint8_t gpio, bool hasAddr, uint64_t addr, float& out
     if (!d.valid || !isfinite(d.temperature)) continue;
     if (d.rom == addr) {
       outTemp = d.temperature;
+      if (outRom) *outRom = d.rom;
       return true;
     }
   }
@@ -398,12 +407,19 @@ void applyCfgObj(const JsonObjectConst& root){
   JsonObjectConst cfg = root;
   if (root.containsKey("cfg") && root["cfg"].is<JsonObjectConst>()) cfg = root["cfg"].as<JsonObjectConst>();
 
+  // If config does not contain any Dallas-related keys, keep current mapping.
+  const bool hasAny = (cfg.containsKey("dallasGpios") || cfg.containsKey("dallasAddrs") || cfg.containsKey("dallasNames") ||
+                       (cfg.containsKey("iofunc") && cfg["iofunc"].is<JsonObjectConst>()) ||
+                       (root.containsKey("iofunc") && root["iofunc"].is<JsonObjectConst>()));
+  if (!hasAny) return;
+
   // reset mapping
   for (uint8_t i=0;i<INPUT_COUNT;i++){
     s_cfg[i].enabled = false;
     s_cfg[i].gpio = 255;
     s_cfg[i].hasAddr = false;
     s_cfg[i].addr = 0;
+    s_slotLastRom[i] = 0;
   }
 
   bool usedGpio[4] = {false,false,false,false};
@@ -467,6 +483,25 @@ void applyCfgObj(const JsonObjectConst& root){
     }
   }
 
+  // Heuristika: pokud je uložené mapování dallasGpios pro všech 8 slotů, ale nejsou specifikované ROM adresy,
+  // nechceme automaticky číst stejný senzor do více slotů (typicky T1 a T5).
+  if (channelMapMode && hasDallasGpios) {
+    bool anyAddr = false;
+    for (uint8_t i = 0; i < INPUT_COUNT; i++) {
+      if (s_cfg[i].enabled && s_cfg[i].hasAddr) { anyAddr = true; break; }
+    }
+    if (!anyAddr) {
+      for (uint8_t i = 4; i < INPUT_COUNT; i++) {
+        if (s_cfg[i].enabled && s_cfg[i].gpio <= 3) {
+          s_cfg[i].enabled = false;
+          s_cfg[i].gpio = 255;
+          s_cfg[i].hasAddr = false;
+          s_cfg[i].addr = 0;
+        }
+      }
+    }
+  }
+
   // --- temp_dallas mapování přes iofunc.inputs[] (legacy / power users) ---
   // If configured, it overrides the per-channel mapping.
   if (cfg.containsKey("iofunc") && cfg["iofunc"].is<JsonObjectConst>()){
@@ -498,6 +533,44 @@ void applyCfgObj(const JsonObjectConst& root){
           }
         }
         idx++;
+      }
+    }
+
+    // Guard against accidental duplicates from UI defaults:
+    // If multiple logical slots point to the same GPIO without a specific ROM,
+    // they would all read "the first sensor" and appear as duplicates (e.g. T1 and T5).
+    // Keep only the first AUTO slot per GPIO and disable the rest.
+    for (uint8_t gpio = 0; gpio <= 3; gpio++) {
+      int8_t firstAuto = -1;
+      for (uint8_t i = 0; i < INPUT_COUNT; i++) {
+        if (!s_cfg[i].enabled) continue;
+        if (s_cfg[i].gpio != gpio) continue;
+        if (s_cfg[i].hasAddr) continue;
+        if (firstAuto < 0) {
+          firstAuto = (int8_t)i;
+        } else {
+          s_cfg[i].enabled = false;
+          s_cfg[i].gpio = 255;
+        }
+      }
+    }
+  }
+
+  // Guard against accidental duplicates from UI defaults:
+  // If multiple logical slots point to the same GPIO without a specific ROM,
+  // they would all read "the first sensor" and appear as duplicates (e.g. T1 and T5).
+  // Keep only the first AUTO slot per GPIO and disable the rest.
+  for (uint8_t gpio = 0; gpio <= 3; gpio++) {
+    int8_t firstAuto = -1;
+    for (uint8_t i = 0; i < INPUT_COUNT; i++) {
+      if (!s_cfg[i].enabled) continue;
+      if (s_cfg[i].gpio != gpio) continue;
+      if (s_cfg[i].hasAddr) continue;
+      if (firstAuto < 0) {
+        firstAuto = (int8_t)i;
+      } else {
+        s_cfg[i].enabled = false;
+        s_cfg[i].gpio = 255;
       }
     }
   }
@@ -558,12 +631,18 @@ bool dallasIsValid(uint8_t inputIndex){
   if (!s_cfg[inputIndex].enabled) {
     if (inputIndex <= 3){
       float t;
-      return pickDeviceTemp(inputIndex, false, 0, t);
+      uint64_t rom = 0;
+      const bool ok = pickDeviceTemp(inputIndex, false, 0, t, &rom);
+      if (ok) s_slotLastRom[inputIndex] = rom;
+      return ok;
     }
     return false;
   }
   float t;
-  return pickDeviceTemp(s_cfg[inputIndex].gpio, s_cfg[inputIndex].hasAddr, s_cfg[inputIndex].addr, t);
+  uint64_t rom = 0;
+  const bool ok = pickDeviceTemp(s_cfg[inputIndex].gpio, s_cfg[inputIndex].hasAddr, s_cfg[inputIndex].addr, t, &rom);
+  if (ok) s_slotLastRom[inputIndex] = rom;
+  return ok;
 }
 
 float dallasGetTempC(uint8_t inputIndex){
@@ -571,11 +650,45 @@ float dallasGetTempC(uint8_t inputIndex){
   float t = NAN;
   if (!s_cfg[inputIndex].enabled){
     if (inputIndex <= 3){
-      pickDeviceTemp(inputIndex, false, 0, t);
+      uint64_t rom = 0;
+      const bool ok = pickDeviceTemp(inputIndex, false, 0, t, &rom);
+      if (ok) s_slotLastRom[inputIndex] = rom;
       return t;
     }
     return NAN;
   }
-  pickDeviceTemp(s_cfg[inputIndex].gpio, s_cfg[inputIndex].hasAddr, s_cfg[inputIndex].addr, t);
+  uint64_t rom = 0;
+  const bool ok = pickDeviceTemp(s_cfg[inputIndex].gpio, s_cfg[inputIndex].hasAddr, s_cfg[inputIndex].addr, t, &rom);
+  if (ok) s_slotLastRom[inputIndex] = rom;
   return t;
+}
+
+uint64_t dallasGetSlotRom(uint8_t inputIndex) {
+  if (inputIndex >= INPUT_COUNT) return 0;
+  if (s_cfg[inputIndex].enabled && s_cfg[inputIndex].hasAddr) return s_cfg[inputIndex].addr;
+  return s_slotLastRom[inputIndex];
+}
+
+bool dallasTryGetSlotRom(uint8_t inputIndex, uint64_t& outRom) {
+  const uint64_t v = dallasGetSlotRom(inputIndex);
+  if (v == 0) return false;
+  outRom = v;
+  return true;
+}
+
+static String romToHex16(uint64_t rom) {
+  char buf[17];
+  for (int i = 15; i >= 0; i--) {
+    const uint8_t nib = (uint8_t)(rom & 0x0F);
+    buf[i] = (nib < 10) ? char('0' + nib) : char('A' + (nib - 10));
+    rom >>= 4;
+  }
+  buf[16] = 0;
+  return String(buf);
+}
+
+String dallasGetSlotRomHex(uint8_t inputIndex) {
+  uint64_t rom = 0;
+  if (!dallasTryGetSlotRom(inputIndex, rom)) return String();
+  return romToHex16(rom);
 }

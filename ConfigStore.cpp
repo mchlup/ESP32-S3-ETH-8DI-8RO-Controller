@@ -1,41 +1,47 @@
 #include "ConfigStore.h"
 
+#include <Preferences.h>
+
 namespace {
-    // 1 = HIGH je aktivní, 0 = LOW je aktivní
-    // Velikost pole je dána konstantou v namespace ConfigStore.
-    uint8_t g_inputActiveLevels[ConfigStore::INPUT_ACTIVE_LEVELS_SIZE] = {
-        0, 0, 0, 0, 0, 0, 0, 0
-    };
+  Preferences g_prefs;
+  bool g_inited = false;
+  uint8_t g_levels[8] = {0,0,0,0,0,0,0,0}; // default active-low
+
+  void load() {
+    if (!g_prefs.begin("cfg", true)) return;
+    size_t len = g_prefs.getBytesLength("in_lvl");
+    if (len == sizeof(g_levels)) {
+      g_prefs.getBytes("in_lvl", g_levels, sizeof(g_levels));
+    }
+    g_prefs.end();
+  }
+
+  void save() {
+    if (!g_prefs.begin("cfg", false)) return;
+    g_prefs.putBytes("in_lvl", g_levels, sizeof(g_levels));
+    g_prefs.end();
+  }
 }
 
 namespace ConfigStore {
+  void begin() {
+    if (g_inited) return;
+    g_inited = true;
+    load();
+  }
 
-void initDefaults() {
-    // Všech 8 vstupů = LOW je aktivní (doporučené pro Waveshare DI s INPUT_PULLUP)
-    for (uint8_t i = 0; i < INPUT_ACTIVE_LEVELS_SIZE; i++) {
-        g_inputActiveLevels[i] = 0;
+  uint8_t getInputActiveLevel(uint8_t inputIndex) {
+    begin();
+    if (inputIndex >= 8) return 0;
+    return g_levels[inputIndex] ? 1 : 0;
+  }
+
+  void setInputActiveLevels(const uint8_t* levels, uint8_t count) {
+    begin();
+    const uint8_t n = (count > 8) ? 8 : count;
+    for (uint8_t i = 0; i < n; i++) {
+      g_levels[i] = levels[i] ? 1 : 0;
     }
+    save();
+  }
 }
-
-void setInputActiveLevels(const uint8_t* levels, uint8_t count) {
-    if (!levels) return;
-
-    if (count > INPUT_ACTIVE_LEVELS_SIZE) {
-        count = INPUT_ACTIVE_LEVELS_SIZE;
-    }
-
-    // Přepíšeme prvních "count" položek
-    for (uint8_t i = 0; i < count; i++) {
-        g_inputActiveLevels[i] = levels[i] ? 1 : 0;
-    }
-}
-
-uint8_t getInputActiveLevel(uint8_t index) {
-    if (index >= INPUT_ACTIVE_LEVELS_SIZE) {
-        // mimo rozsah → bezpečný default = LOW aktivní
-        return 0;
-    }
-    return g_inputActiveLevels[index];
-}
-
-} // namespace ConfigStore

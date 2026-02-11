@@ -1,43 +1,77 @@
 #pragma once
+
 #include <Arduino.h>
 
-// BLE modul pro ESP32-S3 (dual-role):
-// 1) GATT Server pro BLE displej / mobil (dashboard + povely)
-// 2) GATT Client pro BLE meteostanici (příjem venkovních dat)
+// ArduinoJson v7+ types live in a namespace; include here so users of
+// bleFillFastJson don't need to guess the correct JsonObject type.
+#include <ArduinoJson.h>
+
+// ---------------------------------------------------------------------------
+// Optional feature
 //
-// Konfigurace: /ble.json (LittleFS)
-// Seznam spárovaných/allowlist: /ble_paired.json (LittleFS)
-//
-// Pozn.: NimBLE si bondy ukládá do NVS. My navíc držíme vlastní allowlist v LittleFS,
-// aby bylo možné povolit/zakázat zařízení bez mazání celé NVS.
+// FEATURE_BLE is defined by FeatureBle.h (included from Features.h).
+// When disabled, this header provides lightweight no-op stubs.
+// ---------------------------------------------------------------------------
+
+#if defined(FEATURE_BLE)
 
 void bleInit();
 void bleLoop();
 
-// JSON pro WebUI/API
+// Apply settings from /config.json (called by webserverLoadConfigFromFS).
+// Expected JSON path: {"ble": {"enabled":true, "mac":"AA:BB:CC:DD:EE:FF", "type":"atc_mitherm", "maxAgeMs":600000}}
+void bleApplyConfig(const String& json);
+
+// Temperature helper for LogicController.
+// If id is empty, returns default "meteo" temperature.
+bool bleGetTempCById(const String& id, float& outC);
+bool bleGetMeteoTempC(float& outC);
+// Extended helpers with optional per-call maxAge override.
+// If maxAgeOverrideMs == 0, uses configured ble.maxAgeMs.
+// If ageMs is provided, it's filled with age of the last reading (ms).
+bool bleGetTempCByIdEx(const String& id, float& outC, uint32_t maxAgeOverrideMs, uint32_t* ageMs);
+bool bleGetMeteoTempCEx(float& outC, uint32_t maxAgeOverrideMs, uint32_t* ageMs);
+
+// Diagnostics: is scan running?
+bool bleIsScanning();
+
+
+// Optional extended reading (if the broadcaster provides it).
+// Returns false if not available / stale.
+bool bleGetMeteoReading(float& outTempC, int& outHumPct, int& outPressHpa, int& outTrend);
+
+// JSON status for /api/ble/status (compact, stable fields).
 String bleGetStatusJson();
-String bleGetConfigJson();
-bool bleSetConfigJson(const String& json, String* errorCode = nullptr);
-bool bleMeteoRetryNow();
 
-// Párování / správa zařízení
-String bleGetPairedJson();                 // {"devices":[{mac,name,role,addedAt}]}
-bool bleStartPairing(uint32_t seconds, const String& roleHint); // roleHint: "display" / "meteo" / ""
-bool bleStopPairing();
-bool bleRemoveDevice(const String& mac);   // odebere z allowlistu + smaže bond z NimBLE (pokud jde)
-bool bleClearDevices();
+// Debug helper: force value without BLE.
+void bleDebugSetMeteoTempC(float c);
 
-// Meteo poslední hodnoty (přístupné i přes status)
-bool bleHasMeteoFix();
+// Fill BLE meteo snapshot into /api/fast (and therefore SSE payload).
+// Keys are short on purpose to keep /api/fast compact.
+//  ok: bool (we have fresh data)
+//  fr: bool (fresh vs stale)
+//  a : ageMs
+//  r : RSSI
+//  t : tempC
+//  h : humidity % (optional)
+//  p : pressure hPa (optional)
+//  en: BLE enabled
+//  typ: decoder type
+//  mac: allowMac (optional)
+void bleFillFastJson(ArduinoJson::JsonObject b);
 
-// Meteo – rychlý přístup k posledním hodnotám
-bool bleGetMeteoTempC(float &outC); // true pokud je fix a hodnota je validní
+#else
 
-// Obecný getter podle id (rezerva do budoucna). Aktuálně podporuje minimálně:
-//  - "meteo" / "meteo.tempC" / "temp" / "tempC" / "" (default)
-bool bleGetTempCById(const String& id, float &outC);
+inline void bleInit() {}
+inline void bleLoop() {}
+inline void bleApplyConfig(const String&) {}
 
-const char* bleGetStateName();
-uint32_t bleGetLastDataAgeMs();
-uint32_t bleGetReconnectCount();
-uint32_t bleGetFailCount();
+inline bool bleGetTempCById(const String&, float&) { return false; }
+inline bool bleGetMeteoTempC(float&) { return false; }
+inline bool bleGetMeteoReading(float&, int&, int&, int&) { return false; }
+
+inline String bleGetStatusJson() { return String("{\"en\":false}"); }
+inline void bleDebugSetMeteoTempC(float) {}
+inline void bleFillFastJson(ArduinoJson::JsonObject) {}
+
+#endif

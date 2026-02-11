@@ -1,364 +1,61 @@
+// IMPORTANT: include Features.h first so FEATURE_BUZZER is visible before
+// including the header (which provides stubs when the feature is disabled).
+#include "Features.h"
 #include "BuzzerController.h"
+
+#if defined(FEATURE_BUZZER)
+
+#include <Arduino.h>
 #include "config_pins.h"
-#include <LittleFS.h>
-#include "FsController.h"
-#include <ArduinoJson.h>
 
 namespace {
-  struct Step { bool on; uint16_t ms; uint16_t freqHz; /*0=default*/ };
+  bool g_inited = false;
+  bool g_playing = false;
+  uint32_t g_endMs = 0;
+  uint16_t g_freq = 2000;
 
-  // Patterny (neblokující) – pro modernější zvuk umí i měnit frekvenci.
-  // Pokud je buzzer aktivní (jen HIGH/LOW), frekvence se ignoruje.
-  const Step P_OFF[]       = { {false, 0,   0} };
-  const Step P_SHORT[]     = { {true,  80,  0}, {false, 120, 0} };
-  const Step P_LONG[]      = { {true,  350, 0}, {false, 200, 0} };
-  const Step P_DOUBLE[]    = { {true,  80,  0}, {false, 120, 0}, {true, 80,  0}, {false, 200, 0} };
-  const Step P_TRIPLE[]    = { {true,  80,  0}, {false, 120, 0}, {true, 80,  0}, {false, 120, 0}, {true, 80, 0}, {false, 250, 0} };
-  const Step P_ERROR[]     = { {true,  120, 0}, {false, 120, 0}, {true, 120, 0}, {false, 120, 0}, {true, 200, 0}, {false, 300, 0} };
-
-  // "Modernější" notifikace (chirp) – vhodné jako default místo pípnutí
-  const Step P_CHIRP_UP[]  = { {true,  45, 2000}, {true, 45, 2400}, {true, 45, 2800}, {false, 160, 0} };
-  const Step P_CHIRP_DOWN[]= { {true,  45, 2800}, {true, 45, 2400}, {true, 45, 2000}, {false, 160, 0} };
-  const Step P_NOTIFY[]    = { {true,  70, 2200}, {false, 60, 0}, {true, 70, 3200}, {false, 200, 0} };
-
-  struct Cfg {
-    bool enabled = true;
-    bool activeHigh = true; // true: HIGH=ON, false: LOW=ON
-    // Pokud je piezo pasivní, potřebuje PWM (jinak jen "cvakne").
-    bool usePwm = true;
-    uint16_t pwmFreqHz = 3000;   // 2–4 kHz obvykle funguje dobře
-    uint8_t pwmDutyPct = 50;     // 10–80 %, podle hlasitosti
-
-    // mapování událostí -> pattern name
-    // Defaulty jsou "modernější" než prosté pípnutí (chirp/notify).
-    char ev_control_auto[12]   = "chirp";
-    char ev_control_manual[12] = "chirpDown";
-    char ev_manual_mode[12]    = "notify";
-    char ev_relay_on[12]       = "off";
-    char ev_relay_off[12]      = "off";
-    char ev_error[12]          = "error";
-  } g_cfg;
-
-  const Step* g_steps = nullptr;
-  uint8_t g_stepCount = 0;
-  uint8_t g_stepIndex = 0;
-  uint32_t g_stepUntilMs = 0;
-  bool g_running = false;
-
-  const char* CFG_PATH = "/buzzer.json";
-  const char* CFG_BAK_PATH = "/buzzer.json.bak";
-
-  bool loadBuzzerJsonFromPath(const char* path, StaticJsonDocument<768>& doc) {
-    if (!fsIsReady()) return false;
-    fsLock();
-    if (!LittleFS.exists(path)) {
-      fsUnlock();
-      return false;
-    }
-    File f = LittleFS.open(path, "r");
-    fsUnlock();
-    if (!f) return false;
-    DeserializationError err = deserializeJson(doc, f);
-    f.close();
-    if (err) return false;
-    return true;
-  }
-
-  bool writeBuzzerJsonAtomic(const String& data) {
-    return fsWriteAtomicKeepBak(CFG_PATH, data, CFG_BAK_PATH, true);
-  }
-
-  bool writeBuzzerJsonRestore(const String& data) {
-    if (!fsIsReady()) return false;
-    const String tmpPath = String(CFG_PATH) + ".tmp";
-    fsLock();
-    File f = LittleFS.open(tmpPath, "w");
-    if (!f) {
-      fsUnlock();
-      return false;
-    }
-    const size_t written = f.print(data);
-    f.flush();
-    f.close();
-    if (written != data.length()) {
-      LittleFS.remove(tmpPath);
-      fsUnlock();
-      return false;
-    }
-    if (LittleFS.exists(CFG_PATH)) {
-      LittleFS.remove(CFG_PATH);
-    }
-    const bool renamed = LittleFS.rename(tmpPath, CFG_PATH);
-    if (!renamed) {
-      LittleFS.remove(tmpPath);
-    }
-    fsUnlock();
-    return renamed;
-  }
-
-  // --- PWM helpers (LEDC) ---
-  // ESP32 Arduino core 3.x: LEDC API je pin-centric (ledcAttach/ledcWrite/ledcWriteTone/ledcDetach).
-  // U některých verzí existuje i channel-based API. Použijeme pin-centric, je nejméně bolestivé.
-  bool g_pwmAttached = false;
-
-  void pwmAttachIfNeeded() {
-    if (!g_cfg.usePwm) return;
-    if (g_pwmAttached) return;
-
-#if defined(ARDUINO_ARCH_ESP32)
-    // Attach PWM to pin (freq/resolution)
-    // resolution 8 bit (0..255) je dost
-    ledcAttach(BUZZER_PIN, g_cfg.pwmFreqHz, 8);
-    g_pwmAttached = true;
-#endif
-  }
-
-  void pwmDetachIfNeeded() {
-    if (!g_pwmAttached) return;
-#if defined(ARDUINO_ARCH_ESP32)
-    ledcDetach(BUZZER_PIN);
-#endif
-    g_pwmAttached = false;
-  }
-
-  void pwmOn(uint16_t freqHz) {
-#if defined(ARDUINO_ARCH_ESP32)
-    pwmAttachIfNeeded();
-    // nastav duty (0..255)
-    const uint8_t duty = (uint8_t)((uint16_t)g_cfg.pwmDutyPct * 255u / 100u);
-    ledcWrite(BUZZER_PIN, duty);
-    // pro jistotu nastav i frekvenci (když se změnila v configu)
-    const uint16_t f = (freqHz > 0) ? freqHz : g_cfg.pwmFreqHz;
-    ledcWriteTone(BUZZER_PIN, f);
-#endif
-  }
-
-  void pwmOff() {
-#if defined(ARDUINO_ARCH_ESP32)
-    if (!g_pwmAttached) return;
-    ledcWrite(BUZZER_PIN, 0);
-    ledcWriteTone(BUZZER_PIN, 0);
-#endif
-  }
-
-  void dcOff() {
-    digitalWrite(BUZZER_PIN, g_cfg.activeHigh ? LOW : HIGH);
-  }
-
-  void dcOn() {
-    // DC „zapnuto“ – funguje jen pro aktivní buzzer (pasivní jen cvakne)
-    digitalWrite(BUZZER_PIN, g_cfg.activeHigh ? HIGH : LOW);
-  }
-
-  void pinWriteOn(bool on, uint16_t freqHz) {
-    if (!g_cfg.enabled) {
-      // při zakázání držet OFF
-      if (g_cfg.usePwm) pwmOff();
-      else dcOff();
-      return;
-    }
-    if (g_cfg.usePwm) {
-      if (on) pwmOn(freqHz);
-      else pwmOff();
-    } else {
-      // DC režim (aktivní buzzer)
-      if (on) dcOn();
-      else dcOff();
-    }
-  }
-
-  void play(const Step* steps, uint8_t count) {
-    if (!steps || !count) return;
-    g_steps = steps;
-    g_stepCount = count;
-    g_stepIndex = 0;
-    g_running = true;
-    g_stepUntilMs = 0; // spustit hned v loop()
-  }
-
-  const Step* patternByName(const String& name, uint8_t& outCount) {
-    String s = name; s.toLowerCase();
-    if (s == "off")    { outCount = 1; return P_OFF; }
-    if (s == "short")  { outCount = (uint8_t)(sizeof(P_SHORT)/sizeof(P_SHORT[0])); return P_SHORT; }
-    if (s == "long")   { outCount = (uint8_t)(sizeof(P_LONG)/sizeof(P_LONG[0])); return P_LONG; }
-    if (s == "double") { outCount = (uint8_t)(sizeof(P_DOUBLE)/sizeof(P_DOUBLE[0])); return P_DOUBLE; }
-    if (s == "triple") { outCount = (uint8_t)(sizeof(P_TRIPLE)/sizeof(P_TRIPLE[0])); return P_TRIPLE; }
-    if (s == "chirp" || s == "chirpup")    { outCount = (uint8_t)(sizeof(P_CHIRP_UP)/sizeof(P_CHIRP_UP[0])); return P_CHIRP_UP; }
-    if (s == "chirpdown")              { outCount = (uint8_t)(sizeof(P_CHIRP_DOWN)/sizeof(P_CHIRP_DOWN[0])); return P_CHIRP_DOWN; }
-    if (s == "notify" || s == "notification") { outCount = (uint8_t)(sizeof(P_NOTIFY)/sizeof(P_NOTIFY[0])); return P_NOTIFY; }
-    if (s == "error")  { outCount = (uint8_t)(sizeof(P_ERROR)/sizeof(P_ERROR[0])); return P_ERROR; }
-    outCount = (uint8_t)(sizeof(P_SHORT)/sizeof(P_SHORT[0])); return P_SHORT;
-  }
-
-  void playEvent(const char* patternName) {
-    if (!patternName || !patternName[0]) return;
-    uint8_t n = 0;
-    const Step* p = patternByName(String(patternName), n);
-    if (p == P_OFF) return;
-    play(p, n);
+  void stopNow() {
+    noTone(BUZZER_PIN);
+    g_playing = false;
   }
 }
 
 void buzzerInit() {
-  // default: vypnuto
+  if (g_inited) return;
+  g_inited = true;
   pinMode(BUZZER_PIN, OUTPUT);
-  dcOff();
-  buzzerLoadFromFS();
+  stopNow();
+}
 
-  // po načtení configu nastav výchozí stav korektně
-  if (g_cfg.usePwm) {
-    pwmAttachIfNeeded();
-    pwmOff();
+void buzzerBeep(uint16_t freqHz, uint16_t durationMs) {
+  if (!g_inited) buzzerInit();
+  g_freq = freqHz;
+  tone(BUZZER_PIN, (unsigned int)g_freq);
+  g_playing = true;
+  g_endMs = millis() + durationMs;
+}
+
+void buzzerOnControlModeChanged(bool autoMode) {
+  // AUTO: one short beep, MANUAL: two quick beeps
+  if (autoMode) {
+    buzzerBeep(2200, 60);
   } else {
-    pwmDetachIfNeeded();
-    dcOff();
+    buzzerBeep(1600, 60);
+    // second beep scheduled by loop
+    g_endMs = millis() + 60;
   }
+}
+
+void buzzerOnManualModeChanged(const char* /*modeName*/) {
+  buzzerBeep(1800, 80);
 }
 
 void buzzerLoop() {
-  if (!g_running) return;
-  const uint32_t now = millis();
-
-  if (g_stepUntilMs == 0 || (int32_t)(now - g_stepUntilMs) >= 0) {
-    if (!g_steps || g_stepIndex >= g_stepCount) {
-      g_running = false;
-      pinWriteOn(false, 0);
-      return;
-    }
-
-    const Step st = g_steps[g_stepIndex++];
-    pinWriteOn(st.on, st.freqHz);
-    if (st.ms == 0) {
-      // "off" pattern
-      g_running = false;
-      pinWriteOn(false, 0);
-      return;
-    }
-    g_stepUntilMs = now + st.ms;
+  if (!g_inited) return;
+  if (!g_playing) return;
+  if ((int32_t)(millis() - g_endMs) >= 0) {
+    stopNow();
   }
 }
 
-void buzzerPlayPatternByName(const String& name) {
-  if (!g_cfg.enabled) return;
-  uint8_t n = 0;
-  const Step* p = patternByName(name, n);
-  if (p == P_OFF) { buzzerStop(); return; }
-  play(p, n);
-}
-
-void buzzerStop() {
-  g_running = false;
-  g_steps = nullptr;
-  g_stepCount = 0;
-  g_stepIndex = 0;
-  g_stepUntilMs = 0;
-  pinWriteOn(false, 0); // zajistí i vypnutí PWM
-}
-
-void buzzerOnControlModeChanged(bool isAuto) {
-  playEvent(isAuto ? g_cfg.ev_control_auto : g_cfg.ev_control_manual);
-}
-
-void buzzerOnManualModeChanged(const String& /*modeName*/) {
-  playEvent(g_cfg.ev_manual_mode);
-}
-
-void buzzerOnRelayChanged(uint8_t /*relay*/, bool on) {
-  playEvent(on ? g_cfg.ev_relay_on : g_cfg.ev_relay_off);
-}
-
-void buzzerOnError(const String& /*code*/) {
-  playEvent(g_cfg.ev_error);
-}
-
-void buzzerToJson(String& outJson) {
-  StaticJsonDocument<512> doc;
-  doc["enabled"] = g_cfg.enabled;
-  doc["activeHigh"] = g_cfg.activeHigh;
-  doc["usePwm"] = g_cfg.usePwm;
-  doc["pwmFreqHz"] = g_cfg.pwmFreqHz;
-  doc["pwmDutyPct"] = g_cfg.pwmDutyPct;
-  JsonObject ev = doc.createNestedObject("events");
-  ev["control_auto"] = g_cfg.ev_control_auto;
-  ev["control_manual"] = g_cfg.ev_control_manual;
-  ev["manual_mode"] = g_cfg.ev_manual_mode;
-  ev["relay_on"] = g_cfg.ev_relay_on;
-  ev["relay_off"] = g_cfg.ev_relay_off;
-  ev["error"] = g_cfg.ev_error;
-  serializeJson(doc, outJson);
-}
-
-void buzzerUpdateFromJson(const JsonObject& cfg) {
-  if (cfg.containsKey("enabled")) g_cfg.enabled = cfg["enabled"].as<bool>();
-  if (cfg.containsKey("activeHigh")) g_cfg.activeHigh = cfg["activeHigh"].as<bool>();
-  if (cfg.containsKey("usePwm")) g_cfg.usePwm = cfg["usePwm"].as<bool>();
-  if (cfg.containsKey("pwmFreqHz")) g_cfg.pwmFreqHz = (uint16_t)cfg["pwmFreqHz"].as<uint16_t>();
-  if (cfg.containsKey("pwmDutyPct")) g_cfg.pwmDutyPct = (uint8_t)cfg["pwmDutyPct"].as<uint8_t>();
-  if (g_cfg.pwmDutyPct > 100) g_cfg.pwmDutyPct = 100;
-  if (g_cfg.pwmFreqHz < 100) g_cfg.pwmFreqHz = 100;
-
-  JsonObject ev = cfg["events"].as<JsonObject>();
-  if (!ev.isNull()) {
-    auto cp = [&](const char* k, char* dst, size_t n) {
-      if (!ev.containsKey(k)) return;
-      const char* v = ev[k] | "";
-      if (!v) return;
-      strlcpy(dst, v, n);
-    };
-    cp("control_auto",   g_cfg.ev_control_auto,   sizeof(g_cfg.ev_control_auto));
-    cp("control_manual", g_cfg.ev_control_manual, sizeof(g_cfg.ev_control_manual));
-    cp("manual_mode",    g_cfg.ev_manual_mode,    sizeof(g_cfg.ev_manual_mode));
-    cp("relay_on",       g_cfg.ev_relay_on,       sizeof(g_cfg.ev_relay_on));
-    cp("relay_off",      g_cfg.ev_relay_off,      sizeof(g_cfg.ev_relay_off));
-    cp("error",          g_cfg.ev_error,          sizeof(g_cfg.ev_error));
-  }
-
-  // při změně režimu/polarity ihned aplikuj OFF stav správně
-  if (g_cfg.usePwm) {
-    pwmAttachIfNeeded();
-    pwmOff();
-  } else {
-    pwmDetachIfNeeded();
-    dcOff();
-  }
-}
-
-bool buzzerSaveToFS() {
-  StaticJsonDocument<512> doc;
-  doc["enabled"] = g_cfg.enabled;
-  doc["activeHigh"] = g_cfg.activeHigh;
-  doc["usePwm"] = g_cfg.usePwm;
-  doc["pwmFreqHz"] = g_cfg.pwmFreqHz;
-  doc["pwmDutyPct"] = g_cfg.pwmDutyPct;
-  JsonObject ev = doc.createNestedObject("events");
-  ev["control_auto"] = g_cfg.ev_control_auto;
-  ev["control_manual"] = g_cfg.ev_control_manual;
-  ev["manual_mode"] = g_cfg.ev_manual_mode;
-  ev["relay_on"] = g_cfg.ev_relay_on;
-  ev["relay_off"] = g_cfg.ev_relay_off;
-  ev["error"] = g_cfg.ev_error;
-  String payload;
-  serializeJson(doc, payload);
-  return writeBuzzerJsonAtomic(payload);
-}
-
-bool buzzerLoadFromFS() {
-  StaticJsonDocument<768> doc;
-  bool usedBak = false;
-  if (!loadBuzzerJsonFromPath(CFG_PATH, doc)) {
-    StaticJsonDocument<768> bakDoc;
-    if (!loadBuzzerJsonFromPath(CFG_BAK_PATH, bakDoc)) {
-      return false;
-    }
-    doc.set(bakDoc.as<JsonObject>());
-    usedBak = true;
-  }
-  JsonObject cfg = doc.as<JsonObject>();
-  buzzerUpdateFromJson(cfg);
-  if (usedBak) {
-    String payload;
-    serializeJson(doc, payload);
-    writeBuzzerJsonRestore(payload);
-  }
-  return true;
-}
+#endif // FEATURE_BUZZER

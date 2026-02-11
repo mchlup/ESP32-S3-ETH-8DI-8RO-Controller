@@ -1,24 +1,33 @@
 #pragma once
-#include <Arduino.h>
-// JsonObject je z ArduinoJson – musí být známý už v hlavičce
-#include <ArduinoJson.h>
 
-// Ne-blokující BUZZER modul (GPIO46)
+#include <Arduino.h>
+
+// ---------------------------------------------------------------------------
+// Optional feature
+//
+// FEATURE_BUZZER is defined by FeatureBuzzer.h (included from Features.h).
+// When disabled, this header provides lightweight no-op stubs so the rest of
+// the project can compile without sprinkling #ifdefs everywhere.
+// ---------------------------------------------------------------------------
+
+#if defined(FEATURE_BUZZER)
+
 void buzzerInit();
 void buzzerLoop();
 
-// Patterny (pro API i interní použití)
-void buzzerPlayPatternByName(const String& name);
-void buzzerStop();
+// UI/logic notifications
+void buzzerOnControlModeChanged(bool autoMode);
+void buzzerOnManualModeChanged(const char* modeName);
 
-// Systémové události (volá se z logiky / relé)
-void buzzerOnControlModeChanged(bool isAuto);
-void buzzerOnManualModeChanged(const String& modeName);
-void buzzerOnRelayChanged(uint8_t relay, bool on);
-void buzzerOnError(const String& code);
+// Generic one-shot beep (non-blocking)
+void buzzerBeep(uint16_t freqHz = 2000, uint16_t durationMs = 80);
 
-// API JSON (WebServerController)
-void buzzerToJson(String& outJson);
-void buzzerUpdateFromJson(const JsonObject& cfg);
-bool buzzerSaveToFS();
-bool buzzerLoadFromFS();
+#else
+
+inline void buzzerInit() {}
+inline void buzzerLoop() {}
+inline void buzzerOnControlModeChanged(bool) {}
+inline void buzzerOnManualModeChanged(const char*) {}
+inline void buzzerBeep(uint16_t = 0, uint16_t = 0) {}
+
+#endif

@@ -1,748 +1,110 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="cs">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>ESP32-S3 Topný systém</title>
-  <link rel="stylesheet" href="/css/app.css?v=v3.3.12-p3" />
-  <link rel="icon" href="/favicon.ico" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>ESP32-S3-ETH-8DI-8RO</title>
+  <link rel="stylesheet" href="/app.css" />
+  <link rel="icon" href="data:," />
 </head>
 <body>
-  <div class="app-shell">
-    <header class="topbar">
-      <button class="icon-btn" id="navToggle" aria-label="Otevřít navigaci">☰</button>
-      <div class="brand">
-        <div class="title">ESP32-S3 Topný systém</div>
-        <div class="subtitle">Web UI – konfigurace a diagnostika</div>
-      </div>
-      <div class="status-strip">
-        <div class="status-pill" id="statusNetwork">Síť: —</div>
-        <div class="status-pill" id="statusMqtt">MQTT: —</div>
-        <div class="status-pill" id="statusBle">BLE: —</div>
-        <div class="status-pill" id="statusMode">Režim: —</div>
-      </div>
-      <div class="mode-actions" aria-label="Nastavení režimu">
-        <div class="mode-current" id="dashMode">—</div>
-        <div class="mode-buttons">
-          <button class="btn small" id="setAuto" title="Přepnout CONTROL=AUTO">AUTO</button>
-          <button class="btn secondary small" id="setManual" title="Přepnout CONTROL=MANUAL">MANUAL</button>
+  <div class="shell">
+    <aside class="nav">
+      <div class="navHeader">
+        <div class="navTitleRow">
+          <div class="dot" id="navOnlineDot"></div>
+          <div class="navTitle">ESP32-S3-ETH-8DI-8RO</div>
         </div>
+        <div class="navSub" id="navOnlineText">offline</div>
       </div>
-      <div class="top-actions">
-        <button class="btn" id="refreshNow">Refresh</button>
-        <button class="btn secondary" id="pausePolling">Pozastavit</button>
-      </div>
-    </header>
 
-    <aside class="sidebar" id="sidebar">
-      <nav class="nav">
-        <a href="#dashboard">Dashboard</a>
-        <a href="#equitherm">Ekviterm</a>
-        <a href="#tuv">TUV / DHW</a>
-        <a href="#recirc">Cirkulace TUV</a>
-        <a href="#aku">AKU nádrž</a>
-        <a href="#io">Vstupy & Výstupy</a>
-        <a href="#valves">Ventily (3c)</a>
-        <a href="#thermometers">Teploměry</a>
-        <a href="#ble">BLE</a>
-        <a href="#buzzer">Buzzer</a>
-        <a href="#opentherm" data-cap="opentherm">OpenTherm</a>
-        <a href="#advanced">Pokročilé</a>
-      </nav>
+      <div class="navGroup">
+        <div class="navGroupTitle">MENU</div>
+        <button class="navItem isActive" data-page="dashboard">Dashboard</button>
+        <button class="navItem" data-page="equitherm">Ekviterm</button>
+        <button class="navItem" data-page="opentherm">OpenTherm</button>
+        <button class="navItem" data-page="dhw">Ohřev TUV</button>
+        <button class="navItem" data-page="recirc">Cirkulace</button>
+        <button class="navItem" data-page="aku">Akumulační nádrž</button>
+        <button class="navItem" data-page="thermometers">Teploměry</button>
+        <button class="navItem" data-page="settings">Nastavení</button>
+        <button class="navItem" data-page="ota">OTA</button>
+      </div>
+
+      <div class="navGroup">
+        <div class="navGroupTitle">DASHBOARD</div>
+        <button id="btnLayoutEdit" class="btn">Upravit layout</button>
+        <button id="btnLayoutSave" class="btn">Uložit layout</button>
+      </div>
+
+      <div class="navGroup">
+        <div class="navGroupTitle">AKCE</div>
+        <button id="btnRefresh" class="btn">Obnovit</button>
+        <button id="btnRestart" class="btn danger">Restart</button>
+      </div>
+
+      <div class="navFooter">
+        <div class="kvRow"><span>SSE:</span> <span id="sseState">-</span></div>
+        <div class="kvRow"><span>IP:</span> <span id="ipText">-</span></div>
+        <div class="kvRow"><span id="footerTs">ts: -</span></div>
+      </div>
     </aside>
 
-    <main class="content">
-      <section id="dashboard" class="section">
-        <h1>Dashboard (Provoz)</h1>
-        <div class="grid dash-top">
-          <div class="card" id="dashEqCard">
-            <h2>Ekviterm</h2>
-            <div class="stack">
-              <div class="hint" id="dashEquitherm">—</div>
-
-              <div class="dash-eq-top">
-                <div class="metric-grid">
-                  <div><span class="label">Outdoor</span><span id="eqOutdoor">—</span></div>
-                  <div><span class="label">Flow</span><span id="eqFlow">—</span></div>
-                  <div><span class="label">Target flow</span><span id="eqTarget">—</span></div>
-                </div>
-
-                <div class="valve-dial dash" id="dashEqValveDial" aria-label="Směšovací ventil">
-                  <div class="valve-dial-ring"></div>
-                  <div class="valve-dial-center">
-                    <div class="valve-dial-pct" id="dashEqValvePct">—%</div>
-                    <div class="valve-dial-sub" id="dashEqValveMove"></div>
-                  </div>
-                </div>
-              </div>
-
-              <div class="chart-wrap dash-eq-chart">
-                <canvas id="dashEqCurve" width="520" height="220"></canvas>
-              </div>
-
-              <div class="eq-legend small">
-                <span class="legend-chip day"></span><span>Den</span>
-                <span class="legend-chip night"></span><span>Noc</span>
-                <span class="legend-chip point"></span><span>Bod</span>
-                <span class="hint" id="dashEqPointNote"></span>
-              </div>
-            </div>
-          </div>
-
-          <div class="card dash-half" id="dashTuvCard">
-            <h2>TUV / DHW</h2>
-            <div class="stack">
-              <div class="hint" id="dashTuv">—</div>
-
-              <div class="dash-tuv-top">
-                <div class="metric-grid">
-                  <div><span class="label">Demand</span><span id="tuvDemand">—</span></div>
-                  <div><span class="label">Relé</span><span id="tuvRelay">—</span></div>
-                </div>
-
-                <div class="valve-dial dash" id="dashTuvValveDial" aria-label="Přepínací ventil">
-                  <div class="valve-dial-ring"></div>
-                  <div class="valve-dial-center">
-                    <div class="valve-dial-pct" id="dashTuvValvePct">—%</div>
-                  </div>
-                </div>
-              </div>
-
-              <div class="metric-grid" id="dashDhwTemps">
-                <div><span class="label">Nádrž TUV</span><span id="dashDhwTempPlaceholder">—</span></div>
-              </div>
-            </div>
-          </div>
-
-          <div class="card" id="dashAkuCard">
-            <h2>Akumulační nádrž</h2>
-            <div class="stack">
-              <div class="hint" id="dashAku">—</div>
-              <div class="metric-grid">
-                <div><span class="label">AKU horní</span><span id="dashAkuTop">—</span></div>
-                <div><span class="label">AKU uprostřed</span><span id="dashAkuMid">—</span></div>
-                <div><span class="label">AKU dolní</span><span id="dashAkuBottom">—</span></div>
-                <div><span class="label">Topná spirála (R8)</span><span id="dashAkuRelay">—</span></div>
-              </div>
-            </div>
-          </div>
-
+    <main class="main">
+      <header class="topbar">
+        <div class="h1" id="pageTitle">Dashboard</div>
+        <div class="pills">
+          <div class="pill" id="pillEq">Ekviterm: -</div>
+          <div class="pill" id="pillTuv">TUV: -</div>
+          <div class="pill" id="pillRc">Cirkulace: -</div>
+          <div class="pill" id="pillAku">Aku: -</div>
         </div>
+      </header>
 
-        <div class="grid cards dash-bottom">
-          <div class="card" id="dashRelaysCard">
-            <h2>Relé (4–8)</h2>
-            <div id="relayGrid" class="relay-grid"></div>
-            <p class="hint">Kliknutí přepne relé do MANUAL.</p>
-          </div>
-
-          <div class="card">
-            <h2>Vstupy (1–8)</h2>
-            <div id="inputGrid" class="input-grid"></div>
-          </div>
-          <div class="card">
-            <h2>Teploty TEMP1..8</h2>
-            <div id="tempGrid" class="temp-grid"></div>
-          </div>
-          <div class="card">
-            <h2>BLE Meteo senzor</h2>
-            <div class="metric-grid">
-              <div><span class="label">Teplota</span><span id="bleMeteoTemp">—</span></div>
-              <div><span class="label">Fix</span><span id="bleMeteoFix">—</span></div>
-              <div><span class="label">Age</span><span id="bleMeteoAge">—</span></div>
-            </div>
-          </div>
-          <div class="card">
-            <h2>Diagnostika</h2>
-            <div class="grid two" style="margin-bottom: 12px;">
-              <div class="stack">
-                <div class="status-pill" id="diagNet">Síť: —</div>
-                <div class="status-pill" id="diagWifiRssi">Wi‑Fi RSSI: —</div>
-                <div class="status-pill" id="diagTime">Čas: —</div>
-              </div>
-              <div class="stack">
-                <div class="status-pill" id="diagBle">BLE: —</div>
-                <div class="status-pill" id="diagI2c">I2C/Relé: —</div>
-                <div class="status-pill" id="diagJson">JSON: —</div>
-                <div class="status-pill" id="diagConfig">Config: —</div>
-              </div>
-            </div>
-<div class="metric-grid">
-              <div><span class="label">Heap free</span><span id="heapFree">—</span></div>
-              <div><span class="label">Heap min</span><span id="heapMin">—</span></div>
-              <div><span class="label">Heap largest</span><span id="heapLargest">—</span></div>
-            </div>
-          </div>
-        </div>
+      <section id="pageRoot" class="pageRoot">
+        <div id="pageContent"></div>
       </section>
 
-      <section id="equitherm" class="section" data-cap="equitherm">
-        <h1>Ekviterm</h1>
-
-        <div class="thermo-action-row right">
-          <div class="action-right">
-            <label class="toggle">
-              <input type="checkbox" data-path="equitherm.enabled" />
-              <span>Enabled</span>
-            </label>
-            <button class="btn primary" data-save="equitherm">Uložit ekviterm</button>
-          </div>
+      <section id="layoutPanel" class="layoutPanel" hidden>
+        <div class="layoutPanel__head">
+          <div class="layoutPanel__title">Upravit layout dashboardu</div>
+          <button id="btnLayoutClose" class="btn">Zavřít</button>
         </div>
-
-        <div class="card">
-          <h2>Křivky (den / noc)</h2>
-          <div class="chart-wrap large">
-            <canvas id="eqCurve" width="640" height="260"></canvas>
-          </div>
-          <div class="eq-legend">
-            <span class="legend-chip day"></span><span>Den</span>
-            <span class="legend-chip night"></span><span>Noc</span>
-            <span class="legend-chip point"></span><span>Aktuální bod</span>
-          </div>
-          <div class="form-grid compact">
-            <label class="field"><span>Min flow °C</span><input type="number" step="0.1" data-path="equitherm.minFlow" /></label>
-            <label class="field"><span>Max flow °C</span><input type="number" step="0.1" data-path="equitherm.maxFlow" /></label>
-            <label class="field"><span>Curve offset °C</span><input type="number" step="0.1" data-path="equitherm.curveOffsetC" /></label>
-
-            <label class="field"><span>Slope day</span><input type="number" step="0.01" data-path="equitherm.slopeDay" /></label>
-            <label class="field"><span>Shift day</span><input type="number" step="0.1" data-path="equitherm.shiftDay" /></label>
-            <label class="field"><span>Slope night</span><input type="number" step="0.01" data-path="equitherm.slopeNight" /></label>
-            <label class="field"><span>Shift night</span><input type="number" step="0.1" data-path="equitherm.shiftNight" /></label>
-          </div>
-
-          <details class="details">
-            <summary>Referenční body (pokročilé)</summary>
-            <div class="form-grid compact">
-              <label class="field"><span>Ref day Tout1</span><input type="number" step="0.1" data-path="equitherm.refs.day.tout1" /></label>
-              <label class="field"><span>Ref day Tflow1</span><input type="number" step="0.1" data-path="equitherm.refs.day.tflow1" /></label>
-              <label class="field"><span>Ref day Tout2</span><input type="number" step="0.1" data-path="equitherm.refs.day.tout2" /></label>
-              <label class="field"><span>Ref day Tflow2</span><input type="number" step="0.1" data-path="equitherm.refs.day.tflow2" /></label>
-              <label class="field"><span>Ref night Tout1</span><input type="number" step="0.1" data-path="equitherm.refs.night.tout1" /></label>
-              <label class="field"><span>Ref night Tflow1</span><input type="number" step="0.1" data-path="equitherm.refs.night.tflow1" /></label>
-              <label class="field"><span>Ref night Tout2</span><input type="number" step="0.1" data-path="equitherm.refs.night.tout2" /></label>
-              <label class="field"><span>Ref night Tflow2</span><input type="number" step="0.1" data-path="equitherm.refs.night.tflow2" /></label>
-            </div>
-          </details>
-        </div>
-
-        <div class="grid two">
-          <div class="card">
-            <h2>Řízení</h2>
-            <div class="form-grid">
-              <label class="field"><span>Deadband °C</span><input type="number" step="0.1" data-path="equitherm.deadbandC" /></label>
-              <label class="field" title="0 = AUTO (vypočte se z Pulse time / Travel time směšovacího ventilu)"><span>Krok (%)</span><input type="number" min="0" max="25" step="1" data-path="equitherm.stepPct" /></label>
-              <label class="field"><span>Control period ms</span><input type="number" min="0" data-path="equitherm.controlPeriodMs" /></label>
-              <label class="field"><span>Max pct day</span><input type="number" min="0" max="100" data-path="equitherm.maxPct_day" /></label>
-              <label class="field"><span>Max pct night</span><input type="number" min="0" max="100" data-path="equitherm.maxPct_night" /></label>
-              <label class="field"><span>Max boiler in °C</span><input type="number" step="0.1" data-path="equitherm.maxBoilerInC" /></label>
-              <label class="field"><span>No-flow enabled</span><input type="checkbox" data-path="equitherm.noFlowDetectEnabled" /></label>
-              <label class="field"><span>No-flow timeout ms</span><input type="number" min="0" data-path="equitherm.noFlowTimeoutMs" /></label>
-              <label class="field"><span>No-flow test period ms</span><input type="number" min="0" data-path="equitherm.noFlowTestPeriodMs" /></label>
-            </div>
-          </div>
-
-          <div class="card eq-compact">
-            <h2>Zapnutí a stav</h2>
-            <div class="eq-compact-grid">
-              <div class="eq-valve-fixed">
-                <span class="label">Ventil</span><span class="mono">3c směšovací (R1/R2)</span>
-                <input type="hidden" data-as-number="1" data-path="equitherm.valveMaster" value="1" />
-              </div>
-              <div class="eq-valve-row">
-                <div class="valve-dial" id="eqValveDial" aria-label="Poloha ventilu">
-                  <div class="valve-dial-bg"></div>
-                  <div class="valve-dial-ring"></div>
-                  <div class="valve-dial-needle"></div>
-                  <div class="valve-dial-center">
-                    <div class="valve-dial-pct" id="eqValvePct">—%</div>
-                    <div class="valve-dial-sub" id="eqValveTarget">target —%</div>
-                  </div>
-                </div>
-
-                <div class="eq-mini">
-                  <div class="eq-mini-row"><span class="label">Outdoor</span><span id="eqOutdoorMini">—</span></div>
-                  <div class="eq-mini-row"><span class="label">Target</span><span id="eqTargetMini">—</span></div>
-                  <div class="eq-mini-row"><span class="label">Flow</span><span id="eqFlowMini">—</span></div>
-                  <div class="eq-mini-row"><span class="label">BoilerIn</span><span id="eqBoilerMini">—</span></div>
-                </div>
-              </div>
-
-              <div class="hint" id="eqValveHint">Ventil je fixně rezervovaný: <span class="mono">3c směšovací (R1/R2)</span>.</div>
-            </div>
-          </div>
-        </div>
-
-        <div class="card">
-          <h2>Teplotní zdroje</h2>
-          <div id="eqSources" class="stack"></div>
-        </div>
-      </section>
-
-      <section id="tuv" class="section" data-cap="tuv">
-        <h1>TUV / DHW</h1>
-
-	        <div class="thermo-action-row right">
-          <div class="action-right">
-	            <label class="toggle" title="Zapne funkci TUV/DHW (arm). Aktivní režim TUV se spustí až při současně aktivním vstupu IN1 (role dhw_demand).">
-              <input type="checkbox" data-path="tuv.enabled" />
-	              <span>Povolit TUV</span>
-            </label>
-            <button class="btn primary" data-save="tuv">Uložit TUV</button>
-          </div>
-        </div>
-
-        <div class="grid two">
-          <div class="card">
-            <h2>Základ</h2>
-	            <div class="hint" title="Při aktivní TUV/DHW se sepne R5 jako požadavek na kotel. Přepínací ventil R3 jde na DHW polohu a ekvitermní směšovač se zavře na zadané %.">
-	              Pevné mapování: <b>IN1</b>=požadavek TUV (role <span class="mono">dhw_demand</span>), <b>R3</b>=přepínací ventil, <b>R5</b>=požadavek do kotle.
-	            </div>
-	            <div class="hint" title="Ekviterm běží stále, ale při aktivní TUV se směšovač dočasně podřídí.">
-	              Chování: TUV je aktivní pouze při <b>Povolit TUV</b> + aktivním signálu na <b>IN1</b>. Po ukončení požadavku se ventil R3 vrátí na CH polohu a směšovač se vrátí na poslední vypočtenou polohu ekvitermu.
-	            </div>
-	            <div class="form-grid compact">
-	              <label class="toggle" title="Po ukončení TUV vrátit směšovací ventil (ekviterm) na poslední cílovou polohu před přepnutím.">
-	                <input type="checkbox" data-path="tuv.restoreEqValveAfter" />
-	                <span>Po TUV obnovit ekviterm</span>
-	              </label>
-	            </div>
-          </div>
-          <div class="card">
-	            <h2>Ventily (TUV / Ekviterm)</h2>
-	            <div class="hint" title="Přepínací ventil je fyzicky na R3. Při aktivní TUV se přepne na DHW polohu, jinak je v CH poloze.">Pevné mapování přepínacího ventilu: <b>R3</b>.</div>
-            <div class="form-grid compact">
-	              <label class="toggle" title="Pokud je zapnuto, používá se dvojice poloh (CH/TUV) z části níže. Pokud je vypnuto, použije se jen jedna cílová poloha (DHW poloha) z pole 'DHW poloha (%)'.">
-	                <input type="checkbox" data-path="tuv.bypassValve.enabled" />
-	                <span>CH/TUV dvě polohy</span>
-	              </label>
-	              <label class="field" title="Poloha přepínacího ventilu při aktivní TUV (DHW). Typicky 100 %.">
-	                <span>DHW poloha (%)</span>
-	                <input type="number" min="0" max="100" data-path="tuv.bypassValve.bypassPct" placeholder="100" />
-	              </label>
-	              <label class="field" title="Poloha přepínacího ventilu pro topný okruh (CH), když TUV není aktivní. Typicky 0 %.">
-	                <span>CH poloha (%)</span>
-	                <input type="number" min="0" max="100" data-path="tuv.bypassValve.chPct" placeholder="0" />
-	              </label>
-	              <label class="field" title="Invertuje směr (100 − hodnota). Hodí se, když je ventil zapojen obráceně.">
-	                <span>Invert</span>
-	                <input type="checkbox" data-path="tuv.bypassValve.invert" />
-	              </label>
-	              <label class="field" title="Dočasná poloha směšovacího ventilu ekvitermu během ohřevu TUV (např. zavřít topný okruh). Příklad: 0 = zavřít CH.">
-	                <span>Ekviterm: poloha při TUV (%)</span>
-	                <input type="number" min="0" max="100" data-path="tuv.eqValveTargetPct" placeholder="0" />
-	              </label>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section id="recirc" class="section" data-cap="schedules">
-        <h1>Cirkulace TUV</h1>
-
-        <div class="thermo-action-row right">
-          <div class="action-right">
-            <label class="toggle">
-              <input type="checkbox" data-path="dhwRecirc.enabled" />
-              <span>Enabled</span>
-            </label>
-            <button class="btn primary" data-save="recirc">Uložit cirkulaci</button>
-          </div>
-        </div>
-
-        <div id="dhwRecirc">
-          <div class="grid two">
-            <div class="card">
-              <h2>Základ</h2>
-              <div class="hint">Pevné mapování: <b>IN3</b>=požadavek cirkulace, <b>R7</b>=cirkulační čerpadlo.</div>
-              <div class="form-grid compact">
-                <!-- pevné mapování (ignoruje se v configu) -->
-                <input type="hidden" data-path="dhwRecirc.demandInput" value="3" />
-                <input type="hidden" data-path="dhwRecirc.pumpRelay" value="7" />
-
-                <label class="field" title="Režim řízení cirkulace"><span>Mode</span>
-                  <select data-path="dhwRecirc.mode">
-                    <option value="on_demand">on_demand</option>
-                    <option value="time_windows">time_windows</option>
-                    <option value="hybrid">hybrid</option>
-                  </select>
-                </label>
-
-                <label class="field" title="Doba běhu při požadavku (IN3 edge)"><span>On-demand run (ms)</span><input type="number" min="0" data-path="dhwRecirc.onDemandRunMs" placeholder="180000 (3 min)" /></label>
-                <label class="field" title="Minimální pauza mezi sepnutími"><span>Min OFF (ms)</span><input type="number" min="0" data-path="dhwRecirc.minOffMs" placeholder="600000 (10 min)" /></label>
-                <label class="field" title="Minimální doba sepnutí"><span>Min ON (ms)</span><input type="number" min="0" data-path="dhwRecirc.minOnMs" placeholder="30000 (30 s)" /></label>
-
-                <label class="field" title="Cyklické spínání v rámci časového okna (např. 5/15)"><span>Cycle ON (min)</span><input type="number" min="0" data-path="dhwRecirc.cycleOnMin" placeholder="5" /></label>
-                <label class="field" title="Cyklické spínání v rámci časového okna"><span>Cycle OFF (min)</span><input type="number" min="0" data-path="dhwRecirc.cycleOffMin" placeholder="15" /></label>
-
-                <label class="field" title="Vypne čerpadlo po dosažení teploty návratu"><span>Stop temp (°C)</span><input type="number" step="0.1" data-path="dhwRecirc.stopTempC" placeholder="35.0" /></label>
-              </div>
-            </div>
-
-            <div class="card">
-              <h2>Časová okna</h2>
-              <p class="hint">Použije se v režimu <span class="mono">time_windows</span> nebo <span class="mono">hybrid</span>.</p>
-              <div id="recircWindows" class="stack"></div>
-              <div class="action-bar">
-                <button class="btn secondary" id="recircWinAdd">Přidat okno</button>
-                <button class="btn secondary" id="recircWinClear">Smazat</button>
-              </div>
-            </div>
-          </div>
-
-          <div class="card">
-            <h2>Teplota návratu (pro stop temp)</h2>
-            <div class="hint">Zde nastavíš zdroj teploty pro návrat cirkulace. Pokud je teplota k dispozici a překročí <span class="mono">stopTempC</span>, čerpadlo se vypne (po <span class="mono">minOnMs</span>).</div>
-            <div id="recircReturnSource" class="stack"></div>
-          </div>
-        </div>
-      </section>
-
-
-
-
-      <section id="aku" class="section" data-cap="aku">
-        <h1>AKU nádrž</h1>
-
-        <div class="thermo-action-row right">
-          <div class="action-right">
-            <label class="toggle">
-              <input type="checkbox" data-path="akuHeater.enabled" />
-              <span>Enabled</span>
-            </label>
-            <button class="btn primary" data-save="aku">Uložit AKU</button>
-          </div>
-        </div>
-
-        <div class="grid two">
-          <div class="card">
-            <h2>Dotápění z akumulační nádrže (topná spirála)</h2>
-            <div class="hint">Pevné mapování: <b>R8</b> = stykač topné spirály (rezervováno firmwarem).</div>
-
-            <div class="form-grid compact">
-
-              <label class="field"><span>Mode</span>
-                <select data-path="akuHeater.mode">
-                  <option value="manual">manual</option>
-                  <option value="schedule">schedule</option>
-                  <option value="thermostatic">thermostatic</option>
-                </select>
-              </label>
-
-              <label class="toggle"><input type="checkbox" data-path="akuHeater.manualOn" /><span>Manual ON</span></label>
-              <label class="field" title="Cílová teplota horní části AKU pro dotápění (thermostatic). Příklad: 55°C."><span>Target top °C</span><input type="number" step="0.1" data-path="akuHeater.targetTopC" placeholder="55.0" /></label>
-              <label class="field" title="Hystereze sepnutí/vypnutí (thermostatic). Příklad: 2°C."><span>Hysteresis °C</span><input type="number" step="0.1" data-path="akuHeater.hysteresisC" placeholder="2.0" /></label>
-              <label class="field" title="Maximální doba sepnutí topné spirály (ms). Příklad: 3600000 = 1 h."><span>Max ON (ms)</span><input type="number" min="0" data-path="akuHeater.maxOnMs" placeholder="3600000 (1 h)" /></label>
-              <label class="field" title="Minimální pauza mezi sepnutími (ms). Příklad: 600000 = 10 min."><span>Min OFF (ms)</span><input type="number" min="0" data-path="akuHeater.minOffMs" placeholder="600000 (10 min)" /></label>
-            </div>
-          </div>
-
-          <div class="card">
-            <h2>Časová okna</h2>
-            <p class="hint">Použije se při režimu <span class="mono">schedule</span>.</p>
-            <div id="akuWindows" class="stack"></div>
-            <div class="action-bar">
-              <button class="btn secondary" id="akuWinAdd">Přidat okno</button>
-              <button class="btn secondary" id="akuWinClear">Smazat</button>
-            </div>
-          </div>
-        </div>
-
-        <div class="card">
-          <h2>Zdroje teplot (AKU horní / střed / dolní)</h2>
-          <div class="hint">Zde nastavíš zdroje teplot pro AKU nádrž. Hodnoty se ukládají do konfigurace (interně pod <span class="mono">equitherm.aku*</span>).</div>
-          <div id="akuSources" class="stack"></div>
-        </div>
-      </section>
-
-      <section id="io" class="section">
-        <h1>Vstupy & Výstupy</h1>
-        <div class="grid two">
-          <div class="card">
-            <h2>Názvy vstupů + aktivní úrovně</h2>
-            <div id="inputConfig" class="stack"></div>
-            <div class="inline">
-              <button class="btn secondary" id="inputsAllHigh">Vše HIGH</button>
-              <button class="btn secondary" id="inputsAllLow">Vše LOW</button>
-            </div>
-          </div>
-          <div class="card">
-            <h2>Názvy relé</h2>
-            <div id="relayNames" class="stack"></div>
-          </div>
-        </div>
-        <div class="card">
-          <h2>Mapování vstup → relé (AUTO)</h2>
-          <div id="relayMap" class="stack"></div>
-          <label class="toggle">
-            <input type="checkbox" data-path="autoDefaultOffUnmapped" />
-            <span>Auto default OFF pro ne-mapovaná relé</span>
-          </label>
-          <div class="action-bar">
-            <button class="btn" id="autoRecompute">Recompute now</button>
-            <button class="btn primary" data-save="relay">Uložit mapování</button>
-          </div>
-        </div>
-        <div class="card">
-          <h2>IO role (iofunc)</h2>
-          <div class="grid two">
-            <div>
-              <h3>Vstupy</h3>
-              <div id="iofuncInputs" class="stack"></div>
-            </div>
-            <div>
-              <h3>Výstupy</h3>
-              <div id="iofuncOutputs" class="stack"></div>
-            </div>
-          </div>
-          <div class="action-bar">
-            <button class="btn primary" data-save="iofunc">Uložit role</button>
-          </div>
-        </div>
-      </section>
-
-      <section id="valves" class="section">
-        <h1>Ventily (3c)</h1>
-
-        <div class="thermo-action-row">
-          <button class="btn primary" data-save="valves">Uložit ventily</button>
-        </div>
-
-        <div class="card">
-          <h2>Nastavení ventilů (pevné mapování relé)</h2>
-          <div id="valveConfig" class="stack"></div>
-        </div>
-        <div class="card">
-          <h2>Kalibrace ventilů</h2>
-          <p class="hint">Manuální testy mohou přepnout jednotku do MANUAL.</p>
-          <div class="grid two">
-            <div>
-              <label class="field" title="Hlavní relé ventilu (např. R1). Směšovací ventil pro Ekviterm je typicky R1+R2."><span>Master relé</span><input type="number" min="1" max="8" id="calMaster" placeholder="1" /></label>
-              <label class="field" title="Druhé relé pro směr (např. R2). U směšovacího 3c ventilu jde typicky o peer k masteru."><span>Peer relé</span><input type="number" min="1" max="8" id="calPeer" placeholder="2" /></label>
-              <label class="field" title="Otočí směr Pulse + / Pulse −."><span>Invert dir</span><input type="checkbox" id="calInvert" /></label>
-              <label class="field" title="Čas přestavení 0% → 100% (jeden plný zdvih). Příklad: 120 s."><span>Travel time (s)</span><input type="number" min="0" step="0.1" id="calTravel" placeholder="120" /></label>
-              <label class="field" title="Délka jednoho pulzu při Pulse +/−. Příklad: 1.5 s."><span>Pulse time (s)</span><input type="number" min="0" step="0.1" id="calPulse" placeholder="1.5" /></label>
-              <label class="field" title="Ochranná pauza po pulzu (nech ventilu doběhnout). Příklad: 2 s."><span>Guard time (s)</span><input type="number" min="0" step="0.1" id="calGuard" placeholder="2" /></label>
-              <label class="field" title="Minimální doba mezi sepnutími (ochrana relé/aktuátoru). Příklad: 3 s."><span>Min switch (s)</span><input type="number" min="0" step="0.1" id="calMinSwitch" placeholder="3" /></label>
-              <label class="field" title="Výchozí poloha po startu (A = 0%, B = 100%)."><span>Default pos</span>
-                <select id="calDefault">
-                  <option value="A">A</option>
-                  <option value="B">B</option>
-                </select>
-              </label>
-              <div class="inline">
-                <button class="btn" id="testRelayA">Pulse −</button>
-                <button class="btn" id="testRelayB">Pulse +</button>
-                <button class="btn warn" id="stopRelay">Stop</button>
-              </div>
-            </div>
-            <div>
-              <div class="status-box" id="calStatus">—</div>
-              <button class="btn primary" id="saveCalibration">Uložit do configu</button>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section id="thermometers" class="section">
-        <h1>Teploměry (DS18B20 / MQTT / BLE)</h1>
-
-        <div class="thermo-action-row">
-          <button class="btn primary" data-save="thermometers">Uložit teploměry</button>
-        </div>
-
-        <div class="card">
-          <h2>Přehled a mapování</h2>
-          <div class="table-wrap">
-            <table class="table" id="thermometerTable">
-              <thead>
-                <tr>
-                  <th>Zdroj</th>
-                  <th>Název</th>
-                  <th>Role</th>
-                  <th>ID</th>
-                  <th>Teplota</th>
-                </tr>
-              </thead>
-              <tbody id="thermometerTableBody"></tbody>
-            </table>
-          </div>
-          <p class="hint">Zdroj = přednastavené GPIO (TEMP1–8), BLE, MQTT. ID se načítá podle zdroje (ROM/MAC/Topic). Pokud teplota chybí, zobrazí se stav.</p>
-        </div>
-
-        <p class="hint">Pozn.: konfigurace MQTT/BLE/GPIO rolí se nastavuje přímo v tabulce výše. Ostatní widgety byly odstraněny.</p>
-      </section>
-
-      <section id="ble" class="section" data-cap="ble">
-        <h1>BLE</h1>
-        <div class="grid two">
-          <div class="card">
-            <h2>Konfigurace</h2>
-            <div id="bleConfig" class="stack"></div>
-            <div class="action-bar">
-              <button class="btn primary" id="saveBleConfig">Uložit BLE</button>
-            </div>
-          </div>
-          <div class="card">
-            <h2>Párování & Allowlist</h2>
-            <div class="stack">
-              <label class="field"><span>Role</span>
-                <select id="blePairRole">
-                  <option value="meteo">Meteo</option>
-                  <option value="display">Display</option>
-                  <option value="other">Other</option>
-                </select>
-              </label>
-              <label class="field"><span>Seconds</span><input type="number" min="5" max="600" id="blePairSeconds" value="120" /></label>
-              <div class="inline">
-                <button class="btn" id="blePairStart">Start pairing</button>
-                <button class="btn secondary" id="blePairStop">Stop</button>
-              </div>
-            </div>
-            <h3>Paired zařízení</h3>
-            <div id="blePaired" class="stack"></div>
-            <div class="action-bar">
-              <button class="btn" id="bleRetry">Retry meteo now</button>
-            </div>
-          </div>
-        </div>
-        <div class="card">
-          <h2>BLE status</h2>
-          <pre id="bleStatus" class="code-block">—</pre>
-        </div>
-      </section>
-
-      <section id="buzzer" class="section" data-cap="buzzer">
-        <h1>Buzzer</h1>
-        <div class="grid two">
-          <div class="card">
-            <h2>Konfigurace</h2>
-            <div id="buzzerConfig" class="stack"></div>
-            <div class="action-bar">
-              <button class="btn primary" id="saveBuzzer">Uložit buzzer</button>
-            </div>
-          </div>
-          <div class="card">
-            <h2>Test patternů</h2>
-            <div id="buzzerTests" class="inline wrap"></div>
-            <button class="btn secondary" id="buzzerStop">Stop</button>
-          </div>
-        </div>
-      </section>
-
-      <section id="opentherm" class="section" data-cap="opentherm">
-        <h1>OpenTherm</h1>
-
-        <div class="thermo-action-row right">
-          <div class="action-right">
-            <label class="toggle" title="Povolí komunikaci přes OpenTherm (pokud je ve firmware zapnuta/podporována).">
-              <input type="checkbox" data-path="opentherm.enabled" />
-              <span>Povolit OpenTherm</span>
-            </label>
-            <button class="btn primary" data-save="opentherm">Uložit OpenTherm</button>
-          </div>
-        </div>
-
-        <div class="grid two">
-          <div class="card">
-            <h2>Rozhraní</h2>
-            <div class="form-grid compact">
-              <label class="field"><span>Režim</span>
-                <select data-path="opentherm.mode">
-                  <option value="gateway">Gateway</option>
-                  <option value="monitor">Monitor</option>
-                  <option value="thermostat">Thermostat</option>
-                </select>
-              </label>
-
-              <label class="field"><span>RX GPIO</span>
-                <input type="number" min="0" max="48" step="1" data-path="opentherm.rxGpio" placeholder="(dle HW)" />
-              </label>
-              <label class="field"><span>TX GPIO</span>
-                <input type="number" min="0" max="48" step="1" data-path="opentherm.txGpio" placeholder="(dle HW)" />
-              </label>
-              <label class="field"><span>Invert</span>
-                <input type="checkbox" data-path="opentherm.invert" />
-              </label>
-
-              <label class="field"><span>Poll period (ms)</span>
-                <input type="number" min="250" step="250" data-path="opentherm.pollMs" placeholder="2000" />
-              </label>
-            </div>
-            <p class="hint">Pozn.: konkrétní chování závisí na firmware. UI posílá nastavení do <span class="mono">/api/config</span>.</p>
-          </div>
-
-          <div class="card">
-            <h2>MQTT / Home Assistant</h2>
-            <div class="form-grid compact">
-              <label class="toggle" title="Publikovat OpenTherm hodnoty do MQTT (pokud je to ve firmware implementováno).">
-                <input type="checkbox" data-path="opentherm.mqtt.enabled" />
-                <span>Publikovat přes MQTT</span>
-              </label>
-              <label class="field"><span>Base topic</span>
-                <input data-path="opentherm.mqtt.baseTopic" placeholder="opentherm" />
-              </label>
-              <label class="toggle" title="Zapne Home Assistant MQTT discovery pro OpenTherm entity (pokud je podporováno).">
-                <input type="checkbox" data-path="opentherm.haDiscovery" />
-                <span>Home Assistant discovery</span>
-              </label>
-              <label class="field"><span>Publish period (ms)</span>
-                <input type="number" min="500" step="500" data-path="opentherm.publishMs" placeholder="5000" />
-              </label>
-            </div>
-          </div>
-        </div>
-
-        <div class="card">
-          <h2>Diagnostika</h2>
-          <pre id="openthermStatus" class="code-block">—</pre>
-        </div>
-      </section>
-
-      <section id="advanced" class="section">
-        <h1>Pokročilé</h1>
-        <div class="grid two">
-          <div class="card">
-            <h2>Import / Export konfigurace</h2>
-            <div class="stack">
-              <button class="btn" id="exportConfig">Export config.json</button>
-              <label class="field">
-                <span>Import JSON</span>
-                <input type="file" id="importConfig" accept="application/json" />
-              </label>
-              <textarea id="configPreview" class="code-block" rows="10" readonly></textarea>
-              <button class="btn primary" id="applyImport">Použít import</button>
-            </div>
-          </div>
-          <div class="card">
-            <h2>BLE / Buzzer export</h2>
-            <div class="stack">
-              <button class="btn" id="exportBle">Export BLE config</button>
-              <button class="btn" id="exportBuzzer">Export Buzzer config</button>
-            </div>
-          </div>
-        </div>
-        <div class="card">
-          <h2>Diagnostika</h2>
-          <pre id="capsDump" class="code-block"></pre>
-          <pre id="statusDump" class="code-block"></pre>
-        </div>
-        <div class="card">
-          <h2>Test dat webserveru</h2>
-          <p class="hint">Ověření velikosti JSON a případného overflow (ArduinoJson) pro /api/status a /api/dash.</p>
-          <button class="btn" id="runWebTest">Spustit test</button>
-          <pre id="webTestDump" class="code-block"></pre>
-        </div>
-        <div class="card danger">
-          <h2>Reboot zařízení</h2>
-          <p>Vyžaduje potvrzení.</p>
-          <button class="btn danger" id="reboot">Reboot</button>
-        </div>
+        <div id="layoutEditor" class="layoutEditor"></div>
       </section>
     </main>
   </div>
 
-  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/util.js"></script>
+  <script src="/api.js"></script>
+  <script src="/dashboard.js"></script>
+  <!-- Widgets (split files) -->
+  <script src="/status.js"></script>
+  <script src="/relays.js"></script>
+  <script src="/inputs.js"></script>
+  <script src="/temps.js"></script>
+  <script src="/roles.js"></script>
+  <script src="/ble.js"></script>
+  <script src="/diag.js"></script>
+  <script src="/equitherm.js"></script>
+  <script src="/dhw.js"></script>
+  <script src="/recirc.js"></script>
+  <script src="/aku.js"></script>
 
-  <script src="/js/app.js?v=v3.3.12-p3"></script>
+  <!-- Full page: Teploměry -->
+  <script src="/thermometers_page.js"></script>
+
+  <!-- Full page: Ekviterm -->
+  <script src="/equitherm_page.js"></script>
+
+  <!-- Full page: Ohřev TUV -->
+  <script src="/dhw_page.js"></script>
+
+  <!-- Full page: Cirkulace -->
+  <script src="/recirc_page.js"></script>
+
+  <!-- Full page: Akumulační nádrž -->
+  <script src="/aku_page.js"></script>
+  <script src="/app.js"></script>
 </body>
 </html>
