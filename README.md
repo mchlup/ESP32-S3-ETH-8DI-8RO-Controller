@@ -6,7 +6,10 @@ Modulární řídicí jednotka pro **řízení topení a teplé užitkové vody 
 Projekt je navržen jako **dlouhodobě udržitelný**, **neblokující** a **rozšiřitelný** systém pro reálné nasazení v topných soustavách.
 
 ---
+## Náhled UI
+<img width="1263" height="1139" alt="Snímek obrazovky 2026-02-12 122324" src="https://github.com/user-attachments/assets/35599247-7922-475f-a402-914ef1e62894" />
 
+---
 ## Hlavní funkce
 
 - 🔥 Řízení topení
@@ -166,14 +169,5 @@ Projekt je navržen jako **dlouhodobě udržitelný**, **neblokující** a **roz
   * senzory
   * přepínače
   * stavové entity
-
----
-
-## Stav projektu
-
-* 🟢 Aktivně vyvíjeno
-* 🧪 Testováno v reálném provozu
-* 🔧 Průběžné refaktory zaměřené na stabilitu a čitelnost
-* 📈 Připraveno na další rozšíření (OpenTherm, další zóny…)
 
 ---
