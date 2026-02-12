@@ -449,7 +449,8 @@ static uint32_t s_recircMinOnMs = 30000;
 // například 5 min ON / 15 min OFF. 0 = vypnuto (běží kontinuálně v okně).
 static uint32_t s_recircCycleOnMs = 0;
 static uint32_t s_recircCycleOffMs = 0;
-static EqSourceCfg s_recircReturnCfg;
+static EqSourceCfg
+ s_recircReturnCfg;
 static float    s_recircStopTempC = 42.0f;
 static bool     s_recircActive = false;
 static bool     s_recircStopReached = false;
@@ -1342,14 +1343,103 @@ static bool isTuvEnabledEffective() {
 }
 
 static void applyTuvRequest() {
+    #if defined(FEATURE_OPENTHERM)
+    const OpenThermConfig otCfg = openthermGetConfig();
+    if (otCfg.enabled && otCfg.mapDhw && otCfg.boilerControl == OpenThermBoilerControl::OPENTHERM) {
+        // In full OpenTherm mode, DHW request is expressed via OT flags/setpoints.
+        return;
+    }
+    #endif
+
     const int8_t relayIdx = (s_boilerDhwRelay >= 0) ? s_boilerDhwRelay : s_tuvRequestRelay;
     if (relayIdx < 0 || relayIdx >= (int8_t)RELAY_COUNT) return;
     relaySet(static_cast<RelayId>(relayIdx), s_tuvModeActive);
 }
 
 static void applyNightModeRelay() {
+    #if defined(FEATURE_OPENTHERM)
+    const OpenThermConfig otCfg = openthermGetConfig();
+    if (otCfg.enabled && otCfg.mapNightMode && otCfg.boilerControl == OpenThermBoilerControl::OPENTHERM) {
+        // In full OpenTherm mode, day/night mapping is handled by Ekviterm setpoints.
+        return;
+    }
+    #endif
+
     if (s_boilerNightRelay < 0 || s_boilerNightRelay >= (int8_t)RELAY_COUNT) return;
     relaySet(static_cast<RelayId>(s_boilerNightRelay), s_nightMode);
+}
+
+static void applyOpenThermMapping(uint32_t nowMs) {
+    (void)nowMs;
+    #if !defined(FEATURE_OPENTHERM)
+    return;
+    #else
+    const OpenThermConfig cfg = openthermGetConfig();
+    if (!cfg.enabled) return;
+    if (cfg.boilerControl == OpenThermBoilerControl::RELAY) return; // read-only / not integrated
+
+    static float lastCh = NAN;
+    static float lastDhw = NAN;
+    static bool lastChEn = false;
+    static bool lastDhwEn = false;
+    static uint32_t lastSendMs = 0;
+
+    // Don't spam commands when nothing changes.
+    const uint32_t minPeriodMs = 1500;
+    if (lastSendMs != 0 && (uint32_t)(nowMs - lastSendMs) < minPeriodMs) {
+        // allow faster when value changed a lot (handled below)
+    }
+
+    // DHW has priority
+    if (s_tuvModeActive && cfg.mapDhw) {
+        const bool chEn = true;
+        const bool dhwEn = true;
+        const float dhwSp = cfg.dhwSetpointC;
+
+        // Optional boost: if we have Ekviterm target, add boost to CH setpoint during DHW.
+        float chSp = NAN;
+        if (isfinite(s_eqStatus.targetFlowC)) chSp = s_eqStatus.targetFlowC + cfg.dhwBoostChSetpointC;
+
+        const bool chChanged = (!isfinite(lastCh) && isfinite(chSp)) || (isfinite(chSp) && (!isfinite(lastCh) || fabsf(chSp - lastCh) >= 0.5f));
+        const bool dhwChanged = (!isfinite(lastDhw) && isfinite(dhwSp)) || (isfinite(dhwSp) && (!isfinite(lastDhw) || fabsf(dhwSp - lastDhw) >= 0.5f));
+        const bool flagsChanged = (chEn != lastChEn) || (dhwEn != lastDhwEn);
+
+        if (flagsChanged || dhwChanged || chChanged || lastSendMs == 0 || (uint32_t)(nowMs - lastSendMs) >= 5000) {
+            if (cfg.boilerControl == OpenThermBoilerControl::OPENTHERM) {
+                openthermCmdSetEnable(chEn, dhwEn);
+            }
+            openthermCmdSetDhwSetpoint(dhwSp);
+            if (isfinite(chSp)) openthermCmdSetChSetpoint(chSp);
+
+            lastChEn = chEn;
+            lastDhwEn = dhwEn;
+            lastDhw = dhwSp;
+            lastCh = chSp;
+            lastSendMs = nowMs;
+        }
+        return;
+    }
+
+    // CH / Ekviterm mapping
+    if (cfg.mapEquithermChSetpoint && s_eqStatus.active && isfinite(s_eqStatus.targetFlowC)) {
+        const bool chEn = true;
+        const bool dhwEn = false;
+        const float chSp = s_eqStatus.targetFlowC;
+        const bool chChanged = (!isfinite(lastCh) && isfinite(chSp)) || (isfinite(chSp) && (!isfinite(lastCh) || fabsf(chSp - lastCh) >= 0.5f));
+        const bool flagsChanged = (chEn != lastChEn) || (dhwEn != lastDhwEn);
+
+        if (flagsChanged || chChanged || lastSendMs == 0 || (uint32_t)(nowMs - lastSendMs) >= 5000) {
+            if (cfg.boilerControl == OpenThermBoilerControl::OPENTHERM) {
+                openthermCmdSetEnable(chEn, dhwEn);
+            }
+            openthermCmdSetChSetpoint(chSp);
+            lastChEn = chEn;
+            lastDhwEn = dhwEn;
+            lastCh = chSp;
+            lastSendMs = nowMs;
+        }
+    }
+    #endif
 }
 
 static uint8_t clampPctInt(int v) {
@@ -1915,12 +2005,14 @@ void logicUpdate() {
     equithermRecompute();
     equithermControlTick(nowMs);
     updateTuvModeState(nowMs);
+    applyOpenThermMapping(nowMs);
     recircUpdate(nowMs);
     akuHeaterUpdate(nowMs);
     applyNightModeRelay();
     if (nowMs - lastTickMs < 250) {
         // still enforce TUV output frequently (no flicker)
         applyTuvRequest();
+        applyOpenThermMapping(nowMs);
         return;
     }
     lastTickMs = nowMs;
