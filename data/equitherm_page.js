@@ -444,7 +444,8 @@ App.pages = App.pages || {};
   }
 
   function computeCurrentSetpoint(){
-    const eq = model.eq;
+    // model.eq can be null briefly (e.g. before config is loaded). Use safe defaults.
+    const eq = model.eq || {};
     const slope = model.night ? num(eq.slopeNight,1.6) : num(eq.slopeDay,1.6);
     const shift = model.night ? num(eq.shiftNight,0) : num(eq.shiftDay,0);
     const tout = num(model.outdoorC, 0);

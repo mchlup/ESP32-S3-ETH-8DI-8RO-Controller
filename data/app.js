@@ -4,7 +4,33 @@ let currentPage='dashboard';
 App.state={fast:null,bleStatus:null,configText:null,config:null};
 const PAGE_TITLES={dashboard:'Dashboard',equitherm:'Ekviterm',opentherm:'OpenTherm',dhw:'Ohřev TUV',recirc:'Cirkulace',aku:'Akumulační nádrž',thermometers:'Teploměry',settings:'Nastavení',ota:'OTA'};
 function setOnline(on){const d=App.util.$('#navOnlineDot');if(d) d.style.background=on?'var(--ok)':'var(--bad)';const t=App.util.$('#navOnlineText');if(t) t.textContent=on?'online':'offline';}
-function updHeader(fast){if(!fast) return;App.util.$('#footerTs')&&( App.util.$('#footerTs').textContent=`ts: ${fast.ts}` );if(fast.n){App.util.$('#ipText')&&( App.util.$('#ipText').textContent=fast.n.ip||'-' );}
+function fmtUptime(tsMs){
+  if(tsMs==null||isNaN(tsMs)) return '—';
+  const sec=Math.floor(Number(tsMs)/1000);
+  const d=Math.floor(sec/86400);
+  const h=Math.floor((sec%86400)/3600);
+  const m=Math.floor((sec%3600)/60);
+  const s=sec%60;
+  return (d?`${d}d `:'')+`${h}h ${m}m ${s}s`;
+}
+function updHeader(fast){
+if(!fast) return;
+// Header system status
+App.util.$('#hdrUptime')&&(App.util.$('#hdrUptime').textContent=fmtUptime(fast.ts));
+const ctrl = fast.ctrl==='A' ? 'AUTO' : (fast.ctrl==='M' ? 'MANUAL' : (fast.ctrl||'—'));
+App.util.$('#hdrMode')&&(App.util.$('#hdrMode').textContent=`${fast.mode||'—'} / ${ctrl}`);
+
+// BLE quick info (from /api/fast)
+const hb=App.util.$('#hdrBle');
+if(hb){
+  const b=fast.b;
+  hb.className='v';
+  if(!b || b.en!==true){ hb.textContent='off'; hb.classList.add('warn'); }
+  else if(b.ok===true && b.t!=null){ hb.textContent=`${Number(b.t).toFixed(1)} °C`; hb.classList.add('ok'); }
+  else if(b.fr===false){ hb.textContent='stale'; hb.classList.add('bad'); }
+  else { hb.textContent='—'; hb.classList.add('warn'); }
+}
+
 const e=fast.e||{},d=fast.d||{},c=fast.c||{},a=fast.a||{};
 App.util.$('#pillEq')&&( App.util.$('#pillEq').textContent=`Ekviterm: ${e.en?(e.ac?'aktivní':'zapnuto'):'vypnuto'}` );
 App.util.$('#pillTuv')&&( App.util.$('#pillTuv').textContent=`TUV: ${d.en?(d.ac?'aktivní':'zapnuto'):'vypnuto'}` );
@@ -51,6 +77,13 @@ if(page==='equitherm'){
   const host = App.util.$('#equithermRoot');
   if(App.pages?.equitherm?.mount) App.pages.equitherm.mount(host);
   if(App.pages?.equitherm?.update) App.pages.equitherm.update(App.state.fast);
+  return;
+}
+if(page==='opentherm'){
+  root.innerHTML='<div id="openthermRoot"></div>';
+  const host = App.util.$('#openthermRoot');
+  if(App.pages?.opentherm?.mount) App.pages.opentherm.mount(host);
+  if(App.pages?.opentherm?.update) App.pages.opentherm.update(App.state.fast);
   return;
 }
 if(page==='thermometers'){
@@ -104,7 +137,11 @@ function startSSE(){
       }
     },
     (st)=>{
-      App.util.$('#sseState')&&( App.util.$('#sseState').textContent=st );
+      const el=App.util.$('#hdrSse');
+      if(el){
+        el.textContent=st;
+        el.className='v '+(st==='connected'?'ok':(st==='connecting'?'warn':'bad'));
+      }
       if(typeof App.onSseState==='function') try{ App.onSseState(st); }catch(_){ }
     }
   );

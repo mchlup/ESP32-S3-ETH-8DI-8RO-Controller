@@ -42,17 +42,19 @@
         <button id="btnRefresh" class="btn">Obnovit</button>
         <button id="btnRestart" class="btn danger">Restart</button>
       </div>
-
-      <div class="navFooter">
-        <div class="kvRow"><span>SSE:</span> <span id="sseState">-</span></div>
-        <div class="kvRow"><span>IP:</span> <span id="ipText">-</span></div>
-        <div class="kvRow"><span id="footerTs">ts: -</span></div>
-      </div>
     </aside>
 
     <main class="main">
       <header class="topbar">
-        <div class="h1" id="pageTitle">Dashboard</div>
+        <div class="topbarLeft">
+          <div class="h1" id="pageTitle">Dashboard</div>
+          <div class="hdrStatus" aria-label="Stavy systému">
+            <div class="hdrItem"><span class="k">Uptime</span><span class="v" id="hdrUptime">—</span></div>
+            <div class="hdrItem"><span class="k">Režim</span><span class="v" id="hdrMode">—</span></div>
+            <div class="hdrItem"><span class="k">SSE</span><span class="v" id="hdrSse">—</span></div>
+            <div class="hdrItem"><span class="k">BLE</span><span class="v" id="hdrBle">—</span></div>
+          </div>
+        </div>
         <div class="pills">
           <div class="pill" id="pillEq">Ekviterm: -</div>
           <div class="pill" id="pillTuv">TUV: -</div>
@@ -79,7 +81,6 @@
   <script src="/api.js"></script>
   <script src="/dashboard.js"></script>
   <!-- Widgets (split files) -->
-  <script src="/status.js"></script>
   <script src="/relays.js"></script>
   <script src="/inputs.js"></script>
   <script src="/temps.js"></script>
@@ -105,6 +106,9 @@
 
   <!-- Full page: Akumulační nádrž -->
   <script src="/aku_page.js"></script>
+
+  <!-- Full page: OpenTherm -->
+  <script src="/opentherm_page.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

@@ -303,6 +303,8 @@ App.pages = App.pages || {};
                     <option value="none">Automaticky dle role ("return")</option>
                     <option value="temp1">T1</option><option value="temp2">T2</option><option value="temp3">T3</option><option value="temp4">T4</option>
                     <option value="temp5">T5</option><option value="temp6">T6</option><option value="temp7">T7</option><option value="temp8">T8</option>
+                    <option value="opentherm_boiler">OpenTherm: boiler</option>
+                    <option value="opentherm_return">OpenTherm: return</option>
                     <option value="ble">BLE teploměr</option>
                     <option value="mqtt">MQTT teploměr</option>
                   </select>
