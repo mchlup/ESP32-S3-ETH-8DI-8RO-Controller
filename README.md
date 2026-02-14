@@ -1,173 +1,167 @@
+# ESP32-S3-ETH-8DI-8RO Heat Controller
 
-# ESP32 Heat & Domestic Water Controller
+Řídicí jednotka topné soustavy postavená na platformě **Waveshare ESP32-S3-ETH-8DI-8RO**.
 
-Modulární řídicí jednotka pro **řízení topení a teplé užitkové vody (TUV / DHW)** postavená na **ESP32-S3** s podporou **Web UI, MQTT, Home Assistant, BLE senzorů a OpenTherm**.
-
-Projekt je navržen jako **dlouhodobě udržitelný**, **neblokující** a **rozšiřitelný** systém pro reálné nasazení v topných soustavách.
-
----
-## Náhled UI
-<img width="1263" height="1139" alt="Snímek obrazovky 2026-02-12 122324" src="https://github.com/user-attachments/assets/35599247-7922-475f-a402-914ef1e62894" />
-
----
-## Hlavní funkce
-
-- 🔥 Řízení topení
-  - 3c směšovací ventil (ekvitermní regulace)
-  - podpora akumulační nádrže
-  - řízení oběhových čerpadel
-- 🚿 Teplá užitková voda (TUV / DHW)
-  - přepínací ventil
-  - časové plánování
-  - cirkulace TUV
-- 🌡️ Snímání teplot
-  - DS18B20 (1-Wire, více senzorů na vstup)
-  - externí BLE venkovní senzor (ESP32-C3)
-  - MQTT senzory
-- 📡 Komunikace
-  - Web UI (LittleFS)
-  - REST API
-  - MQTT + Home Assistant auto-discovery
-  - BLE (NimBLE)
-  - OpenTherm (plánováno / rozšiřitelné)
-- ⚙️ Konfigurace
-  - webové rozhraní
-  - persistentní konfigurace v LittleFS
-  - validace a fallback na defaulty
-- 🧠 Architektura
-  - plně neblokující běh
-  - stavové automaty (BLE, retry)
-  - oddělení logiky, IO, UI a komunikace
+Projekt implementuje:
+- Ekvitermní regulaci směšovacího ventilu
+- Prioritní ohřev teplé užitkové vody (DHW / TUV)
+- Komunikaci s kotlem přes OpenTherm
+- BLE venkovní senzor
+- Dallas DS18B20 teplotní senzory
+- Webové rozhraní s realtime aktualizací (SSE)
+- Ethernet + Wi‑Fi (AP + STA)
+- RTC + NTP synchronizaci času
 
 ---
 
-## Použitý hardware
+# Hardware
 
-- **ESP32-S3-POE-ETH-8DI-8DO**  
-  https://www.waveshare.com/wiki/ESP32-S3-POE-ETH-8DI-8DO
-- I2C expander pro relé / vstupy
-- DS18B20 teplotní senzory
-- ESP32-C3 BLE meteosenzor (venkovní)
+## Řídicí jednotka
+- Waveshare ESP32-S3-ETH-8DI-8RO
+- Ethernet W5500
+- 8× digitální vstup
+- 8× relé výstup
 
----
+## Teplotní senzory
+- Dallas DS18B20
+- Až 3 senzory na jeden GPIO
+- GPIO 0–3
 
-## Struktura projektu
-
-```text
-/
-├── ESP-D1-HeatControl/        # Hlavní firmware (ESP32-S3)
-│   ├── *.ino
-│   ├── controllers/          # Logic, BLE, MQTT, Web, FS, Dallas, OTA…
-│   ├── utils/                # JSON utils, retry policy, helpers
-│   ├── data/                 # Web UI (LittleFS)
-│   │   ├── index.html
-│   │   └── js/
-│   └── include/
-│
-├── ESP32C3_BLE_MeteoSensor/   # BLE venkovní senzor (ESP32-C3)
-│   └── ESP32C3_BLE_MeteoSensor.ino
-│
-└── README.md
-````
+## BLE venkovní senzor
+- ESP32-C3
+- Periodické vysílání teploty
 
 ---
 
-## Architektonické principy
+# Mapování I/O
 
-### Nezablokovaný běh
+## Digitální vstupy
 
-* žádné `delay()` v produkční logice
-* všechny opakované operace řízeny časovačem / stavem
-* plynulý běh UI, MQTT i BLE i při chybách periferií
+| Vstup | Funkce |
+|--------|--------|
+| IN1 | Přepnutí denní/noční ekvitermní křivky (aktivní = noční) |
+| IN2 | Požadavek ohřevu TUV |
+| IN3 | Požadavek cirkulace TUV |
+| IN4–IN8 | Rezerva |
 
-### Stavové automaty
+## Relé výstupy
 
-* BLE client (scan → connect → subscribe → connected → retry)
-* retry/backoff pro I2C, BLE, síťové operace
-
-### Konfigurace & JSON
-
-* centrální práce s JSON (`ArduinoJson`)
-* dynamická kapacita dokumentů
-* validace vstupů + rozsahů
-* atomický zápis konfigurace (ochrana proti poškození)
-
-### Oddělení odpovědností
-
-* každý subsystém má vlastní controller
-* minimální vazby mezi moduly
-* jasně definované API
+| Relé | Funkce |
+|-------|--------|
+| R1 + R2 | Směšovací ventil (Ekviterm) |
+| R3 | Přepínací ventil TUV |
+| R4 | Cirkulační čerpadlo TUV |
+| R5 | Požadavek TUV na kotel |
+| R6 | Přepnutí den/noc na kotli |
+| R7 | Omezovací relé výkonu |
+| R8 | Stykač topné tyče (akumulační nádrž 450 L) |
 
 ---
 
-## Web UI
+# Funkce systému
 
-* běží přímo na zařízení
-* uložené v LittleFS
-* responzivní dashboard
-* dynamické widgety podle aktivních funkcí
-* konfigurační stránky:
+## Ekvitermní regulace
+- Řízení směšovacího ventilu podle venkovní teploty
+- Denní a noční křivka
+- Konfigurovatelný sklon, posun, hystereze
+- Nastavení času přesunu ventilu
 
-  * Ekviterm
-  * ohřev TUV (DHW)
-  * Cirkulace TUV (DHW)
-  * podpora topení z Akumulační nádrže
-  * Senzory
-  * MQTT / Síť
+## Ohřev TUV (DHW)
+- Prioritní režim
+- Přepnutí ventilu do režimu TUV
+- Aktivace požadavku na kotel
+- Automatický návrat po dosažení teploty
 
----
+## Cirkulace TUV
+- Časové řízení nebo vstupem
+- Možnost cyklického provozu
 
-## REST API
+## OpenTherm
+- Nastavení požadované teploty
+- Čtení stavů kotle
+- Diagnostika komunikace
 
-* jednotný JSON response kontrakt:
-
-```json
-{ "ok": true, "data": { ... }, "warnings": [] }
-```
-
-```json
-{ "ok": false, "error": { "code": "...", "message": "...", "details": [] } }
-```
-
-* `/api/status` – aktuální stav systému
-* `/api/config/*` – konfigurace jednotlivých modulů
-* všechny endpointy:
-
-  * validují vstup
-  * vrací defaulty při chybě
-  * nikdy neselžou „tiše“
+## BLE
+- Pasivní příjem dat
+- Kontrola stáří dat
+- RSSI monitoring
 
 ---
 
-## BLE meteosenzor
+# Webové rozhraní
 
-* ESP32-C3 jako BLE server
-* periodické odesílání dat:
+Obsahuje:
+- Dashboard (widgety, grid layout)
+- Ekviterm
+- OpenTherm
+- BLE
+- Síťová konfigurace
+- Diagnostika
 
-  * teplota
-  * vlhkost
-  * tlak
-  * trend
-* ESP32-S3 jako BLE client:
-
-  * stavový automat
-  * řízený reconnect s backoffem
-  * watchdog na příjem dat
+Realtime aktualizace přes:
+/api/events (SSE)
 
 ---
 
-## MQTT & Home Assistant
+# Síť
 
-* MQTT publish:
-
-  * teploty
-  * stavy relé
-  * diagnostika
-* Home Assistant:
-
-  * auto-discovery
-  * senzory
-  * přepínače
-  * stavové entity
+- Ethernet (prioritní)
+- Wi‑Fi STA
+- Wi‑Fi AP fallback (WiFiManager)
+- NTP synchronizace
+- RTC podpora
 
 ---
+
+# Struktura projektu
+
+ESP32-S3-ETH-8DI-8RO-Controller/
+- BleController.*
+- EquithermController.*
+- LogicController.*
+- OpenTherm*
+- RelayController.*
+- InputController.*
+- ThermometerController.*
+- DallasController.*
+- OneWireESP32.*
+- WebServerController.*
+- ConfigStore.*
+- NetworkController.*
+- data/ (Web UI)
+
+---
+
+# Kompilace
+
+Platforma:
+- ESP32-S3
+- Arduino framework
+
+Doporučeno:
+- Arduino IDE 2.x
+- Aktuální ESP32 core
+
+Knihovny:
+- WiFiManager
+- ArduinoJson
+- PubSubClient
+- NimBLE
+- OneWire
+- DallasTemperature
+
+---
+
+# Stav projektu
+
+- Ekviterm: funkční
+- TUV: funkční
+- BLE: stabilní
+- OpenTherm: připraveno k provoznímu testování
+- Web UI: aktivní vývoj
+
+---
+
+# Licence
+
+Projekt je určen pro experimentální a soukromé použití.
