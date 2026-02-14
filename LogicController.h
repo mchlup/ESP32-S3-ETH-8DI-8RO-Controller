@@ -94,6 +94,14 @@ bool logicValvePulse(uint8_t masterRelay1based, int8_t dir);
 bool logicValveStop(uint8_t masterRelay1based);
 bool logicValveGotoPct(uint8_t masterRelay1based, uint8_t pct);
 
+// Physical calibration (homing) to an endstop (HOME).
+// Runs the motor for (travelTime + 2s) and then resets internal position model.
+// - homePct: 0 => home at A (0%), 100 => home at B (100%)
+bool logicValveCalibrateHome(uint8_t masterRelay1based, uint8_t homePct);
+
+// Convenience: calibrate equitherm mixing valve (uses equitherm.homing.positionPct as HOME).
+bool logicEquithermCalibrateHome();
+
 // Nastavení výstupu z UI/API (respektuje šablony, např. 3c ventil)
 void logicSetRelayOutput(uint8_t relay1based, bool on);
 // RAW ovládání relé (použito pro kalibrace; obejde šablony, ale drží bezpečnost A/B páru)

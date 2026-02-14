@@ -8,6 +8,8 @@
 #include "Log.h"
 
 #include <ArduinoJson.h>
+#include <NimBLEDevice.h>
+#include <string>
 
 // Passive BLE advertisement listener (no pairing, no connections).
 //
@@ -17,6 +19,7 @@
 //  - no bonding/pairing state to maintain
 
 namespace {
+
   bool g_inited = false;
   bool g_enabled = true;
   String g_mac;          // optional filter
@@ -38,12 +41,28 @@ namespace {
   // --- BLE Mesh (lightweight relay over advertisements) ---
   // NOTE: This is NOT Bluetooth SIG Mesh. It is a tiny relay protocol carried
   // in Manufacturer Data to extend outdoor sensor range.
-  bool g_meshEnabled = false;
+  // Enabled by default so the ESP32-S3 can decode the outdoor ESP32-C3 sensor
+  // which broadcasts meteo data in Manufacturer Data (companyId 0xFFFE).
+  bool g_meshEnabled = true;
   bool g_meshRelay = false;
   uint8_t g_meshTtl = 3;
   uint32_t g_meshAdvIntervalMs = 1200;
   int g_meshMinRelayRssi = -95;
   bool g_meshPreferDirect = true;
+
+  // --- GATT fallback client (ESP32-C3 outdoor sensor) ---
+  NimBLEClient* g_client = nullptr;
+  NimBLERemoteCharacteristic* g_rcMeteo = nullptr;
+  bool g_gattEnabled = true;          // enabled in auto; can be forced by ble.type
+  bool g_gattConnected = false;
+  String g_gattMac = "";             // connected peer address
+  uint32_t g_nextGattAttemptMs = 0;
+  uint32_t g_lastGattOkMs = 0;
+  String g_lastCandidateMac = "";
+  int g_lastCandidateRssi = -127;
+  uint32_t g_lastCandidateSeenMs = 0;
+  static const uint32_t GATT_RETRY_MS = 8000;
+  static const uint32_t GATT_IDLE_PROBE_MS = 15000;
 
   // Last packet meta
   bool g_lastFromMesh = false;
@@ -64,6 +83,22 @@ namespace {
     uint8_t c = 0;
     for (size_t i = 0; i < n; ++i) c ^= p[i];
     return c;
+  }
+
+  // CRC8 Dallas/Maxim (poly 0x31 reflected => 0x8C)
+  // Used by the outdoor ESP32-C3 sensor (tools/ESP32C3_BLE_Sensor).
+  static uint8_t crc8_maxim(const uint8_t* data, size_t len) {
+    uint8_t crc = 0;
+    for (size_t i = 0; i < len; i++) {
+      uint8_t inbyte = data[i];
+      for (uint8_t j = 0; j < 8; j++) {
+        uint8_t mix = (crc ^ inbyte) & 0x01;
+        crc >>= 1;
+        if (mix) crc ^= 0x8C;
+        inbyte >>= 1;
+      }
+    }
+    return crc;
   }
 
   static String mac6ToString(const uint8_t mac[6]) {
@@ -107,6 +142,26 @@ namespace {
     return (uint32_t)(nowMs - g_lastUpdateMs) > g_maxAgeMs;
   }
 
+  // Parse 6B notify frame from ESP32-C3 outdoor sensor:
+  // int16 temp_x10 LE, uint8 hum, uint16 press_hPa LE, int8 trend
+  static bool parseMeteoNotify6B(const uint8_t* p, size_t n,
+                                float& outTempC, int& outHum, int& outPress, int& outTrend) {
+    if (!p || n < 6) return false;
+    const int16_t t10 = (int16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
+    const uint8_t hum = p[2];
+    const uint16_t press = (uint16_t)p[3] | ((uint16_t)p[4] << 8);
+    const int8_t tr = (int8_t)p[5];
+    outTempC = ((float)t10) / 10.0f;
+    outHum = (int)hum;
+    outPress = (int)press;
+    outTrend = (int)tr;
+    if (!isfinite(outTempC) || outTempC < -60.0f || outTempC > 80.0f) return false;
+    if (outHum < 0 || outHum > 100) return false;
+    if (outPress < 300 || outPress > 1100) return false;
+    if (outTrend < -5 || outTrend > 5) outTrend = 0;
+    return true;
+  }
+
   // Decode manufacturer data broadcasted by ESP32C3_BLE_MeteoSensor.ino:
   //   uint16 companyId (0xFFFF) LE
   //   uint8  version (1)
@@ -147,30 +202,90 @@ namespace {
   //   int16  temp_x10 (LE)
   //   uint8  hum_pct
   //   uint16 press_hPa (LE)
-  //   [optional] uint8 crc8 (xor of all previous bytes)
+  //   [optional] uint8 crc8 (Dallas/Maxim; older firmware used xor)
+  
+  // Decode lightweight BLE Mesh meteo frame (Manufacturer Data):
+  // Variant A (full, as on-air payload): starts with companyId 0xFFFE (LE)
+  //   uint16 companyId = 0xFFFE (LE)
+  //   uint8  ver = 1
+  //   uint8  ttl
+  //   uint8  hops
+  //   uint16 seq (LE)
+  //   uint8  originMac[6]
+  //   int16  temp_x10 (LE)
+  //   uint8  hum_pct
+  //   uint16 press_hPa (LE)
+  //   [optional] uint8 crc8 (Dallas/Maxim; older firmware used xor)
+  //
+  // Variant B (some NimBLE builds/APIs): manufacturer data returned WITHOUT the 2-byte companyId.
+  // In that case it starts directly with {ver, ttl, hops, seqLE, originMac6, tempLE, hum, pressLE, [crc]}.
   static bool decodeMeshMfg(const uint8_t* data, size_t len,
                             float& outTempC, int& outHum, int& outPress, int& outTrend,
                             uint8_t& outTtl, uint8_t& outHops, uint16_t& outSeq,
                             uint8_t outOriginMac[6]) {
-    if (len < 18) return false;
-    const uint16_t cid = (uint16_t)data[0] | ((uint16_t)data[1] << 8);
-    if (cid != 0xFFFE) return false;
-    const uint8_t ver = data[2];
+    if (!data) return false;
+
+    // Determine layout
+    bool hasCompanyId = false;
+    size_t off = 0;
+
+    if (len >= 18) {
+      const uint16_t cid = (uint16_t)data[0] | ((uint16_t)data[1] << 8);
+      if (cid == 0xFFFE) {
+        hasCompanyId = true;
+        off = 2; // ver is at data[2]
+      }
+    }
+
+    // If no companyId detected, try "stripped companyId" variant.
+    if (!hasCompanyId) {
+      if (len < 16) return false;
+      off = 0; // ver is at data[0]
+    } else {
+      if (len < 18) return false;
+    }
+
+    const uint8_t ver = data[off + 0];
     if (ver != 1) return false;
 
-    outTtl = data[3];
-    outHops = data[4];
-    outSeq = (uint16_t)data[5] | ((uint16_t)data[6] << 8);
-    memcpy(outOriginMac, &data[7], 6);
-    const int16_t t10 = (int16_t)((uint16_t)data[13] | ((uint16_t)data[14] << 8));
-    const uint8_t hum = data[15];
-    const uint16_t press = (uint16_t)data[16] | ((uint16_t)data[17] << 8);
+    outTtl = data[off + 1];
+    outHops = data[off + 2];
+    outSeq = (uint16_t)data[off + 3] | ((uint16_t)data[off + 4] << 8);
+    memcpy(outOriginMac, &data[off + 5], 6);
 
-    // Optional CRC
-    if (len >= 19) {
-      const uint8_t want = data[18];
-      const uint8_t got = crc8_xor(data, 18);
-      if (want != got) return false;
+    const int16_t t10 = (int16_t)((uint16_t)data[off + 11] | ((uint16_t)data[off + 12] << 8));
+    const uint8_t hum = data[off + 13];
+    const uint16_t press = (uint16_t)data[off + 14] | ((uint16_t)data[off + 15] << 8);
+
+    // Optional CRC: if present, verify. (Accept both Maxim CRC8 and xor for backward compatibility.)
+    // IMPORTANT: outdoor sensor computes CRC over the *full* on-air payload including companyId.
+    // Some NimBLE builds return manufacturer data WITHOUT the 2-byte companyId.
+    // In that stripped-variant case, verify CRC against a virtual buffer that prepends {0xFE,0xFF}.
+    const size_t minNoCrc = off + 16;
+    const size_t minWithCrc = off + 17;
+    if (len >= minWithCrc) {
+      const uint8_t want = data[off + 16];
+      uint8_t gotMaxim = 0;
+      uint8_t gotXor   = 0;
+
+      if (hasCompanyId) {
+        // CRC is over the bytes excluding the CRC itself.
+        gotMaxim = crc8_maxim(data, off + 16);
+        gotXor   = crc8_xor(data, off + 16);
+      } else {
+        // Reconstruct full payload prefix for CRC check.
+        // Layout for CRC: [0xFE 0xFF][ver..press] (18 bytes total)
+        uint8_t tmp[18];
+        tmp[0] = 0xFE;
+        tmp[1] = 0xFF;
+        memcpy(&tmp[2], data, 16);
+        gotMaxim = crc8_maxim(tmp, sizeof(tmp));
+        gotXor   = crc8_xor(tmp, sizeof(tmp));
+      }
+
+      if (want != gotMaxim && want != gotXor) return false;
+    } else if (len < minNoCrc) {
+      return false;
     }
 
     outTempC = ((float)t10) / 10.0f;
@@ -213,7 +328,13 @@ namespace {
 // Use NimBLE-Arduino (required for BLE scanning on ESP32).
 // NOTE: Avoid __has_include(...) here; Arduino's library resolver may not add include paths
 //       unless it sees a direct #include, which can incorrectly force "stub" mode.
-#include <NimBLEDevice.h>
+#include <string>
+
+// ESP-Meteo GATT fallback (ESP32-C3 outdoor sensor)
+// Service: 7b7c1001-3a2b-4f2a-8bb0-8d2c2c1a1001
+// Char:    7b7c1002-3a2b-4f2a-8bb0-8d2c2c1a1001 (READ/NOTIFY) payload 6B
+static NimBLEUUID UUID_SVC_METEO("7b7c1001-3a2b-4f2a-8bb0-8d2c2c1a1001");
+static NimBLEUUID UUID_CH_METEO ("7b7c1002-3a2b-4f2a-8bb0-8d2c2c1a1001");
 
 namespace {
   NimBLEScan* g_scan = nullptr;
@@ -250,7 +371,8 @@ namespace {
     const uint16_t p = (uint16_t)constrain(press, 300, 1100);
     payload[16] = (uint8_t)(p & 0xFF);
     payload[17] = (uint8_t)((p >> 8) & 0xFF);
-    payload[18] = crc8_xor(payload, 18);
+    // Use Dallas/Maxim CRC8 (matches outdoor sensor).
+    payload[18] = crc8_maxim(payload, 18);
 
     if (!g_adv) g_adv = NimBLEDevice::getAdvertising();
 
@@ -280,6 +402,18 @@ namespace {
 
       const int rssi = dev->getRSSI();
 
+      // Remember a candidate for GATT fallback (ESP32-C3 outdoor sensor advertises this service UUID).
+      if (dev->isAdvertisingService(UUID_SVC_METEO)) {
+        const std::string a = dev->getAddress().toString();
+        String mac = String(a.c_str());
+        mac.toUpperCase();
+        if (!g_lastCandidateMac.length() || rssi >= g_lastCandidateRssi - 5) {
+          g_lastCandidateMac = mac;
+          g_lastCandidateRssi = rssi;
+          g_lastCandidateSeenMs = millis();
+        }
+      }
+
       float tC = NAN;
       int hum = -1;
       int press = -1;
@@ -294,8 +428,10 @@ namespace {
       // Manufacturer data first (ESP meteo sensor broadcast lives here)
       if (dev->haveManufacturerData()) {
         std::string md = dev->getManufacturerData();
-        // Mesh frames are carried in manufacturer data (0xFFFE)
-        if (!ok && g_meshEnabled && (g_type == "esp_meteo_mfg" || g_type == "auto")) {
+        // Mesh-format frames are carried in manufacturer data (0xFFFE).
+        // NOTE: decoding is ALWAYS enabled so the outdoor ESP32-C3 sensor works even if
+        //       mesh relay is disabled in config (mesh.enabled=false).
+        if (!ok && (g_type == "esp_meteo_mfg" || g_type == "auto")) {
           ok = decodeMeshMfg((const uint8_t*)md.data(), md.size(), tC, hum, press, trend,
                              ttl, hops, seq, originMac);
           if (ok) isMesh = true;
@@ -371,6 +507,106 @@ namespace {
   ScanCallbacks g_cb;
 }
 
+// --- GATT fallback implementation ---------------------------------------------
+namespace {
+  class ClientCallbacks : public NimBLEClientCallbacks {
+    // NimBLE-Arduino changed callback signatures across versions.
+    // Provide both forms (without 'override') to stay compatible.
+    void onDisconnect(NimBLEClient* c) {
+      (void)c;
+      g_gattConnected = false;
+      g_gattMac = "";
+      g_rcMeteo = nullptr;
+      g_nextGattAttemptMs = millis() + 500;
+      LOGW("BLE GATT disconnected");
+    }
+    void onDisconnect(NimBLEClient* c, int reason) {
+      (void)reason;
+      onDisconnect(c);
+    }
+  };
+  ClientCallbacks g_clientCbs;
+
+  static void onMeteoNotify(NimBLERemoteCharacteristic* ch, uint8_t* data, size_t len, bool isNotify) {
+    (void)ch; (void)isNotify;
+    float tC = NAN;
+    int hum = -1, press = -1, trend = 0;
+    if (!parseMeteoNotify6B(data, len, tC, hum, press, trend)) return;
+    g_meteoC = tC;
+    g_meteoHum = hum;
+    g_meteoPress = press;
+    g_meteoTrend = trend;
+    g_haveMeteo = true;
+    g_lastUpdateMs = millis();
+    g_lastGattOkMs = g_lastUpdateMs;
+  }
+
+  static void gattDisconnect() {
+    if (g_client && g_client->isConnected()) {
+      g_client->disconnect();
+    }
+    g_gattConnected = false;
+    g_gattMac = "";
+    g_rcMeteo = nullptr;
+  }
+
+  static bool gattConnectAndSubscribe(const String& mac) {
+    if (!mac.length()) return false;
+
+    // Stop scan while connecting (reduces flakiness on some NimBLE builds)
+    if (g_scan && g_scan->isScanning()) {
+      g_scan->stop();
+    }
+
+    if (!g_client) {
+      g_client = NimBLEDevice::createClient();
+      g_client->setClientCallbacks(&g_clientCbs, false);
+    }
+
+    // Some NimBLE-Arduino versions require address type as 2nd parameter.
+    // 0 = public (BLE_ADDR_PUBLIC)
+    NimBLEAddress addr(std::string(mac.c_str()), 0);
+    LOGI("BLE GATT connect -> %s", mac.c_str());
+    if (!g_client->connect(addr)) {
+      LOGW("BLE GATT connect failed");
+      return false;
+    }
+
+    NimBLERemoteService* svc = g_client->getService(UUID_SVC_METEO);
+    if (!svc) {
+      LOGW("BLE GATT: service not found");
+      g_client->disconnect();
+      return false;
+    }
+
+    g_rcMeteo = svc->getCharacteristic(UUID_CH_METEO);
+    if (!g_rcMeteo) {
+      LOGW("BLE GATT: characteristic not found");
+      g_client->disconnect();
+      return false;
+    }
+
+    if (g_rcMeteo->canNotify()) {
+      if (!g_rcMeteo->subscribe(true, onMeteoNotify)) {
+        LOGW("BLE GATT: subscribe failed");
+      }
+    }
+
+    // Immediate read as well
+    if (g_rcMeteo->canRead()) {
+      std::string v = g_rcMeteo->readValue();
+      if (v.size() >= 6) {
+        onMeteoNotify(g_rcMeteo, (uint8_t*)v.data(), v.size(), false);
+      }
+    }
+
+    g_gattConnected = true;
+    g_gattMac = mac;
+    LOGI("BLE GATT connected + subscribed");
+    return true;
+  }
+}
+
 void bleInit() {
   if (g_inited) return;
   g_inited = true;
@@ -388,7 +624,7 @@ void bleInit() {
   // Use wider window/interval to reduce chance of missing slow advertisements.
   // NimBLE values are in 0.625ms units.
   g_scan->setInterval(160);
-  g_scan->setWindow(80);
+  g_scan->setWindow(160);
   // Do not rely on NimBLE duplicate filter (can drop valid updates). We filter in code.
   g_scan->setDuplicateFilter(false);
   g_scan->setMaxResults(0);
@@ -415,6 +651,40 @@ void bleLoop() {
   if (!g_scan->isScanning()) {
     g_scan->start(0, false, true);
     LOGW("BLE scan restarted by watchdog");
+  }
+
+  // --- GATT fallback ---
+  // If advertisement decoding doesn't yield usable meteo values, connect to the
+  // ESP32-C3 outdoor sensor and subscribe to its notify characteristic.
+  if (g_gattEnabled) {
+    const bool stale = (!g_haveMeteo) || isStale(now);
+
+    // If connected but no data for too long, drop connection.
+    if (g_gattConnected && g_client && g_client->isConnected()) {
+      if (g_lastGattOkMs && (uint32_t)(now - g_lastGattOkMs) > 60000UL) {
+        LOGW("BLE GATT: no data for 60s -> reconnect");
+        gattDisconnect();
+      }
+    } else {
+      g_gattConnected = false;
+    }
+
+    const bool candFresh = g_lastCandidateMac.length() && (uint32_t)(now - g_lastCandidateSeenMs) < 30000UL;
+    if (candFresh && !g_gattConnected) {
+      if (stale && (int32_t)(now - g_nextGattAttemptMs) >= 0) {
+        g_nextGattAttemptMs = now + GATT_RETRY_MS;
+        (void)gattConnectAndSubscribe(g_lastCandidateMac);
+      } else if (!g_haveMeteo && (int32_t)(now - g_nextGattAttemptMs) >= 0) {
+        // initial probe when we never received anything
+        g_nextGattAttemptMs = now + GATT_IDLE_PROBE_MS;
+        (void)gattConnectAndSubscribe(g_lastCandidateMac);
+      }
+    }
+
+    // Resume scan after connect attempt.
+    if (g_scan && !g_scan->isScanning()) {
+      g_scan->start(0, false, true);
+    }
   }
 }
 
@@ -467,6 +737,19 @@ void bleApplyConfig(const String& json) {
   g_type = String((const char*)(ble["type"] | g_type.c_str()));
   g_mac = normalizeMac(String((const char*)(ble["mac"] | g_mac.c_str())));
   g_maxAgeMs = (uint32_t)(ble["maxAgeMs"] | g_maxAgeMs);
+
+  // GATT fallback control via type:
+  //  - "esp_meteo_gatt" : force GATT (ignore adv decode failures)
+  //  - "esp_meteo_mfg"  : force adv-only (disable GATT)
+  //  - "auto"           : allow both
+  if (g_type == "esp_meteo_gatt") {
+    g_gattEnabled = true;
+  } else if (g_type == "esp_meteo_mfg") {
+    g_gattEnabled = false;
+    gattDisconnect();
+  } else {
+    g_gattEnabled = true;
+  }
 
   // Mesh options: {"ble": {"mesh": {"enabled":true, "relay":true, "ttl":3,
   //                              "advIntervalMs":1200, "minRelayRssi":-95,
@@ -530,6 +813,10 @@ String bleGetStatusJson() {
   data["allowlistEnforced"] = g_mac.length() > 0;
   data["allowMac"] = g_mac;
   data["type"] = g_type;
+  data["gattEnabled"] = g_gattEnabled;
+  data["gattConnected"] = g_gattConnected && g_client && g_client->isConnected();
+  if (g_gattMac.length()) data["gattMac"] = g_gattMac;
+  if (g_lastCandidateMac.length()) data["candidateMac"] = g_lastCandidateMac;
   JsonObject mesh = data.createNestedObject("mesh");
   mesh["enabled"] = g_meshEnabled;
   mesh["relay"] = g_meshRelay;
@@ -574,6 +861,9 @@ void bleFillFastJson(ArduinoJson::JsonObject b) {
   b["en"] = g_enabled;
   b["typ"] = g_type;
   if (g_mac.length()) b["mac"] = g_mac;
+  b["ge"] = g_gattEnabled;
+  b["gc"] = (g_gattConnected && g_client && g_client->isConnected());
+  if (g_gattMac.length()) b["gm"] = g_gattMac;
 
   // Default state
   b["ok"] = false;

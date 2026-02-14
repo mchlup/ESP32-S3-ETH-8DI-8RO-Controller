@@ -45,3 +45,7 @@
 #ifndef TCA9554_ADDR
 #define TCA9554_ADDR 0x20
 #endif
+
+// OpenTherm adapter (default suggestion)
+#define OT_TX_PIN 47
+#define OT_RX_PIN 48

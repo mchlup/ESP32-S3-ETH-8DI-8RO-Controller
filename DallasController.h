@@ -46,3 +46,8 @@ float dallasGetTempC(uint8_t inputIndex);
 uint64_t dallasGetSlotRom(uint8_t inputIndex);
 bool dallasTryGetSlotRom(uint8_t inputIndex, uint64_t& outRom);
 String dallasGetSlotRomHex(uint8_t inputIndex);
+
+// Slot mapping diagnostics (TEMP1..TEMP8)
+uint8_t dallasGetSlotGpio(uint8_t inputIndex);
+bool dallasSlotHasFixedRom(uint8_t inputIndex);
+String dallasGetSlotFixedRomHex(uint8_t inputIndex);

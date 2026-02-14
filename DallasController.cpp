@@ -692,3 +692,23 @@ String dallasGetSlotRomHex(uint8_t inputIndex) {
   if (!dallasTryGetSlotRom(inputIndex, rom)) return String();
   return romToHex16(rom);
 }
+
+uint8_t dallasGetSlotGpio(uint8_t inputIndex) {
+  if (inputIndex >= INPUT_COUNT) return 255;
+  if (!s_cfg[inputIndex].enabled) {
+    // legacy: TEMP1..TEMP4 mapped 1:1 to GPIO0..GPIO3
+    return (inputIndex <= 3) ? inputIndex : 255;
+  }
+  return s_cfg[inputIndex].gpio;
+}
+
+bool dallasSlotHasFixedRom(uint8_t inputIndex) {
+  if (inputIndex >= INPUT_COUNT) return false;
+  return (s_cfg[inputIndex].enabled && s_cfg[inputIndex].hasAddr);
+}
+
+String dallasGetSlotFixedRomHex(uint8_t inputIndex) {
+  if (inputIndex >= INPUT_COUNT) return String();
+  if (!dallasSlotHasFixedRom(inputIndex)) return String();
+  return romToHex16(s_cfg[inputIndex].addr);
+}

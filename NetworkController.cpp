@@ -14,10 +14,20 @@
 #include <WiFi.h>
 #include <WiFiManager.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>
 #include <time.h>
 #include <sys/time.h>
 
+// Optional: use a service input to force WiFiManager portal.
+// (Inputs are initialized before networkInit() in the main sketch.)
+#include "InputController.h"
+
 static bool wifiConnected = false;
+
+// One-shot WiFiManager portal request (settable via API when device is reachable via Ethernet).
+// Stored in NVS so it survives reboot.
+static constexpr const char* PREF_NS_NET = "net";
+static constexpr const char* PREF_KEY_PORTAL_ONCE = "portal_once";
 
 // Ethernet (W5500 on this board)
 // Pin mapping from Waveshare Wiki (ESP32-S3-POE-ETH-8DI-8DO):
@@ -75,6 +85,31 @@ static String s_ntp2 = "time.nist.gov";
 static uint32_t s_rtcSyncIntervalMin = 60;
 static uint32_t s_lastRtcSyncMs = 0;
 static String s_timeSource = "none"; // ntp|rtc|none
+
+static bool s_rtcFallbackEnabled = true; // read RTC when system time invalid
+static bool s_rtcSyncEnabled = true;     // write system time -> RTC
+
+// ---- ethernet config (runtime preferences) ----
+static bool s_ethEnabled = true;
+static bool s_preferEthernet = true;
+static uint32_t s_ethDhcpGraceMs = ETH_DHCP_GRACE_MS;
+
+// ---- wifi config ----
+static bool s_wifiEnabled = true;
+static uint32_t s_wifiPortalTimeoutS = 180;
+static uint32_t s_wifiConnectTimeoutS = 20;
+static uint32_t s_wifiConnectRetries = 3;
+static String s_wifiPortalSsid = "";   // empty => auto (ESP-HeatCtrl-XXXXXX)
+static String s_wifiPortalPass = "";   // empty => open portal
+
+static bool takePortalOnceFlag() {
+    Preferences p;
+    if (!p.begin(PREF_NS_NET, false)) return false;
+    const bool v = p.getBool(PREF_KEY_PORTAL_ONCE, false);
+    if (v) p.putBool(PREF_KEY_PORTAL_ONCE, false);
+    p.end();
+    return v;
+}
 
 static String ianaToPosixTz(const String& iana) {
     // Minimal mapping – extend later if needed
@@ -188,7 +223,17 @@ static void ethBeginOnce() {
 }
 
 void networkInit() {
-    WiFi.mode(WIFI_STA);
+    // Decide if WiFiManager portal is requested for this boot.
+    const bool portalOnce = takePortalOnceFlag();
+
+    // Station mode by default (unless Wi-Fi is disabled).
+    if (s_wifiEnabled) {
+        WiFi.mode(WIFI_STA);
+        WiFi.setSleep(false);          // improves stability on ESP32-S3 with busy loop/SSE
+        WiFi.setAutoReconnect(true);
+    } else {
+        WiFi.mode(WIFI_OFF);
+    }
     // Pokud už jsou v NVS uložené Wi-Fi údaje, ber to jako "konfigurováno",
     // i když tentokrát WiFiManager vůbec nespustíme (např. kvůli Ethernetu).
     if (WiFi.SSID().length() > 0) s_wifiEverConfigured = true;
@@ -197,7 +242,7 @@ void networkInit() {
     rtcInit();
 
     // Pokud je RTC a systémový čas není validní, zkus načíst čas z RTC
-    if (rtcIsPresent() && !isTimeValid()) {
+    if (s_rtcFallbackEnabled && rtcIsPresent() && !isTimeValid()) {
         time_t e;
         if (rtcGetEpoch(e)) {
             struct timeval tv; tv.tv_sec = e; tv.tv_usec = 0;
@@ -209,7 +254,11 @@ void networkInit() {
 
     // Ethernet first: if the RJ45 link is present, we skip WiFiManager AP entirely.
     Network.onEvent(onNetworkEvent);
-    ethBeginOnce();
+    if (s_ethEnabled) {
+        ethBeginOnce();
+    } else {
+        Serial.println(F("[ETH] Disabled by config"));
+    }
 
     // Give ETH a brief moment to report link state (non-critical).
     {
@@ -220,27 +269,87 @@ void networkInit() {
         }
     }
 
-    if (ethLinkUp) {
+    if (s_preferEthernet && ethLinkUp) {
         // Primary Wi-Fi is skipped when LAN cable is connected.
         wifiConnected = false;
         s_wifiDesired = false;
         WiFi.mode(WIFI_OFF);
         Serial.println(F("[NET] Ethernet link detected -> skipping WiFiManager (no AP portal)."));
         initLocalTime();
+        // Still allow forcing the portal even when RJ45 is present (service / remote reconfig).
+        // If Wi-Fi is disabled in config, the portal can still be requested and will run in AP+STA mode.
+        if (!portalOnce) {
+            return;
+        }
+    }
+
+    // Service override: if IN8 is active at boot, force WiFiManager config portal.
+    // IN1..IN3 are used by the heating logic; IN8 is typically unused.
+    const bool forcePortal = inputGetState(InputId::IN8) || portalOnce;
+
+    // Fast path: if credentials exist and portal is not forced, try a short connect first.
+    // If it fails, we MUST still offer the AP portal so the user can recover from wrong/changed creds.
+    // (Otherwise the device becomes "unreachable" in Wi-Fi-only installations.)
+    bool quickConnectFailed = false;
+    if (s_wifiEnabled && !forcePortal && WiFi.SSID().length() > 0) {
+        Serial.printf("[WiFi] Stored SSID='%s' -> quick connect...\n", WiFi.SSID().c_str());
+        WiFi.begin();
+        const uint32_t start = millis();
+        while (WiFi.status() != WL_CONNECTED && (millis() - start) < 10000UL) {
+            yield();
+        }
+        if (WiFi.status() == WL_CONNECTED) {
+            wifiConnected = true;
+            s_wifiEverConfigured = true;
+            printDebugLinks("wifi", WiFi.localIP());
+            initLocalTime();
+            Serial.printf("[Time] SNTP init, valid=%s\n", isTimeValid()?"yes":"no");
+            return;
+        }
+        Serial.println(F("[WiFi] Quick connect failed -> starting WiFiManager AP portal for recovery."));
+        wifiConnected = false;
+        quickConnectFailed = true;
+    }
+
+    // If Wi-Fi is disabled and portal is not forced, stay offline.
+    if (!s_wifiEnabled && !forcePortal) {
+        Serial.println(F("[WiFi] Disabled by config (no portal requested)."));
         return;
     }
 
     WiFiManager wm;
 
     // stabilita: nenechávej config portal běžet donekonečna
-    wm.setConfigPortalTimeout(180);      // s
-    wm.setConnectTimeout(20);           // s
-    wm.setConnectRetries(3);
+    wm.setConfigPortalTimeout((int)s_wifiPortalTimeoutS);
+    wm.setConnectTimeout((int)s_wifiConnectTimeoutS);
+    wm.setConnectRetries((int)s_wifiConnectRetries);
 
-    // SSID konfigurační AP, pokud není uložená WiFi:
-    String apName = makeApName();
+    // SSID konfigurační AP (WiFiManager portal):
+    String apName = s_wifiPortalSsid.length() ? s_wifiPortalSsid : makeApName();
 
-    if (wm.autoConnect(apName.c_str())) {
+    if (forcePortal) {
+        Serial.println(F("[WiFi] IN8 active -> forcing WiFiManager portal"));
+    }
+
+    // When credentials are missing OR quick connect failed OR portal is forced -> start portal.
+    // This makes Wi-Fi setup always recoverable.
+    const bool allowPortal = forcePortal || (WiFi.SSID().length() == 0) || quickConnectFailed;
+    if (!allowPortal) {
+        Serial.println(F("[WiFi] Portal disabled (credentials exist and quick connect not requested)."));
+        return;
+    }
+
+    // Ensure AP can come up reliably on ESP32-S3 (some stacks behave better in AP+STA mode).
+    WiFi.mode(WIFI_AP_STA);
+
+    wm.setAPCallback([](WiFiManager* wmm) {
+        Serial.printf("[WiFi] Config portal started. SSID='%s' IP=%s\n",
+                      wmm->getConfigPortalSSID().c_str(),
+                      WiFi.softAPIP().toString().c_str());
+    });
+
+    const char* apPass = (s_wifiPortalPass.length() >= 8) ? s_wifiPortalPass.c_str() : nullptr;
+    if (wm.autoConnect(apName.c_str(), apPass)) {
         wifiConnected = true;
         s_wifiEverConfigured = true;
         printDebugLinks("wifi", WiFi.localIP());
@@ -285,6 +394,20 @@ void networkApplyConfig(const String& json) {
     filter["ntpTz"] = true;
     filter["ntpIntervalMin"] = true;
 
+    filter["time"]["rtcFallbackEnabled"] = true;
+    filter["time"]["rtcSyncEnabled"] = true;
+
+    filter["ethernet"]["enabled"] = true;
+    filter["ethernet"]["preferEthernet"] = true;
+    filter["ethernet"]["dhcpGraceMs"] = true;
+
+    filter["wifi"]["enabled"] = true;
+    filter["wifi"]["portalTimeoutS"] = true;
+    filter["wifi"]["connectTimeoutS"] = true;
+    filter["wifi"]["connectRetries"] = true;
+    filter["wifi"]["portalSsid"] = true;
+    filter["wifi"]["portalPassword"] = true;
+
     StaticJsonDocument<512> doc;
     DeserializationError err = deserializeJson(doc, json, DeserializationOption::Filter(filter));
     if (err) return;
@@ -297,6 +420,8 @@ void networkApplyConfig(const String& json) {
         if (t.containsKey("server2")) s_ntp2 = String((const char*)t["server2"]);
         if (t.containsKey("tz")) s_tz = String((const char*)t["tz"]);
         if (t.containsKey("syncIntervalMin")) s_rtcSyncIntervalMin = (uint32_t)(t["syncIntervalMin"] | 60);
+        if (t.containsKey("rtcFallbackEnabled")) s_rtcFallbackEnabled = (bool)t["rtcFallbackEnabled"];
+        if (t.containsKey("rtcSyncEnabled")) s_rtcSyncEnabled = (bool)t["rtcSyncEnabled"];
     } else {
         // backward compatible keys
         if (doc.containsKey("ntpEnabled")) s_ntpEnabled = (bool)doc["ntpEnabled"];
@@ -306,10 +431,55 @@ void networkApplyConfig(const String& json) {
         if (doc.containsKey("ntpIntervalMin")) s_rtcSyncIntervalMin = (uint32_t)(doc["ntpIntervalMin"] | 60);
     }
 
+    // ethernet section
+    JsonObject e = doc["ethernet"].as<JsonObject>();
+    if (!e.isNull()) {
+        if (e.containsKey("enabled")) s_ethEnabled = (bool)e["enabled"];
+        if (e.containsKey("preferEthernet")) s_preferEthernet = (bool)e["preferEthernet"];
+        if (e.containsKey("dhcpGraceMs")) {
+            uint32_t v = (uint32_t)(e["dhcpGraceMs"] | (uint32_t)s_ethDhcpGraceMs);
+            if (v < 0) v = 0;
+            if (v > 120000UL) v = 120000UL;
+            s_ethDhcpGraceMs = v;
+        }
+    }
+
+    // wifi section
+    JsonObject w = doc["wifi"].as<JsonObject>();
+    if (!w.isNull()) {
+        if (w.containsKey("enabled")) s_wifiEnabled = (bool)w["enabled"];
+        if (w.containsKey("portalTimeoutS")) {
+            uint32_t v = (uint32_t)(w["portalTimeoutS"] | (uint32_t)s_wifiPortalTimeoutS);
+            if (v < 30) v = 30;
+            if (v > 3600) v = 3600;
+            s_wifiPortalTimeoutS = v;
+        }
+        if (w.containsKey("connectTimeoutS")) {
+            uint32_t v = (uint32_t)(w["connectTimeoutS"] | (uint32_t)s_wifiConnectTimeoutS);
+            if (v < 5) v = 5;
+            if (v > 120) v = 120;
+            s_wifiConnectTimeoutS = v;
+        }
+        if (w.containsKey("connectRetries")) {
+            uint32_t v = (uint32_t)(w["connectRetries"] | (uint32_t)s_wifiConnectRetries);
+            if (v < 1) v = 1;
+            if (v > 10) v = 10;
+            s_wifiConnectRetries = v;
+        }
+        if (w.containsKey("portalSsid")) s_wifiPortalSsid = String((const char*)w["portalSsid"]);
+        if (w.containsKey("portalPassword")) s_wifiPortalPass = String((const char*)w["portalPassword"]);
+
+        // Security: empty/short password => open portal
+        if (s_wifiPortalPass.length() > 0 && s_wifiPortalPass.length() < 8) {
+            Serial.println(F("[WiFi] portalPassword too short (<8), ignoring -> open portal"));
+            s_wifiPortalPass = "";
+        }
+    }
+
     initLocalTime();
 
     // After (re)init, if time is valid -> sync to RTC
-    if (rtcIsPresent() && isTimeValid()) {
+    if (s_rtcSyncEnabled && rtcIsPresent() && isTimeValid()) {
         rtcSetEpoch(time(nullptr));
         s_timeSource = "ntp";
         s_lastRtcSyncMs = millis();
@@ -318,6 +488,15 @@ void networkApplyConfig(const String& json) {
 }
 
 void networkLoop() {
+    if (!s_wifiEnabled) {
+        // If Wi-Fi is disabled, keep it off (unless Ethernet is also disabled and user
+        // triggers a one-shot portal via API/IN8 on next boot).
+        if (WiFi.getMode() != WIFI_OFF) {
+            WiFi.disconnect(true, true);
+            WiFi.mode(WIFI_OFF);
+        }
+        wifiConnected = false;
+    }
     // --- Runtime switching between Ethernet and Wi-Fi ---
     // Priority: if Ethernet link is up, we prefer Ethernet and turn Wi-Fi off.
     // If cable is removed, we re-enable Wi-Fi and attempt to reconnect using stored credentials.
@@ -325,11 +504,11 @@ void networkLoop() {
     // Wi-Fi is primary, but when RJ45 is connected we prefer Ethernet.
     // While waiting for DHCP on Ethernet, keep Wi-Fi disabled for a short grace period;
     // if DHCP fails (no IP after grace), fall back to Wi-Fi.
-    bool wantWifi = true;
-    if (ethLinkUp) {
+    bool wantWifi = s_wifiEnabled;
+    if (s_ethEnabled && s_preferEthernet && ethLinkUp) {
         if (ethHasIp) {
             wantWifi = false;
-        } else if (s_ethLinkUpSinceMs != 0 && (millis() - s_ethLinkUpSinceMs) < ETH_DHCP_GRACE_MS) {
+        } else if (s_ethLinkUpSinceMs != 0 && (millis() - s_ethLinkUpSinceMs) < s_ethDhcpGraceMs) {
             wantWifi = false;
         } else {
             wantWifi = true;
@@ -354,7 +533,7 @@ void networkLoop() {
         }
     }
 
-    if (s_pendingSwitchToWifi) {
+    if (s_pendingSwitchToWifi && s_wifiEnabled) {
         s_pendingSwitchToWifi = false;
         if (WiFi.getMode() == WIFI_OFF) {
             Serial.println(F("[NET] RJ45 disconnected -> switching back to Wi-Fi"));
@@ -378,7 +557,7 @@ void networkLoop() {
     }
 
     // If Wi-Fi is desired and we're still disconnected, try reconnect periodically.
-    if (s_wifiDesired && !networkIsWifiConnected() && s_wifiEverConfigured && WiFi.getMode() != WIFI_OFF) {
+    if (s_wifiEnabled && s_wifiDesired && !networkIsWifiConnected() && s_wifiEverConfigured && WiFi.getMode() != WIFI_OFF) {
         const uint32_t nowMs = millis();
         if (s_nextWifiBeginMs == 0 || nowMs >= s_nextWifiBeginMs) {
             Serial.println(F("[WiFi] Reconnect..."));
@@ -394,6 +573,7 @@ void networkLoop() {
     }
 
     // RTC periodic sync
+    if (!s_rtcSyncEnabled) return;
     if (!rtcIsPresent()) return;
     if (!isTimeValid()) return;
 
@@ -431,6 +611,17 @@ String networkGetTimeSource() {
 
 bool networkIsRtcPresent() {
     return rtcIsPresent();
+}
+
+void networkRequestConfigPortal() {
+    Preferences p;
+    if (p.begin(PREF_NS_NET, false)) {
+        p.putBool(PREF_KEY_PORTAL_ONCE, true);
+        p.end();
+    }
+    Serial.println(F("[WiFi] Requesting WiFiManager portal on next boot -> restart"));
+    delay(150);
+    ESP.restart();
 }
 
 #endif // FEATURE_NETWORK

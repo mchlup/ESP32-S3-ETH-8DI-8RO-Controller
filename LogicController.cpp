@@ -152,6 +152,12 @@ struct Valve3WayState {
     bool moving = false;
     uint32_t moveEndMs = 0;
     uint32_t guardEndMs = 0;
+
+    // --- Calibration (physical homing to endstop) ---
+    // Drives the actuator towards an endstop for (travelMs + extraMs), then resets internal position model.
+    bool calibrating = false;
+    uint8_t calibHomePct = 0;     // 0 or 100
+    uint32_t calibEndMs = 0;
 };
 static Valve3WayState s_valves[RELAY_COUNT];
 static int8_t s_valvePeerOf[RELAY_COUNT] = { -1,-1,-1,-1,-1,-1,-1,-1 };
@@ -200,6 +206,43 @@ static uint8_t valveComputePosPct(const Valve3WayState& v, uint32_t nowMs){
     if (iv < 0) iv = 0;
     if (iv > 100) iv = 100;
     return (uint8_t)iv;
+}
+
+static inline bool valveIsBusy(const Valve3WayState& v){
+    return v.moving || v.calibrating;
+}
+
+static void valveStartCalibrationInternal(Valve3WayState &v, uint8_t homePct, uint32_t nowMs, uint32_t extraMs){
+    // Only for 2-relay mixing valves. For singleRelay valves, calibration is a no-op.
+    if (!v.configured || v.singleRelay) return;
+
+    // Normalize to endpoints.
+    homePct = (homePct >= 50) ? 100 : 0;
+
+    // Stop any movement and cancel pending commands.
+    relaySet(static_cast<RelayId>(v.relayA), false);
+    relaySet(static_cast<RelayId>(v.relayB), false);
+    v.moving = false;
+    v.hasPending = false;
+
+    v.calibrating = true;
+    v.calibHomePct = homePct;
+    v.calibEndMs = nowMs + v.travelMs + extraMs;
+
+    // Drive towards the requested endstop.
+    const bool wantB = (homePct >= 50);
+    const bool coilB = v.invertDir ? !wantB : wantB;
+    const uint8_t dir = coilB ? v.relayB : v.relayA;
+    const uint8_t other = coilB ? v.relayA : v.relayB;
+    relaySet(static_cast<RelayId>(other), false);
+    relaySet(static_cast<RelayId>(dir), true);
+
+    // Bookkeeping: keep UI consistent during calibration.
+    v.posPct = homePct;
+    v.startPct = homePct;
+    v.targetPct = homePct;
+    v.currentB = wantB;
+    v.lastCmdMs = nowMs;
 }
 
 static inline bool valveCanStartNow(const Valve3WayState &v, uint32_t nowMs){
@@ -294,8 +337,8 @@ static void valveMoveToPct(uint8_t masterA0, uint8_t targetPctExt){
 
     const uint32_t nowMs = millis();
 
-    // během pohybu pouze queue
-    if (v.moving){
+    // během pohybu/kalibrace pouze queue
+    if (valveIsBusy(v)){
         v.pendingTargetPct = targetPct;
         v.hasPending = true;
         return;
@@ -335,6 +378,31 @@ static void valveTick(uint32_t nowMs){
     for (uint8_t i=0;i<RELAY_COUNT;i++){
         Valve3WayState &v = s_valves[i];
         if (!v.configured) continue;
+
+        // --- Calibration (physical homing) ---
+        if (v.calibrating){
+            if ((int32_t)(nowMs - v.calibEndMs) >= 0){
+                // Stop coils.
+                relaySet(static_cast<RelayId>(v.relayA), false);
+                relaySet(static_cast<RelayId>(v.relayB), false);
+                v.calibrating = false;
+                v.moving = false;
+                v.hasPending = false;
+                v.posPct = v.calibHomePct;
+                v.startPct = v.calibHomePct;
+                v.targetPct = v.calibHomePct;
+                v.currentB = (v.calibHomePct >= 50);
+            } else {
+                // Keep driving towards the configured endstop.
+                const bool wantB = (v.calibHomePct >= 50);
+                const bool coilB = v.invertDir ? !wantB : wantB;
+                const uint8_t dir = coilB ? v.relayB : v.relayA;
+                const uint8_t other = coilB ? v.relayA : v.relayB;
+                relaySet(static_cast<RelayId>(other), false);
+                relaySet(static_cast<RelayId>(dir), true);
+            }
+            continue;
+        }
 
         if (v.moving){
             // průběžná pozice pro UI
@@ -618,7 +686,8 @@ static bool     s_eqNoFlowActive = false;
 static uint32_t s_eqNoFlowLastTestMs = 0;
 
 static float    s_eqFallbackOutdoorC = 0.0f;
-static bool     s_eqHomingEnabled = false;
+// Kalibrace/homing směšovacího ventilu: doporučeno zapnuto (bez koncáků je to nejspolehlivější synchronizace)
+static bool     s_eqHomingEnabled = true;
 static bool     s_eqHomingOnBoot = true;
 static bool     s_eqHomingOnConfigChange = true;
 static uint32_t s_eqHomingPeriodMs = 86400000UL; // 24h
@@ -801,7 +870,7 @@ static bool tryGetTempFromSource(const EqSourceCfg& src, float &outC, EqSourceDi
         }
         if (s == "opentherm_boiler") outC = ot.boilerTempC;
         else if (s == "opentherm_return") outC = ot.returnTempC;
-        else if (s == "opentherm_outdoor") outC = NAN;
+        else if (s == "opentherm_outdoor") outC = ot.outdoorTempC;
         else outC = NAN;
 
         if (!isfinite(outC)) {
@@ -1002,7 +1071,7 @@ static void equithermRecompute(){
         const uint32_t nowMs = millis();
         s_eqStatus.valvePosPct = valveComputePosPct(v, nowMs);
         s_eqStatus.valveTargetPct = v.targetPct;
-        s_eqStatus.valveMoving = v.moving;
+        s_eqStatus.valveMoving = (v.moving || v.calibrating);
     }
 
     if (s_tuvModeActive) {
@@ -1094,6 +1163,12 @@ static void equithermControlTick(uint32_t nowMs){
     if (currentControlMode != ControlMode::AUTO) return;
     if (s_tuvModeActive) return;
 
+    // Pokud ventil právě kalibruje/hýbe se, nezasahuj do něj dalším řízením.
+    if (s_eqValveMaster0 >= 0 && s_eqValveMaster0 < (int8_t)RELAY_COUNT) {
+        const Valve3WayState &v0 = s_valves[(uint8_t)s_eqValveMaster0];
+        if (v0.configured && valveIsBusy(v0)) return;
+    }
+
     
 // --- Homing (synchronizace modelu polohy ventilu se skutečností) ---
 // Arm on boot: pokud je povoleno, proveď 1x homing po startu (až když je ventil nakonfigurován).
@@ -1117,11 +1192,25 @@ if (s_eqHomingEnabled && s_eqHomingPeriodMs > 0 && s_eqLastHomingMs != 0) {
 // Pokud je homing pending, proveď ho před regulací.
 if (s_eqHomingPending) {
     if (s_eqValveMaster0 >= 0 && s_eqValveMaster0 < (int8_t)RELAY_COUNT) {
-        valveMoveToPct((uint8_t)s_eqValveMaster0, (int)s_eqHomingTargetPct);
+        Valve3WayState &v = s_valves[(uint8_t)s_eqValveMaster0];
+        const uint8_t pct = s_eqHomingTargetPct;
+        // Pokud je cílová poloha blízko 0/100, uděláme fyzickou kalibraci (HOME) na doraz.
+        if (pct <= 5 || pct >= 95) {
+            const uint8_t home = (pct >= 50) ? 100 : 0;
+            if (!v.singleRelay && !valveIsBusy(v)) {
+                valveStartCalibrationInternal(v, home, nowMs, 2000);
+            } else {
+                // fallback
+                valveMoveToPct((uint8_t)s_eqValveMaster0, home);
+            }
+            v.posPct = home;
+        } else {
+            // přesun na procenta (bez koncáků) – legacy chování
+            valveMoveToPct((uint8_t)s_eqValveMaster0, (int)pct);
+            v.posPct = pct;
+        }
         s_eqLastHomingMs = nowMs;
         s_eqHomingPending = false;
-        // po homingu nastavíme model polohy konzistentně
-        s_valves[(uint8_t)s_eqValveMaster0].posPct = s_eqHomingTargetPct;
     }
 }
 
@@ -1818,7 +1907,7 @@ TuvStatus logicGetTuvStatus() {
     if (s_tuvValveMaster0 >= 0 && s_tuvValveMaster0 < (int8_t)RELAY_COUNT && isValveMaster((uint8_t)s_tuvValveMaster0)) {
         const uint32_t nowMs = millis();
         st.valvePosPct = valveComputePosPct(s_valves[(uint8_t)s_tuvValveMaster0], nowMs);
-        st.valveMoving = s_valves[(uint8_t)s_tuvValveMaster0].moving;
+        st.valveMoving = (s_valves[(uint8_t)s_tuvValveMaster0].moving || s_valves[(uint8_t)s_tuvValveMaster0].calibrating);
     }
     st.bypassPct = s_tuvBypassPct;
     st.chPct = s_tuvChPct;
@@ -2861,9 +2950,10 @@ if (!hom.isNull()) {
     s_eqHomingTargetPct = (uint8_t)clampPctInt(pct);
 }
 
-// Pokud se změnila konfigurace směšovacího ventilu (IOFUNC), můžeme provést homing,
-// abychom sladili skutečný stav s interním modelem (bez koncáků jde o nejlepší dostupnou synchronizaci).
-if (s_eqValveConfigChanged && s_eqHomingEnabled && s_eqHomingOnConfigChange) {
+// Při uložení konfigurace ekvitermu doporučujeme provést kalibraci (HOME) –
+// sladí se interní model polohy s realitou (bez koncáků je to nejspolehlivější cesta).
+// Spouštíme i tehdy, když se nezměnily IOFUNC parametry (uživatel mohl mechanicky pohnout ventilem).
+if (s_eqHomingEnabled && s_eqHomingOnConfigChange) {
     equithermRequestHoming("config");
     // pokud jsme ještě nikdy nehomovali, nastav poslední čas na 0 – první tick provede homing hned
     s_eqLastHomingMs = 0;
@@ -3527,7 +3617,7 @@ static bool valvePulseInternal(uint8_t master0, int8_t dir, uint32_t nowMs) {
     if (master0 >= RELAY_COUNT) return false;
     if (!isValveMaster(master0)) return false;
     Valve3WayState &v = s_valves[master0];
-    if (v.moving) return false;
+    if (valveIsBusy(v)) return false;
 
     const uint8_t curInt = valveComputePosPct(v, nowMs);
     const uint8_t curExt = valveExtFromInt(v, curInt);
@@ -3570,6 +3660,7 @@ bool logicValveStop(uint8_t masterRelay1based) {
     v.pendingTargetPct = cur;
     v.currentB = (cur >= 50);
     v.moving = false;
+    v.calibrating = false;
     v.hasPending = false;
     v.moveStartMs = 0;
     v.moveEndMs = 0;
@@ -3589,6 +3680,35 @@ bool logicValveGotoPct(uint8_t masterRelay1based, uint8_t pct) {
     return true;
 }
 
+bool logicValveCalibrateHome(uint8_t masterRelay1based, uint8_t homePct) {
+    if (masterRelay1based < 1 || masterRelay1based > RELAY_COUNT) return false;
+    const uint8_t master0 = (uint8_t)(masterRelay1based - 1);
+    if (!isValveMaster(master0)) return false;
+    Valve3WayState &v = s_valves[master0];
+    if (!v.configured || v.singleRelay) return false;
+    if (valveIsBusy(v)) return false;
+
+    const uint32_t nowMs = millis();
+    // Per requirement: keep output ON for (travelTime + 2s)
+    valveStartCalibrationInternal(v, homePct, nowMs, 2000);
+    return true;
+}
+
+bool logicEquithermCalibrateHome(){
+    if (!s_eqEnabled) return false;
+    if (s_tuvModeActive) return false;
+    if (s_eqValveMaster0 < 0 || s_eqValveMaster0 >= (int8_t)RELAY_COUNT) return false;
+    Valve3WayState &v = s_valves[(uint8_t)s_eqValveMaster0];
+    if (!v.configured || v.singleRelay) return false;
+    if (valveIsBusy(v)) return false;
+
+    const uint8_t home = (s_eqHomingTargetPct >= 50) ? 100 : 0;
+    valveStartCalibrationInternal(v, home, millis(), 2000);
+    s_eqLastHomingMs = millis();
+    s_eqHomingPending = false;
+    return true;
+}
+
 
 bool logicGetValveUiStatus(uint8_t relay1based, ValveUiStatus& out){
     if (relay1based < 1 || relay1based > RELAY_COUNT) return false;
@@ -3599,7 +3719,7 @@ bool logicGetValveUiStatus(uint8_t relay1based, ValveUiStatus& out){
     out.master = relay1based;
     out.peer   = v.singleRelay ? 0 : ((v.relayB < RELAY_COUNT) ? (uint8_t)(v.relayB + 1) : 0);
     out.posPct = v.posPct;
-    out.moving = v.moving;
+    out.moving = (v.moving || v.calibrating);
 
     out.targetPct = v.targetPct;
     out.targetB   = (v.targetPct >= 50); // legacy (pro starší UI)

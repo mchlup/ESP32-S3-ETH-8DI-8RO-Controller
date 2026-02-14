@@ -17,6 +17,10 @@ void networkLoop();
 
 void networkApplyConfig(const String& json);
 
+// Request WiFiManager config portal on next boot (sets a persistent flag and reboots).
+// Useful when the device is reachable via Ethernet but Wi-Fi credentials need to be changed.
+void networkRequestConfigPortal();
+
 bool networkIsConnected();
 bool networkIsWifiConnected();
 bool networkIsEthernetConnected();
@@ -46,5 +50,7 @@ inline String networkGetTimeIso() { return String(); }
 inline uint32_t networkGetTimeEpoch() { return 0; }
 inline String networkGetTimeSource() { return String("disabled"); }
 inline bool networkIsRtcPresent() { return false; }
+
+inline void networkRequestConfigPortal() {}
 
 #endif

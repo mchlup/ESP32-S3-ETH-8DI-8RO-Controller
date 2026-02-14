@@ -40,6 +40,7 @@
 // OpenTherm boiler communication
 #if !defined(DISABLE_OPENTHERM)
   #include "FeatureOpenTherm.h"
+#include "FeatureHeatLoss.h"
 #endif
 
 // BLE (scanner + outdoor sensor + optional mesh relay)
