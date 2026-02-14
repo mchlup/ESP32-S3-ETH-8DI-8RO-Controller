@@ -1,0 +1,327 @@
+{
+  "equitherm": {
+    "enabled": true,
+    "slopeDay": 0.6,
+    "shiftDay": -3,
+    "slopeNight": 0.7,
+    "shiftNight": -5,
+    "minFlow": 22,
+    "maxFlow": 45,
+    "curveOffsetC": 0,
+    "maxBoilerInC": 60,
+    "fallbackOutdoorC": 0,
+    "noFlowDetectEnabled": false,
+    "noFlowTimeoutMs": 120000,
+    "noFlowTestPeriodMs": 30000,
+    "control": {
+      "deadbandC": 1,
+      "stepPct": 0,
+      "periodMs": 30000,
+      "minPct": 0,
+      "maxPctDay": 100,
+      "maxPctNight": 60
+    },
+    "homing": {
+      "enabled": true,
+      "onBoot": true,
+      "onConfigChange": true,
+      "periodMs": 86400000,
+      "positionPct": 0
+    },
+    "akuSupportEnabled": true,
+    "akuNoSupportBehavior": "close",
+    "akuMinTopC_day": 40,
+    "akuMinTopC_night": 45,
+    "akuMinDeltaToTargetC_day": 2,
+    "akuMinDeltaToTargetC_night": 3,
+    "akuMinDeltaToBoilerInC_day": 3,
+    "akuMinDeltaToBoilerInC_night": 4,
+    "akuTop": {
+      "source": "",
+      "maxAgeMs": 3600000,
+      "bleId": "",
+      "mqttIdx": 1,
+      "topic": "",
+      "jsonKey": "",
+      "gpio": 0,
+      "rom": ""
+    },
+    "akuMid": {
+      "source": "",
+      "maxAgeMs": 3600000,
+      "bleId": "",
+      "mqttIdx": 1,
+      "topic": "",
+      "jsonKey": "",
+      "gpio": 0,
+      "rom": ""
+    },
+    "akuBottom": {
+      "source": "",
+      "maxAgeMs": 3600000,
+      "bleId": "",
+      "mqttIdx": 1,
+      "topic": "",
+      "jsonKey": "",
+      "gpio": 0,
+      "rom": ""
+    }
+  },
+  "iofunc": {
+    "outputs": {
+      "0": {
+        "params": {
+          "travelTimeS": 6,
+          "pulseTimeS": 0.6,
+          "guardTimeS": 0.3,
+          "minSwitchS": 1,
+          "invertDir": false,
+          "defaultPos": "A"
+        }
+      }
+    }
+  },
+  "tempRoles": [
+    "none",
+    "flow",
+    "none",
+    "none",
+    "none",
+    "none",
+    "none",
+    "none"
+  ],
+  "ble": {
+    "enabled": true,
+    "type": "auto",
+    "mac": "",
+    "maxAgeMs": 600000,
+    "mesh": {
+      "enabled": true,
+      "relay": false,
+      "ttl": 3,
+      "advIntervalMs": 1200,
+      "minRelayRssi": -95,
+      "preferDirect": true
+    }
+  },
+  "bleThermometer": {
+    "role": "outdoor"
+  },
+  "mqttThermometers": [
+    {
+      "topic": "",
+      "role": "none",
+      "jsonKey": ""
+    },
+    {
+      "topic": "",
+      "role": "none",
+      "jsonKey": ""
+    }
+  ],
+  "akuHeater": {
+    "enabled": false,
+    "mode": "manual",
+    "manualOn": false,
+    "targetTopC": 50,
+    "hysteresisC": 2,
+    "maxOnMs": 7200000,
+    "minOffMs": 600000,
+    "windows": []
+  },
+  "dhwRecirc": {
+    "enabled": true,
+    "mode": "hybrid",
+    "onDemandRunMs": 60000,
+    "minOffMs": 300000,
+    "minOnMs": 30000,
+    "stopTempC": 42,
+    "windows": [
+      {
+        "days": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7
+        ],
+        "start": "06:00",
+        "end": "20:00"
+      }
+    ],
+    "cycleOnMin": 1,
+    "cycleOffMin": 5,
+    "tempReturnSource": {
+      "source": "none",
+      "bleId": "",
+      "mqttIdx": 1,
+      "topic": "",
+      "jsonKey": "",
+      "maxAgeMs": 600000
+    },
+    "cycleOnMs": 60000,
+    "cycleOffMs": 300000
+  },
+  "tuv": {
+    "enabled": true,
+    "bypassValve": {
+      "enabled": true,
+      "bypassPct": 100,
+      "chPct": 0,
+      "invert": false
+    },
+    "restoreEqValveAfter": true,
+    "targetTempC": 50,
+    "hysteresisC": 2
+  },
+  "schedules": [
+    {
+      "enabled": true,
+      "days": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "at": "06:00",
+      "kind": "dhw_enable",
+      "value": {
+        "enable": true
+      }
+    },
+    {
+      "enabled": true,
+      "days": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "at": "07:00",
+      "kind": "dhw_enable",
+      "value": {
+        "enable": false
+      }
+    },
+    {
+      "enabled": true,
+      "days": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "at": "11:00",
+      "kind": "dhw_enable",
+      "value": {
+        "enable": true
+      }
+    },
+    {
+      "enabled": true,
+      "days": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "at": "12:00",
+      "kind": "dhw_enable",
+      "value": {
+        "enable": false
+      }
+    },
+    {
+      "enabled": true,
+      "days": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "at": "16:00",
+      "kind": "dhw_enable",
+      "value": {
+        "enable": true
+      }
+    },
+    {
+      "enabled": true,
+      "days": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "at": "17:00",
+      "kind": "dhw_enable",
+      "value": {
+        "enable": false
+      }
+    }
+  ],
+  "buzzer": {
+    "enabled": true,
+    "freqHz": 2000,
+    "durationMs": 80,
+    "notifyMode": true,
+    "notifyManual": true,
+    "notifications": {
+      "info": "chime",
+      "warning": "gong",
+      "alarm": "alert"
+    },
+    "volume": 180,
+    "envAttackCurve": 2.2,
+    "envReleaseCurve": 2.0,
+    "vibratoCents": 7,
+    "vibratoHz": 5.5,
+    "detuneCents": 3
+  },
+  "rgbLed": {
+    "enabled": true,
+    "brightness": 64,
+    "allowStatus": true
+  },
+  "wifi": {
+    "enabled": true,
+    "portalTimeoutS": 180,
+    "connectTimeoutS": 20,
+    "connectRetries": 3
+  },
+  "ethernet": {
+    "enabled": true,
+    "preferEthernet": true,
+    "dhcpGraceMs": 20000
+  },
+  "time": {
+    "ntpEnabled": true,
+    "server1": "pool.ntp.org",
+    "server2": "time.nist.gov",
+    "tz": "Europe/Prague",
+    "rtcFallbackEnabled": true,
+    "rtcSyncEnabled": true,
+    "syncIntervalMin": 60
+  }
+}
