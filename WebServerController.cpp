@@ -6,9 +6,11 @@
 #if defined(FEATURE_WEBSERVER)
 
 #include "FsController.h"
+#include <Update.h>
 #include "Log.h"
 
 #include "LogicController.h"
+#include "OpenThermController.h"
 #include "DallasController.h"
 #include "NetworkController.h"
 #include "RelayController.h"
@@ -69,6 +71,31 @@ namespace {
   static String argOrEmpty(const char* key) {
     if (!g_server.hasArg(key)) return "";
     return g_server.arg(key);
+  }
+
+  // UI layout storage (LittleFS)
+  static bool isSafeProfileChar(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
+  }
+
+  static String uiProfileSanitize(const String& in) {
+    String p = in;
+    p.trim();
+    if (!p.length()) return "default";
+    String out;
+    out.reserve(p.length());
+    for (size_t i = 0; i < p.length(); i++) {
+      char c = p[i];
+      if (isSafeProfileChar(c)) out += c;
+    }
+    if (!out.length()) out = "default";
+    if (out.length() > 24) out = out.substring(0, 24);
+    return out;
+  }
+
+  static String uiLayoutPathForProfile(const String& profile) {
+    const String p = uiProfileSanitize(profile);
+    return String("/ui_layout_") + p + String(".json");
   }
 
   // Build a compact snapshot intended for frequent refresh.
@@ -146,10 +173,36 @@ namespace {
     // BLE meteo snapshot (used by UI widget + SSE fast updates)
     JsonObject jb = doc.createNestedObject("b");
     bleFillFastJson(jb);
+
+    // OpenTherm snapshot (optional; header provides stubs when disabled)
+    OpenThermStatus ot = openthermGetStatus();
+    JsonObject jot = doc.createNestedObject("ot");
+    jot["en"] = (bool)ot.present; // compiled-in
+    jot["rd"] = (bool)ot.ready;
+    jot["fl"] = (bool)ot.fault;
+    jot["ce"] = (bool)ot.chEnable;
+    jot["de"] = (bool)ot.dhwEnable;
+    jot["ca"] = (bool)ot.chActive;
+    jot["da"] = (bool)ot.dhwActive;
+    jot["fo"] = (bool)ot.flameOn;
+    jot["bt"] = ot.boilerTempC;
+    jot["rt"] = ot.returnTempC;
+    jot["dt"] = ot.dhwTempC;
+    jot["mt"] = ot.modulationPct;
+    jot["pr"] = ot.pressureBar;
+    jot["ff"] = ot.faultFlags;
+    jot["oc"] = ot.oemFaultCode;
+    jot["cs"] = ot.reqChSetpointC;
+    jot["ds"] = ot.reqDhwSetpointC;
+    jot["mm"] = ot.reqMaxModulationPct;
+    jot["lu"] = (uint32_t)ot.lastUpdateMs;
+    jot["lc"] = (uint32_t)ot.lastCmdMs;
+    jot["rs"] = ot.reason;
+    jot["cmd"] = ot.lastCmd;
   }
 
   static String buildFastStateString(uint32_t* outHash = nullptr) {
-    StaticJsonDocument<3072> doc;
+    StaticJsonDocument<3584> doc;
     buildFastState(doc);
     String out;
     serializeJson(doc, out);
@@ -301,6 +354,11 @@ namespace {
     for (uint8_t i = 0; i < 8; i++) {
       JsonObject s = slots.createNestedObject();
       s["idx"] = i;
+      s["gpio"] = dallasGetSlotGpio(i);
+      if (dallasSlotHasFixedRom(i)) {
+        const String fr = dallasGetSlotFixedRomHex(i);
+        if (fr.length()) s["fixedRomHex"] = fr;
+      }
       s["tempC"] = logicGetTempC(i);
       s["valid"] = logicIsTempValid(i);
       const String rom = dallasGetSlotRomHex(i);
@@ -308,6 +366,140 @@ namespace {
     }
 
     sendJson(200, doc);
+  }
+
+  static void handleOpenThermStatus() {
+    StaticJsonDocument<2048> doc;
+
+    OpenThermStatus ot = openthermGetStatus();
+    OpenThermConfig cfg = openthermGetConfig();
+
+    JsonObject s = doc.createNestedObject("status");
+    s["present"] = ot.present;
+    s["ready"] = ot.ready;
+    s["fault"] = ot.fault;
+    s["chEnable"] = ot.chEnable;
+    s["dhwEnable"] = ot.dhwEnable;
+    s["chActive"] = ot.chActive;
+    s["dhwActive"] = ot.dhwActive;
+    s["flameOn"] = ot.flameOn;
+    s["boilerTempC"] = ot.boilerTempC;
+    s["returnTempC"] = ot.returnTempC;
+    s["dhwTempC"] = ot.dhwTempC;
+    s["roomTempC"] = ot.roomTempC;
+    s["outdoorTempC"] = ot.outdoorTempC;
+    s["roomSetpointC"] = ot.roomSetpointC;
+    s["maxChWaterSetpointC"] = ot.maxChWaterSetpointC;
+    s["dhwSetpointC"] = ot.dhwSetpointC;
+    s["modulationPct"] = ot.modulationPct;
+    s["pressureBar"] = ot.pressureBar;
+    s["flowRateLpm"] = ot.flowRateLpm;
+    s["powerKw"] = ot.powerKw;
+    s["faultFlags"] = ot.faultFlags;
+    s["oemFaultCode"] = ot.oemFaultCode;
+    s["reqChSetpointC"] = ot.reqChSetpointC;
+    s["reqDhwSetpointC"] = ot.reqDhwSetpointC;
+    s["reqMaxModulationPct"] = ot.reqMaxModulationPct;
+    s["reqRoomSetpointC"] = ot.reqRoomSetpointC;
+    s["reqMaxChWaterSetpointC"] = ot.reqMaxChWaterSetpointC;
+    s["lastUpdateMs"] = (uint32_t)ot.lastUpdateMs;
+    s["lastCmdMs"] = (uint32_t)ot.lastCmdMs;
+    s["reason"] = ot.reason;
+    s["lastCmd"] = ot.lastCmd;
+
+    s["totalCount"] = (uint32_t)ot.totalCount;
+    s["okCount"] = (uint32_t)ot.okCount;
+    s["timeoutCount"] = (uint32_t)ot.timeoutCount;
+    s["frameErrorCount"] = (uint32_t)ot.frameErrorCount;
+    s["parityErrorCount"] = (uint32_t)ot.parityErrorCount;
+    s["badResponseCount"] = (uint32_t)ot.badResponseCount;
+    s["notInitializedCount"] = (uint32_t)ot.notInitializedCount;
+    s["isrOverflowCount"] = (uint32_t)ot.isrOverflowCount;
+
+
+    // Raw polled values (subset of protocol IDs)
+    JsonArray raw = doc.createNestedArray("raw");
+    OpenThermRawValue rv[24];
+    const uint8_t rn = openthermGetRaw(rv, 24);
+    for (uint8_t i = 0; i < rn; i++) {
+      JsonObject r = raw.createNestedObject();
+      r["id"] = rv[i].id;
+      r["msgType"] = rv[i].msgType;
+      r["u16"] = rv[i].u16;
+      r["f88"] = rv[i].f88;
+      r["valid"] = rv[i].valid;
+      r["tsMs"] = (uint32_t)rv[i].tsMs;
+    }
+
+    JsonObject c = doc.createNestedObject("config");
+    c["enabled"] = cfg.enabled;
+    c["pollMs"] = (uint32_t)cfg.pollMs;
+    c["minChSetpointC"] = cfg.minChSetpointC;
+    c["maxChSetpointC"] = cfg.maxChSetpointC;
+    c["boilerControl"] = (cfg.boilerControl == OpenThermBoilerControl::OPENTHERM)
+                            ? "opentherm"
+                            : (cfg.boilerControl == OpenThermBoilerControl::HYBRID ? "hybrid" : "relay");
+    c["mapEquithermChSetpoint"] = cfg.mapEquithermChSetpoint;
+    c["mapDhw"] = cfg.mapDhw;
+    c["mapNightMode"] = cfg.mapNightMode;
+    c["dhwSetpointC"] = cfg.dhwSetpointC;
+    c["dhwBoostChSetpointC"] = cfg.dhwBoostChSetpointC;
+    c["roomSetpointC"] = cfg.roomSetpointC;
+    c["maxChWaterSetpointC"] = cfg.maxChWaterSetpointC;
+    c["txPin"] = cfg.txPin;
+    c["rxPin"] = cfg.rxPin;
+    c["assumedMaxBoilerKw"] = cfg.assumedMaxBoilerKw;
+    c["invertTx"] = cfg.invertTx;
+    c["invertRx"] = cfg.invertRx;
+    c["autoDetectLogic"] = cfg.autoDetectLogic;
+    c["logEnabled"] = cfg.logEnabled;
+    c["logIntervalMs"] = (uint32_t)cfg.logIntervalMs;
+    JsonArray pids = c.createNestedArray("pollIds");
+    for (uint8_t i = 0; i < cfg.pollIdCount; i++) pids.add(cfg.pollIds[i]);
+
+    sendJson(200, doc);
+  }
+
+  static void handleOpenThermCmd() {
+    const String body = g_server.arg("plain");
+    if (!body.length()) {
+      g_server.send(400, "text/plain", "empty");
+      return;
+    }
+    DynamicJsonDocument doc(1024);
+    DeserializationError e = deserializeJson(doc, body);
+    if (e || !doc.is<JsonObject>()) {
+      g_server.send(400, "text/plain", "bad_json");
+      return;
+    }
+    JsonObject o = doc.as<JsonObject>();
+
+    if (!o["chEnable"].isNull() || !o["dhwEnable"].isNull()) {
+      const bool ch = (bool)(o["chEnable"] | false);
+      const bool dhw = (bool)(o["dhwEnable"] | false);
+      openthermCmdSetEnable(ch, dhw);
+    }
+    if (!o["chSetpointC"].isNull()) {
+      openthermCmdSetChSetpoint((float)(o["chSetpointC"] | NAN));
+    }
+    if (!o["dhwSetpointC"].isNull()) {
+      openthermCmdSetDhwSetpoint((float)(o["dhwSetpointC"] | NAN));
+    }
+    if (!o["maxModulationPct"].isNull()) {
+      openthermCmdSetMaxModulation((float)(o["maxModulationPct"] | NAN));
+    }
+    if (!o["roomSetpointC"].isNull()) {
+      openthermCmdSetRoomSetpoint((float)(o["roomSetpointC"] | NAN));
+    }
+    if (!o["maxChWaterSetpointC"].isNull()) {
+      openthermCmdSetMaxChWaterSetpoint((float)(o["maxChWaterSetpointC"] | NAN));
+    }
+    if ((bool)(o["resetFault"] | false)) {
+      openthermCmdResetFault();
+    }
+
+    webserverNotifyStateChanged();
+    g_server.send(200, "text/plain", "ok");
   }
 
   static void handleRelay() {
@@ -381,6 +573,28 @@ namespace {
     sendJson(ok ? 200 : 409, doc);
   }
 
+  // --- Equitherm: mixing valve calibration (HOME) ---
+  // POST /api/equitherm/calibrate
+  // Optional query params:
+  //   master=1..8   (default: equitherm mixing valve)
+  //   home=0|100    (default: equitherm.homing.positionPct)
+  static void handleEquithermCalibrate() {
+    const int master = argOrEmpty("master").toInt();
+    const int home   = argOrEmpty("home").toInt();
+    StaticJsonDocument<256> doc;
+
+    bool ok = false;
+    if (master >= 1 && master <= 8) {
+      const uint8_t hp = (home >= 50) ? 100 : 0;
+      ok = logicValveCalibrateHome((uint8_t)master, hp);
+    } else {
+      ok = logicEquithermCalibrateHome();
+    }
+
+    doc["ok"] = ok;
+    sendJson(ok ? 200 : 409, doc);
+  }
+
   static void handleConfigGet() {
   String json;
   if (!fsReadTextFile("/config.json", json)) {
@@ -441,6 +655,157 @@ static void handleConfigApply() {
   g_server.send(200, "text/plain", "ok");
 }
 
+static void handleNetworkPortalStart() {
+  // Starts WiFiManager config portal on next boot, then reboots.
+  // Use-case: device reachable via Ethernet but Wi-Fi credentials need to be changed.
+  StaticJsonDocument<128> doc;
+  doc["ok"] = true;
+  doc["rebooting"] = true;
+  sendJson(200, doc);
+  // Give TCP stack a moment to flush.
+  delay(120);
+  networkRequestConfigPortal();
+}
+
+  // ---- Device helpers (UI tests) ----
+  static void handleDeviceBeep() {
+    // Optional JSON body:
+    // {"mode":"beep"|"gong"|"sound", "sound":"chime"|"gong"|"alert"|"off", "freqHz":2000, "durationMs":80, "repeats":1}
+    const String body = g_server.arg("plain");
+    if (body.length()) {
+      StaticJsonDocument<256> doc;
+      if (!deserializeJson(doc, body)) {
+        const String mode = doc["mode"] | "beep";
+        if (mode == "gong") {
+          const int rep = (int)(doc["repeats"] | 1);
+          buzzerGong((uint8_t)constrain(rep, 1, 10));
+        } else if (mode == "sound") {
+          const String sid = doc["sound"] | "chime";
+          const int rep = (int)(doc["repeats"] | 1);
+          buzzerPlaySound(sid.c_str(), (uint8_t)constrain(rep, 1, 10));
+        } else {
+          // legacy beep
+          const int f = (int)(doc["freqHz"] | 0);
+          const int d = (int)(doc["durationMs"] | 0);
+          buzzerBeep((uint16_t)constrain(f, 0, 10000), (uint16_t)constrain(d, 0, 2000));
+        }
+      } else {
+        // bad json -> fall back to default beep
+        buzzerBeep(0, 0);
+      }
+    } else {
+      // uses configured defaults (0,0 => defaults)
+      buzzerBeep(0, 0);
+    }
+    g_server.sendHeader("Cache-Control", "no-store");
+    g_server.send(200, "text/plain", "ok");
+  }
+
+  static void handleDeviceLed() {
+    const String body = g_server.arg("plain");
+    if (!body.length()) {
+      g_server.send(400, "text/plain", "empty");
+      return;
+    }
+    StaticJsonDocument<256> doc;
+    if (deserializeJson(doc, body)) {
+      g_server.send(400, "text/plain", "bad_json");
+      return;
+    }
+    // ArduinoJson supports the `|` default operator on JsonVariant.
+    // Do NOT cast to const char* before applying `|`, otherwise the operator
+    // becomes a C/C++ bitwise OR and compilation fails.
+    const String mode = doc["mode"] | "";
+    if (mode == "off") {
+      rgbLedOff();
+    } else if (mode == "solid") {
+      const int r = (int)(doc["r"] | 0);
+      const int g = (int)(doc["g"] | 0);
+      const int b = (int)(doc["b"] | 0);
+      rgbLedSetColor((uint8_t)constrain(r,0,255), (uint8_t)constrain(g,0,255), (uint8_t)constrain(b,0,255));
+    } else if (mode == "blink") {
+      const int r = (int)(doc["r"] | 0);
+      const int g = (int)(doc["g"] | 0);
+      const int b = (int)(doc["b"] | 0);
+      const int p = (int)(doc["periodMs"] | 500);
+      rgbLedBlink((uint8_t)constrain(r,0,255), (uint8_t)constrain(g,0,255), (uint8_t)constrain(b,0,255), (uint16_t)constrain(p,50,5000));
+    } else {
+      g_server.send(400, "text/plain", "bad_mode");
+      return;
+    }
+    g_server.sendHeader("Cache-Control", "no-store");
+    g_server.send(200, "text/plain", "ok");
+  }
+
+  // ---- UI layout (Dashboard) ----
+  // GET  /api/ui/layout?profile=default
+  // POST /api/ui/layout?profile=default   (body: JSON)
+  // GET  /api/ui/layout/profiles
+  // POST /api/ui/layout/delete?profile=...
+  static void handleUiLayoutGet() {
+    const String profile = uiProfileSanitize(argOrEmpty("profile"));
+    const String path = uiLayoutPathForProfile(profile);
+    String json;
+    if (!fsReadTextFile(path.c_str(), json)) {
+      // No layout saved yet -> return empty layout, so UI can fall back without console noise.
+      g_server.sendHeader("Cache-Control", "no-store");
+      g_server.send(200, "application/json", "[]");
+      return;
+    }
+    g_server.sendHeader("Cache-Control", "no-store");
+    g_server.send(200, "application/json", json);
+  }
+
+  static void handleUiLayoutSet() {
+    const String profile = uiProfileSanitize(argOrEmpty("profile"));
+    const String path = uiLayoutPathForProfile(profile);
+    const String body = g_server.arg("plain");
+    if (!body.length()) {
+      g_server.send(400, "text/plain", "empty");
+      return;
+    }
+
+    // Validate JSON briefly (prevent writing junk)
+    DynamicJsonDocument doc(8192);
+    DeserializationError e = deserializeJson(doc, body);
+    if (e) {
+      g_server.send(400, "text/plain", "bad_json");
+      return;
+    }
+    fsWriteTextFile(path.c_str(), body);
+    g_server.sendHeader("Cache-Control", "no-store");
+    g_server.send(200, "text/plain", "ok");
+  }
+
+  static void handleUiLayoutProfiles() {
+    StaticJsonDocument<4096> doc;
+    JsonArray arr = doc.createNestedArray("profiles");
+    fsLock();
+    File root = LittleFS.open("/", "r");
+    File f = root.openNextFile();
+    while (f) {
+      const String name = String(f.name());
+      if (name.startsWith("/ui_layout_") && name.endsWith(".json")) {
+        String p = name.substring(strlen("/ui_layout_"));
+        p = p.substring(0, p.length() - strlen(".json"));
+        arr.add(p);
+      }
+      f = root.openNextFile();
+    }
+    root.close();
+    fsUnlock();
+    sendJson(200, doc);
+  }
+
+  static void handleUiLayoutDelete() {
+    const String profile = uiProfileSanitize(argOrEmpty("profile"));
+    const String path = uiLayoutPathForProfile(profile);
+    fsLock();
+    const bool ok = LittleFS.remove(path.c_str());
+    fsUnlock();
+    g_server.send(ok ? 200 : 404, "text/plain", ok ? "ok" : "not found");
+  }
+
   static void handleFsList() {
     StaticJsonDocument<4096> doc;
     JsonArray arr = doc.createNestedArray("files");
@@ -456,6 +821,179 @@ static void handleConfigApply() {
     root.close();
     fsUnlock();
     sendJson(200, doc);
+  }
+
+  // ---------------- File manager ----------------
+  static bool isSafePath(const String& in) {
+    if (!in.length()) return false;
+    if (in[0] != '/') return false;
+    if (in.indexOf("..") >= 0) return false;
+    if (in.length() > 96) return false;
+    return true;
+  }
+
+  static void handleFsInfo() {
+    StaticJsonDocument<512> doc;
+    fsLock();
+    bool ok = LittleFS.begin(true);
+    if (!ok) { fsUnlock(); doc["ok"] = false; sendJson(500, doc); return; }
+    doc["ok"] = true;
+    doc["totalBytes"] = (uint32_t)LittleFS.totalBytes();
+    doc["usedBytes"] = (uint32_t)LittleFS.usedBytes();
+    fsUnlock();
+    sendJson(200, doc);
+  }
+
+  static void handleFsRead() {
+    const String path = g_server.arg("path");
+    if (!isSafePath(path)) { g_server.send(400, "text/plain", "bad path"); return; }
+    fsLock();
+    if (!LittleFS.begin(true)) { fsUnlock(); g_server.send(500, "text/plain", "LittleFS error"); return; }
+    File f = LittleFS.open(path, FILE_READ);
+    if (!f) { fsUnlock(); g_server.send(404, "text/plain", "not found"); return; }
+    g_server.sendHeader("Cache-Control", "no-store");
+    g_server.streamFile(f, "text/plain");
+    f.close();
+    fsUnlock();
+  }
+
+  static void handleFsWrite() {
+    const String path = g_server.arg("path");
+    if (!isSafePath(path)) { g_server.send(400, "text/plain", "bad path"); return; }
+    const String body = g_server.arg("plain");
+    fsLock();
+    if (!LittleFS.begin(true)) { fsUnlock(); g_server.send(500, "text/plain", "LittleFS error"); return; }
+    File f = LittleFS.open(path, "w");
+    if (!f) { fsUnlock(); g_server.send(500, "text/plain", "open failed"); return; }
+    f.print(body);
+    f.close();
+    fsUnlock();
+    g_server.send(200, "text/plain", "OK");
+  }
+
+  static void handleFsDelete() {
+    const String path = g_server.arg("path");
+    if (!isSafePath(path)) { g_server.send(400, "text/plain", "bad path"); return; }
+    fsLock();
+    if (!LittleFS.begin(true)) { fsUnlock(); g_server.send(500, "text/plain", "LittleFS error"); return; }
+    bool ok = LittleFS.remove(path);
+    fsUnlock();
+    g_server.send(ok ? 200 : 500, "text/plain", ok ? "OK" : "ERR");
+  }
+
+  // Forward declaration (used before definition further in this file)
+  static void streamDownload(const char* path, const char* filename, const char* ctype);
+
+  static void handleFsDownload() {
+    const String path = g_server.arg("path");
+    if (!isSafePath(path)) { g_server.send(400, "text/plain", "bad path"); return; }
+    String fn = path;
+    int slash = fn.lastIndexOf('/');
+    if (slash >= 0) fn = fn.substring(slash + 1);
+    streamDownload(path.c_str(), fn.c_str(), "application/octet-stream");
+  }
+
+  static String g_fsUploadPath;
+  static void handleFsUpload() {
+    // final response after upload
+    StaticJsonDocument<256> doc;
+    doc["ok"] = true;
+    sendJson(200, doc);
+  }
+
+  static void handleFsUploadBody() {
+    HTTPUpload& up = g_server.upload();
+    if (up.status == UPLOAD_FILE_START) {
+      g_fsUploadPath = g_server.arg("path");
+      if (!isSafePath(g_fsUploadPath)) {
+        g_fsUploadPath = "";
+        return;
+      }
+      fsLock();
+      LittleFS.begin(true);
+      File f = LittleFS.open(g_fsUploadPath, "w");
+      if (f) f.close();
+      fsUnlock();
+    } else if (up.status == UPLOAD_FILE_WRITE) {
+      if (!g_fsUploadPath.length()) return;
+      fsLock();
+      if (!LittleFS.begin(true)) { fsUnlock(); return; }
+      File f = LittleFS.open(g_fsUploadPath, FILE_APPEND);
+      if (f) {
+        f.write(up.buf, up.currentSize);
+        f.close();
+      }
+      fsUnlock();
+    } else if (up.status == UPLOAD_FILE_END) {
+      // nothing
+    }
+  }
+
+  // ---------------- OTA (web) ----------------
+  struct OtaState {
+    bool inProgress = false;
+    uint32_t written = 0;
+    uint32_t total = 0;
+    String lastError = "";
+    bool rebootPending = false;
+    uint32_t rebootAtMs = 0;
+  };
+  static OtaState g_ota;
+
+  static void handleOtaStatus() {
+    StaticJsonDocument<384> doc;
+    doc["inProgress"] = g_ota.inProgress;
+    doc["written"] = g_ota.written;
+    doc["total"] = g_ota.total;
+    doc["progress"] = (g_ota.total ? (float)g_ota.written / (float)g_ota.total : 0.0f);
+    doc["lastError"] = g_ota.lastError;
+    doc["rebootPending"] = g_ota.rebootPending;
+    sendJson(200, doc);
+  }
+
+  static void handleOtaUpdateDone() {
+    // response after upload end
+    StaticJsonDocument<256> doc;
+    const bool ok = (!g_ota.lastError.length());
+    doc["ok"] = ok;
+    doc["error"] = g_ota.lastError;
+    sendJson(ok ? 200 : 500, doc);
+  }
+
+  static void handleOtaUpdateBody() {
+    HTTPUpload& up = g_server.upload();
+    if (up.status == UPLOAD_FILE_START) {
+      g_ota.inProgress = true;
+      g_ota.written = 0;
+      g_ota.total = up.totalSize;
+      g_ota.lastError = "";
+      g_ota.rebootPending = false;
+
+      if (!Update.begin(up.totalSize, U_FLASH)) {
+        g_ota.lastError = String("Update.begin failed: ") + Update.errorString();
+      }
+    } else if (up.status == UPLOAD_FILE_WRITE) {
+      if (g_ota.lastError.length()) return;
+      const size_t w = Update.write(up.buf, up.currentSize);
+      g_ota.written += (uint32_t)w;
+      if (w != up.currentSize) {
+        g_ota.lastError = String("Update.write failed: ") + Update.errorString();
+      }
+    } else if (up.status == UPLOAD_FILE_END) {
+      if (!g_ota.lastError.length()) {
+        if (!Update.end(true)) {
+          g_ota.lastError = String("Update.end failed: ") + Update.errorString();
+        } else {
+          g_ota.rebootPending = true;
+          g_ota.rebootAtMs = millis() + 1500;
+        }
+      }
+      g_ota.inProgress = false;
+    } else if (up.status == UPLOAD_FILE_ABORTED) {
+      g_ota.inProgress = false;
+      g_ota.lastError = "upload aborted";
+      Update.abort();
+    }
   }
 
   static void handleEvents() {
@@ -603,7 +1141,20 @@ static void handleConfigApply() {
     fsUnlock();
   }
 
-  static void handleNotFound() {
+  
+  static void streamDownload(const char* path, const char* filename, const char* ctype) {
+    fsLock();
+    if (!LittleFS.begin(true)) { fsUnlock(); g_server.send(500,"text/plain","LittleFS error"); return; }
+    File f = LittleFS.open(path, FILE_READ);
+    if (!f) { fsUnlock(); g_server.send(404,"text/plain","Not found"); return; }
+    g_server.sendHeader("Cache-Control","no-store");
+    g_server.sendHeader("Content-Disposition", String("attachment; filename=\"") + filename + "\"");
+    g_server.streamFile(f, ctype);
+    f.close();
+    fsUnlock();
+  }
+
+static void handleNotFound() {
     serveStaticFile(g_server.uri());
   }
 }
@@ -617,8 +1168,14 @@ void webserverLoadConfigFromFS() {
   if (!fsReadTextFile("/config.json", json)) return;
 
   networkApplyConfig(json);
+  rgbLedApplyConfig(json);
+  buzzerApplyConfig(json);
   dallasApplyConfig(json);
   bleApplyConfig(json);
+  openthermApplyConfig(json);
+#if FEATURE_HEATLOSS
+  heatlossApplyConfig(json);
+#endif
   // Roles/thermometer sources are used by logicApplyConfig() role fallback.
   // Apply them first so Equitherm (and other functions) can use BLE/MQTT roles immediately.
   thermometersApplyConfig(json);
@@ -637,13 +1194,107 @@ void webserverInit() {
     g_server.sendHeader("Cache-Control", "no-store");
     g_server.send(200, "application/json", bleGetStatusJson());
   });
+  g_server.on("/api/opentherm/status", HTTP_GET, handleOpenThermStatus);
+  g_server.on("/api/opentherm/protocol", HTTP_GET, [](){ g_server.sendHeader("Cache-Control","no-store"); g_server.send(200,"application/json", openthermGetProtocolJson()); });
+  g_server.on("/api/opentherm/cmd", HTTP_POST, handleOpenThermCmd);
+  g_server.on("/api/opentherm/log", HTTP_GET, [](){
+    fsLock();
+    if (!LittleFS.begin(true)) { fsUnlock(); g_server.send(500,"text/plain","LittleFS error"); return; }
+    File f = LittleFS.open("/opentherm.csv", FILE_READ);
+    if (!f) { fsUnlock(); g_server.send(404,"text/plain","No log"); return; }
+    g_server.sendHeader("Cache-Control","no-store");
+    g_server.streamFile(f, "text/csv");
+    f.close();
+    fsUnlock();
+  });
+  g_server.on("/api/opentherm/clear", HTTP_POST, [](){
+    fsLock();
+    if (!LittleFS.begin(true)) { fsUnlock(); g_server.send(500,"text/plain","LittleFS error"); return; }
+    bool ok = LittleFS.remove("/opentherm.csv");
+    fsUnlock();
+    g_server.send(ok?200:500,"text/plain", ok?"OK":"ERR");
+  });
+
+  // Simple downloads (CSV)
+  g_server.on("/download/opentherm.csv", HTTP_GET, [](){ streamDownload("/opentherm.csv","opentherm.csv","text/csv"); });
+#if FEATURE_HEATLOSS
+  g_server.on("/download/heatloss.csv", HTTP_GET, [](){ streamDownload("/heatloss.csv","heatloss.csv","text/csv"); });
+#endif
+
+
+#if FEATURE_HEATLOSS
+  g_server.on("/api/heatloss/status", HTTP_GET, [](){
+    StaticJsonDocument<2048> doc;
+    HeatLossStatus st = heatlossGetStatus();
+    HeatLossConfig cfg = heatlossGetConfig();
+
+    JsonObject s = doc.createNestedObject("status");
+    s["enabled"] = st.enabled;
+    s["haveSample"] = st.haveSample;
+    s["indoorC"] = st.indoorC;
+    s["outdoorC"] = st.outdoorC;
+    s["powerKw"] = st.powerKw;
+    s["ua_W_per_K"] = st.ua_W_per_K;
+    s["projectedLossKw"] = st.projectedLossKw;
+    s["samples"] = st.samples;
+    s["lastLogMs"] = st.lastLogMs;
+    s["reason"] = st.reason;
+
+    JsonObject c = doc.createNestedObject("config");
+    c["enabled"] = cfg.enabled;
+    c["logIntervalMs"] = cfg.logIntervalMs;
+    c["windowSec"] = cfg.windowSec;
+    c["designOutdoorC"] = cfg.designOutdoorC;
+    c["indoorTargetC"] = cfg.indoorTargetC;
+    c["indoorSource"] = cfg.indoorSource;
+    c["outdoorSource"] = cfg.outdoorSource;
+    c["assumedMaxBoilerKw"] = cfg.assumedMaxBoilerKw;
+
+
+    sendJson(200, doc);
+  });
+
+  g_server.on("/api/heatloss/clear", HTTP_POST, [](){
+    bool ok = heatlossClearLog();
+    StaticJsonDocument<256> doc;
+    doc["ok"] = ok;
+    sendJson(ok ? 200 : 500, doc);
+  });
+
+  g_server.on("/api/heatloss/log", HTTP_GET, [](){
+    if (!LittleFS.begin(true)) { g_server.send(500, "text/plain", "LittleFS not available"); return; }
+    const String path = heatlossGetLogPath();
+    if (!LittleFS.exists(path)) { g_server.send(404, "text/plain", "log not found"); return; }
+    File f = LittleFS.open(path, FILE_READ);
+    if (!f) { g_server.send(500, "text/plain", "open failed"); return; }
+    g_server.streamFile(f, "text/csv");
+    f.close();
+  });
+#endif
   g_server.on("/api/relay", HTTP_GET, handleRelay);
   g_server.on("/api/valve/pulse", HTTP_POST, handleValvePulse);
   g_server.on("/api/valve/goto", HTTP_POST, handleValveGoto);
   g_server.on("/api/valve/stop", HTTP_POST, handleValveStop);
+  g_server.on("/api/equitherm/calibrate", HTTP_POST, handleEquithermCalibrate);
   g_server.on("/api/config", HTTP_GET, handleConfigGet);
   g_server.on("/api/config/apply", HTTP_POST, handleConfigApply);
+  g_server.on("/api/network/portal", HTTP_POST, handleNetworkPortalStart);
+  g_server.on("/api/device/beep", HTTP_POST, handleDeviceBeep);
+  g_server.on("/api/device/led", HTTP_POST, handleDeviceLed);
+  g_server.on("/api/ui/layout", HTTP_GET, handleUiLayoutGet);
+  g_server.on("/api/ui/layout", HTTP_POST, handleUiLayoutSet);
+  g_server.on("/api/ui/layout/profiles", HTTP_GET, handleUiLayoutProfiles);
+  g_server.on("/api/ui/layout/delete", HTTP_POST, handleUiLayoutDelete);
   g_server.on("/api/fs/list", HTTP_GET, handleFsList);
+  g_server.on("/api/fs/info", HTTP_GET, handleFsInfo);
+  g_server.on("/api/fs/read", HTTP_GET, handleFsRead);
+  g_server.on("/api/fs/write", HTTP_POST, handleFsWrite);
+  g_server.on("/api/fs/delete", HTTP_POST, handleFsDelete);
+  g_server.on("/api/fs/download", HTTP_GET, handleFsDownload);
+  g_server.on("/api/fs/upload", HTTP_POST, handleFsUpload, handleFsUploadBody);
+
+  g_server.on("/api/ota/status", HTTP_GET, handleOtaStatus);
+  g_server.on("/api/ota/update", HTTP_POST, handleOtaUpdateDone, handleOtaUpdateBody);
   g_server.on("/api/events", HTTP_GET, handleEvents);
 
   // Static
@@ -656,6 +1307,14 @@ void webserverLoop() {
   if (!g_inited) return;
   g_server.handleClient();
   sseBroadcastIfNeeded();
+
+  // Perform reboot after successful OTA update.
+  if (g_ota.rebootPending) {
+    const uint32_t now = millis();
+    if ((int32_t)(now - g_ota.rebootAtMs) >= 0) {
+      ESP.restart();
+    }
+  }
 }
 
 #endif // FEATURE_WEBSERVER

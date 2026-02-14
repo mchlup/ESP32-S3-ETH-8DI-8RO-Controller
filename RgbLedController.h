@@ -29,6 +29,11 @@ void rgbLedSetMode(RgbLedMode mode);
 // Blink with on/off period in ms
 void rgbLedBlink(uint8_t r, uint8_t g, uint8_t b, uint16_t periodMs = 500);
 
+// Apply runtime config from /config.json
+// Expected keys (top-level):
+//   rgbLed: { enabled: bool, brightness: 0..255, allowStatus: bool }
+void rgbLedApplyConfig(const String& json);
+
 #else
 
 inline void rgbLedInit() {}
@@ -37,5 +42,6 @@ inline void rgbLedOff() {}
 inline void rgbLedSetColor(uint8_t, uint8_t, uint8_t) {}
 inline void rgbLedSetMode(RgbLedMode) {}
 inline void rgbLedBlink(uint8_t, uint8_t, uint8_t, uint16_t = 0) {}
+inline void rgbLedApplyConfig(const String&) {}
 
 #endif
