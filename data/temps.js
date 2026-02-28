@@ -19,9 +19,8 @@ App.registerWidget({
   defaultSpan:6,
   render(root){
     root.innerHTML = `
-      <div class="card__head"><div class="card__title">Teploty</div></div>
       <div class="card__body">
-        <div class="temps" id="tempsGrid"></div>
+        <div class="temps temps--auto" id="tempsGrid"></div>
       </div>`;
     const g = root.querySelector('#tempsGrid');
     g.innerHTML = Array.from({length:8}).map((_,i)=>{

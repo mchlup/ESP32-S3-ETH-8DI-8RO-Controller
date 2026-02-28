@@ -32,6 +32,9 @@ App.pages = App.pages || {};
       { v:'ble', t:'BLE' },
       { v:'mqtt1', t:'MQTT1' },
       { v:'mqtt2', t:'MQTT2' },
+      { v:'ot_outside', t:'OpenTherm: T_out (venek)' },
+      { v:'ot_boiler',  t:'OpenTherm: T_boiler (topná voda)' },
+      { v:'ot_dhw',     t:'OpenTherm: T_DHW (TUV)' },
     ];
     return out;
   }
@@ -60,6 +63,13 @@ App.pages = App.pages || {};
     for (let i=0;i<2;i++) {
       if (String(m[i]?.role || 'none') === r) return `mqtt${i+1}`;
     }
+
+    // OpenTherm fixed channels
+    const ot = App.roles?.opentherm || {};
+    if (String(ot.outside || 'none') === r) return 'ot_outside';
+    if (String(ot.boiler  || 'none') === r) return 'ot_boiler';
+    if (String(ot.dhw     || 'none') === r) return 'ot_dhw';
+
     return 'none';
   }
 
@@ -72,6 +82,12 @@ App.pages = App.pages || {};
     for (let i=0;i<2;i++) {
       if (String(App.roles.mqtt?.[i]?.role || 'none') === r) App.roles.mqtt[i].role = 'none';
     }
+
+    // OpenTherm
+    App.roles.opentherm = App.roles.opentherm || {};
+    if (String(App.roles.opentherm.outside || 'none') === r) App.roles.opentherm.outside = 'none';
+    if (String(App.roles.opentherm.boiler  || 'none') === r) App.roles.opentherm.boiler  = 'none';
+    if (String(App.roles.opentherm.dhw     || 'none') === r) App.roles.opentherm.dhw     = 'none';
   }
 
   function assignRoleToSource(role, src){
@@ -95,6 +111,12 @@ App.pages = App.pages || {};
       App.roles.mqtt[mi].role = r;
       return;
     }
+
+    // OpenTherm channels
+    App.roles.opentherm = App.roles.opentherm || {};
+    if (s === 'ot_outside') { App.roles.opentherm.outside = r; return; }
+    if (s === 'ot_boiler')  { App.roles.opentherm.boiler  = r; return; }
+    if (s === 'ot_dhw')     { App.roles.opentherm.dhw     = r; return; }
   }
 
   function countRoleAssignments(){
@@ -108,6 +130,9 @@ App.pages = App.pages || {};
     for (let i=0;i<8;i++) inc(App.roles.tempRoles[i], `temp${i+1}`);
     inc(App.roles.bleRole, 'ble');
     for (let i=0;i<2;i++) inc(App.roles.mqtt?.[i]?.role, `mqtt${i+1}`);
+    inc(App.roles.opentherm?.outside, 'ot_outside');
+    inc(App.roles.opentherm?.boiler,  'ot_boiler');
+    inc(App.roles.opentherm?.dhw,     'ot_dhw');
     return map;
   }
 
@@ -721,6 +746,27 @@ _renderRows(){
 
         if (src === 'mqtt1' || src === 'mqtt2') {
           host.appendChild(makeTag('bez live dat v UI', ''));
+          return;
+        }
+
+        if (src.startsWith('ot_')) {
+          const ot = fast?.ot || {};
+          let v = null;
+          let ok = false;
+          if (src === 'ot_outside') { v = ot.ot; ok = (v != null); }
+          else if (src === 'ot_boiler') { v = ot.bt; ok = (v != null); }
+          else if (src === 'ot_dhw') { v = ot.dt; ok = (v != null); }
+
+          const en = !!ot.en;
+          const ready = !!ot.rd;
+          const tagEl = makeTag(!en ? 'OT off' : (ready ? (ok ? 'OK' : '—') : 'not ready'), (en && ready && ok) ? 'ok' : 'bad');
+          const val = document.createElement('span');
+          val.textContent = fmtTemp(v);
+          const row = document.createElement('div');
+          row.className = 'cellRow';
+          row.appendChild(tagEl);
+          row.appendChild(val);
+          host.appendChild(row);
           return;
         }
       });

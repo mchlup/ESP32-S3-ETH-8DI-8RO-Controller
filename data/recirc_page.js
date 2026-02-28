@@ -309,6 +309,15 @@ App.pages = App.pages || {};
                     <option value="temp5">T5</option><option value="temp6">T6</option><option value="temp7">T7</option><option value="temp8">T8</option>
                     <option value="opentherm_boiler">OpenTherm: boiler</option>
                     <option value="opentherm_return">OpenTherm: return</option>
+<option value="opentherm_dhw">OpenTherm: DHW</option>
+<option value="opentherm_outside">OpenTherm: outside</option>
+<option value="opentherm_room">OpenTherm: room</option>
+<option value="opentherm_ch2_flow">OpenTherm: CH2 flow</option>
+<option value="opentherm_dhw2">OpenTherm: DHW2</option>
+<option value="opentherm_exhaust">OpenTherm: exhaust</option>
+<option value="opentherm_hx">OpenTherm: heat exchanger</option>
+<option value="opentherm_solar_storage">OpenTherm: solar storage</option>
+<option value="opentherm_solar_collector">OpenTherm: solar collector</option>
                     <option value="ble">BLE teploměr</option>
                     <option value="mqtt">MQTT teploměr</option>
                   </select>

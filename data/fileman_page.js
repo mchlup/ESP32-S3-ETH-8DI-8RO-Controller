@@ -198,6 +198,10 @@ App.pages = App.pages || {};
 
       const xhr = new XMLHttpRequest();
       xhr.open('POST', '/api/fs/upload?path='+encodeURIComponent(p), true);
+      try{
+        const tok = (App.api && App.api.getToken) ? App.api.getToken() : '';
+        if (tok) xhr.setRequestHeader('X-Api-Token', tok);
+      }catch(_){ }
       xhr.onload = async ()=>{
         if (xhr.status>=200 && xhr.status<300){
           this._setMsg('Upload OK: '+p);

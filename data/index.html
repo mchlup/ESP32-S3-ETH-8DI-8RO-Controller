@@ -51,17 +51,17 @@
         <div class="topbarLeft">
           <div class="h1" id="pageTitle">Dashboard</div>
           <div class="hdrStatus" aria-label="Stavy systému">
+            <div class="hdrItem"><span class="k">RTC</span><span class="v" id="hdrTime">—</span></div>
             <div class="hdrItem"><span class="k">Uptime</span><span class="v" id="hdrUptime">—</span></div>
             <div class="hdrItem"><span class="k">Režim</span><span class="v" id="hdrMode">—</span></div>
             <div class="hdrItem"><span class="k">SSE</span><span class="v" id="hdrSse">—</span></div>
             <div class="hdrItem"><span class="k">BLE</span><span class="v" id="hdrBle">—</span></div>
+            <div class="hdrItem"><span class="k">OpenTherm</span><span class="v" id="hdrOt">—</span></div>
+            <div class="hdrItem" id="pillEq">Ekviterm: -</div>
+            <div class="hdrItem" id="pillTuv">TUV: -</div>
+            <div class="hdrItem" id="pillRc">Cirkulace: -</div>
+            <div class="hdrItem" id="pillAku">Aku: -</div>
           </div>
-        </div>
-        <div class="pills">
-          <div class="pill" id="pillEq">Ekviterm: -</div>
-          <div class="pill" id="pillTuv">TUV: -</div>
-          <div class="pill" id="pillRc">Cirkulace: -</div>
-          <div class="pill" id="pillAku">Aku: -</div>
         </div>
       </header>
 
@@ -90,6 +90,7 @@
   <script src="/ble.js"></script>
   <script src="/diag.js"></script>
   <script src="/equitherm.js"></script>
+  <script src="/opentherm.js"></script>
   <script src="/dhw.js"></script>
   <script src="/recirc.js"></script>
   <script src="/aku.js"></script>

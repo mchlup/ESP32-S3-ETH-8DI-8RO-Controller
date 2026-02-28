@@ -17,7 +17,8 @@ function relayBitmaskToBool(mask, idx){
 }
 
 async function relayCmd(id, cmd){
-  await fetch(`/api/relay?id=${id}&cmd=${cmd}`, { cache:'no-store' });
+  // Server expects query args even for POST; body can be empty
+  await App.api.postJson(`/api/relay?id=${id}&cmd=${cmd}`, {});
 }
 
 App.registerWidget({

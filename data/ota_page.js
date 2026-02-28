@@ -98,6 +98,12 @@ App.pages = App.pages || {};
 
       const xhr = new XMLHttpRequest();
       xhr.open('POST', '/api/ota/update', true);
+// Include API token if configured (matches server-side OTA auth)
+try{
+  const t = (api && api.getToken) ? api.getToken() : '';
+  if(t) xhr.setRequestHeader('X-Api-Token', t);
+}catch(_){}
+
 
       xhr.upload.onprogress = (ev)=>{
         if (!ev.lengthComputable) return;
@@ -111,7 +117,12 @@ App.pages = App.pages || {};
         if (xhr.status >= 200 && xhr.status < 300) {
           this._els.status.textContent = 'Nahráno. Za chvíli dojde k restartu…';
         } else {
-          this._els.status.textContent = 'Chyba OTA: ' + (xhr.responseText || xhr.status);
+          let msg = (xhr.responseText || xhr.status);
+try{
+  const j = JSON.parse(xhr.responseText||'');
+  if(j && (j.err||j.error||j.message)) msg = (j.err||j.error||j.message);
+}catch(_){}
+this._els.status.textContent = 'Chyba OTA: ' + msg;
         }
         // status will turn offline during reboot
         setTimeout(()=>this._refreshStatus(), 1000);

@@ -574,9 +574,9 @@ App.pages = App.pages || {};
       const master = model.valveMaster || 1; // fallback: R1 is master for mixing valve
       try{
         if(kind==='pulse'){
-          await App.api.postText(`/api/valve/pulse?master=${master}&dir=${val}`, '', 'text/plain');
+          await App.api.postJson(`/api/valve/pulse?master=${master}&dir=${val}`, {});
         } else if(kind==='stop'){
-          await App.api.postText(`/api/valve/stop?master=${master}`, '', 'text/plain');
+          await App.api.postJson(`/api/valve/stop?master=${master}`, {});
         }
         const txt = `master R${master} • ${kind}${val!=null?`(${val})`:''}`;
         const el = document.getElementById('eqValveTestInfo');

@@ -1,6 +1,23 @@
 window.App = window.App || {};
 
 (function(){
+  function normRole(s){
+    s = String(s||'').trim().toLowerCase();
+    if (s === 'dhw' || s === 'tuv') return 'dhw_tank';
+    return s;
+  }
+
+  function getTempByRole(role, fast, cfg){
+    role = normRole(role);
+    const t = fast && Array.isArray(fast.t) ? fast.t : null;
+    const tv = fast && Array.isArray(fast.tv) ? fast.tv : null;
+    const roles = cfg && Array.isArray(cfg.tempRoles) ? cfg.tempRoles : null;
+    if (!t || !tv || !roles) return { v: null, valid: false };
+    const idx = roles.findIndex(r => normRole(r) === role);
+    if (idx < 0 || idx >= t.length || idx >= tv.length) return { v: null, valid: false };
+    return { v: t[idx], valid: !!tv[idx] };
+  }
+
   function fmtTemp(v, valid){
     if(!valid || v === null || v === undefined || !isFinite(v)) return '—';
     return `${Number(v).toFixed(1)} °C`;
@@ -160,11 +177,20 @@ window.App = window.App || {};
         ].join(' ');
       }
 
-      // Back-end /api/fast currently doesn't expose tank temp/targets; keep placeholders safe.
+      // Bojler TUV: prefer role mapping (config.tempRoles) -> source "dhw_tank".
+      // Fallback: allow future back-end fields (d.tt/d.tv) if ever added.
       const tankEl = host.querySelector('#dhw_tank');
-      if(tankEl) tankEl.textContent = fmtTemp(d.tt, !!d.tv);
+      if(tankEl){
+        const cfg = (App.state && App.state.config && typeof App.state.config === 'object') ? App.state.config : null;
+        const rt = getTempByRole('dhw_tank', fast, cfg);
+        if (rt && rt.valid) {
+          tankEl.textContent = fmtTemp(rt.v, rt.valid);
+        } else {
+          tankEl.textContent = fmtTemp(d.tt, !!d.tv);
+        }
+      }
 
-      const targetEl = host.querySelector('#dhw_target');
+const targetEl = host.querySelector('#dhw_target');
       if(targetEl){
         const tgt = fmtNum(d.tg);
         const hy = fmtNum(d.hy);

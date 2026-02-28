@@ -2,7 +2,7 @@ window.App = window.App || {};
 App.widgets = App.widgets || {};
 
 (function(){
-  const GRID_COLS_BASE = 20; // virtual coords stored in layout
+  const BASE_COLS = 60; // virtual coords stored in layout (fine grid for precise drag/resize)
   const ROW_PX = 36;
   const GAP_PX = 14;
   const SNAP_TOL = 1;
@@ -12,16 +12,17 @@ App.widgets = App.widgets || {};
   const LS_PANEL_COLLAPSED = 'dashLayoutPanelCollapsed';
 
   const DEF_WIDGETS = [
-    { id:'equitherm', on:true,  w:10, h:9 },
-    { id:'dhw',      on:true,  w:10, h:9 },
-    { id:'recirc',   on:true,  w:10, h:9 },
-    { id:'aku',      on:true,  w:10, h:9 },
-    { id:'relays',   on:true,  w:10, h:10 },
-    { id:'inputs',   on:true,  w:10, h:7 },
-    { id:'temps',    on:true,  w:10, h:7 },
-    { id:'ble',      on:true,  w:10, h:9 },
-    { id:'diag',     on:true,  w:20, h:9 },
-    { id:'roles',    on:false, w:20, h:10 },
+    { id:'equitherm', on:true,  w:30, h:9 },
+    { id:'dhw',      on:true,  w:30, h:9 },
+    { id:'recirc',   on:true,  w:30, h:9 },
+    { id:'aku',      on:true,  w:30, h:9 },
+    { id:'relays',   on:true,  w:30, h:10 },
+    { id:'inputs',   on:true,  w:30, h:7 },
+    { id:'temps',    on:true,  w:30, h:7 },
+    { id:'ble',      on:true,  w:30, h:9 },
+    { id:'diag',     on:true,  w:60, h:9 },
+    { id:'opentherm',on:true,  w:30, h:9 },
+    { id:'roles',    on:false, w:60, h:10 },
   ];
 
   function wdef(id){
@@ -48,6 +49,14 @@ App.widgets = App.widgets || {};
 
   function normalizeLayout(arr){
     if (!Array.isArray(arr)) return null;
+
+    // Detect source base grid and migrate if needed.
+    let srcBase = 20;
+    for (const it of arr) {
+      if (it && Number.isFinite(it.bc)) { srcBase = clampInt(it.bc, 1, 200); break; }
+    }
+    const factor = (srcBase > 0) ? (BASE_COLS / srcBase) : 1;
+
     const out = [];
     const seen = new Set();
 
@@ -56,25 +65,35 @@ App.widgets = App.widgets || {};
       const id = String(it.id);
       if (seen.has(id)) continue;
       seen.add(id);
-      const d = wdef(id) || {w:10,h:9,on:true};
+
+      const d = wdef(id) || {w: 30, h: 9, on: true};
+
+      // Migrate x/w from srcBase into BASE_COLS
+      const xRaw = Number.isFinite(it.x) ? it.x : 1;
+      const wRaw = Number.isFinite(it.w) ? it.w : (d.w ?? 30);
+
+      const xScaled = Math.round((xRaw - 1) * factor) + 1;
+      const wScaled = Math.max(1, Math.round(wRaw * factor));
+
       out.push({
         id,
         on: it.on !== false,
-        x: clampInt(it.x ?? 1, 1, GRID_COLS_BASE),
+        x: clampInt(xScaled, 1, BASE_COLS),
         y: clampInt(it.y ?? 1, 1, 9999),
-        w: clampInt(it.w ?? d.w ?? 10, 1, GRID_COLS_BASE),
+        w: clampInt(wScaled, 1, BASE_COLS),
         h: clampInt(it.h ?? d.h ?? 9, 1, 9999),
+        bc: BASE_COLS
       });
     }
 
     // append any new widgets
     for (const d of DEF_WIDGETS) {
-      if (!seen.has(d.id)) out.push({ id:d.id, on:d.on, x:1, y:1, w:d.w, h:d.h });
+      if (!seen.has(d.id)) out.push({ id: d.id, on: d.on, x: 1, y: 1, w: d.w, h: d.h, bc: BASE_COLS });
     }
 
     // clamp to bounds
     for (const it of out) {
-      if (it.x + it.w - 1 > GRID_COLS_BASE) it.x = Math.max(1, GRID_COLS_BASE - it.w + 1);
+      if (it.x + it.w - 1 > BASE_COLS) it.x = Math.max(1, BASE_COLS - it.w + 1);
       if (it.x < 1) it.x = 1;
       if (it.y < 1) it.y = 1;
     }
@@ -84,7 +103,6 @@ App.widgets = App.widgets || {};
       return autoPlace(out);
     }
 
-    // Ensure at least some sane ordering of y
     return out;
   }
 
@@ -95,9 +113,9 @@ App.widgets = App.widgets || {};
     let left = true;
     for (const it of out) {
       const d = wdef(it.id) || it;
-      it.w = clampInt(it.w ?? d.w ?? 10, 1, GRID_COLS_BASE);
+      it.w = clampInt(it.w ?? d.w ?? 10, 1, BASE_COLS);
       it.h = clampInt(it.h ?? d.h ?? 9, 1, 9999);
-      if (it.w >= GRID_COLS_BASE) {
+      if (it.w >= BASE_COLS) {
         it.x = 1;
         it.y = y;
         y += it.h + 1;
@@ -109,7 +127,7 @@ App.widgets = App.widgets || {};
         it.y = y;
         left = false;
       } else {
-        it.x = GRID_COLS_BASE - it.w + 1;
+        it.x = BASE_COLS - it.w + 1;
         it.y = y;
         y += Math.max(rowH, it.h) + 1;
         left = true;
@@ -130,7 +148,8 @@ App.widgets = App.widgets || {};
 
   function saveLocal(profile, layout){
     try{
-      localStorage.setItem(keyForProfile(profile), JSON.stringify(layout));
+      const packed = (layout || []).map(it => ({...it, bc: BASE_COLS}));
+      localStorage.setItem(keyForProfile(profile), JSON.stringify(packed));
     } catch(_) {}
   }
 
@@ -147,7 +166,8 @@ App.widgets = App.widgets || {};
   async function saveToDevice(profile, layout){
     if (!window.App?.api?.postJson) return false;
     try{
-      await App.api.postJson(`/api/ui/layout?profile=${encodeURIComponent(profile)}`, layout);
+      const packed = (layout || []).map(it => ({...it, bc: BASE_COLS}));
+      await App.api.postJson(`/api/ui/layout?profile=${encodeURIComponent(profile)}`, packed);
       return true;
     } catch(_) {
       return false;
@@ -185,18 +205,24 @@ App.widgets = App.widgets || {};
     return App.widgets[id] || { title: id, render:(root)=>{root.innerHTML = `<div class="hint">Widget '${id}' nenalezen.</div>`;}, update:()=>{} };
   }
 
-  function renderCols(){
-    const w = window.innerWidth || 1200;
+  function renderCols(containerWidth){
+    const w = Number(containerWidth) || (window.innerWidth || 1200);
+    // Mobile: single column
     if (w <= 520) return 1;
-    if (w <= 780) return 6;
-    if (w <= 1100) return 12;
-    return 20;
+    // Tablet: keep a sane 12-col grid for readability
+    if (w <= 780) return 12;
+
+    // Desktop: adaptive columns (lets you place 3 widgets side-by-side easily)
+    const MIN_COL_PX = 40;           // smaller => more columns (finer steps)
+    const MIN_COLS = 24;             // ensure 3-up layouts possible
+    const MAX_COLS = BASE_COLS;      // never exceed stored base grid
+    const cols = Math.floor((w + GAP_PX) / MIN_COL_PX);
+    return clampInt(cols, MIN_COLS, MAX_COLS);
   }
 
   function canEdit(cols){
-    // Allow editing also on 12-col responsive layout (typical ~1024px screens).
-    // We keep storing layout in 20-col virtual grid and convert pointer coords accordingly.
-    return (window.innerWidth || 0) > 820 && cols >= 12;
+    // Allow editing on tablet/desktop layouts. (On 1-col mobile it is too fiddly.)
+    return (window.innerWidth || 0) > 640 && cols >= 12;
   }
 
   function rectsOverlap(a,b){
@@ -248,13 +274,13 @@ App.widgets = App.widgets || {};
       if (Math.abs(bottom - itB) <= SNAP_TOL) y = itB - cand.h;
     }
 
-    x = clampInt(x, 1, GRID_COLS_BASE - cand.w + 1);
+    x = clampInt(x, 1, BASE_COLS - cand.w + 1);
     y = clampInt(y, 1, 9999);
     return {...cand, x, y};
   }
 
   function resolveCollision(layout, id, cand){
-    const maxX = GRID_COLS_BASE - cand.w + 1;
+    const maxX = BASE_COLS - cand.w + 1;
     const startY = Math.max(1, cand.y);
     const startX = Math.max(1, Math.min(maxX, cand.x));
 
@@ -266,7 +292,7 @@ App.widgets = App.widgets || {};
       const y = startY + dy;
 
       // scan x starting from startX and wrap
-      for (let dx = 0; dx < GRID_COLS_BASE; dx++) {
+      for (let dx = 0; dx < BASE_COLS; dx++) {
         let x = startX + dx;
         if (x > maxX) x = ((x - 1) % maxX) + 1;
         const probe = {...cand, x, y};
@@ -278,20 +304,25 @@ App.widgets = App.widgets || {};
   }
 
   function toRendered(it, cols){
-    if (cols === GRID_COLS_BASE) return {...it};
-    const scale = cols / GRID_COLS_BASE;
-    let x = Math.round((it.x - 1) * scale) + 1;
-    let w = Math.max(1, Math.round(it.w * scale));
+    if (cols === BASE_COLS) return {...it};
+
+    // Convert stored (base) grid units into rendered grid units.
+    const x = Math.round((it.x - 1) * cols / BASE_COLS) + 1;
+    let w = Math.max(1, Math.round(it.w * cols / BASE_COLS));
+
+    // clamp to rendered bounds
+    let xx = clampInt(x, 1, cols);
     if (w > cols) w = cols;
-    if (x + w - 1 > cols) x = Math.max(1, cols - w + 1);
-    return {...it, x, w};
+    if (xx + w - 1 > cols) xx = Math.max(1, cols - w + 1);
+
+    return {...it, x: xx, w};
   }
 
   // --- UI rendering + interactions ---
   let _hostSelector = '#pageContent';
   let _layout = null;
   let _profile = getProfile();
-  let _cols = renderCols();
+  let _cols = BASE_COLS; // computed in render() once root exists
   let _edit = false;
   let _drag = null;
   let _panelCollapsed = getPanelCollapsed();
@@ -349,7 +380,7 @@ App.widgets = App.widgets || {};
     const root = App.util.$(_hostSelector);
     if (!root) return;
 
-    _cols = renderCols();
+    _cols = renderCols(root.getBoundingClientRect().width);
     const layout = (_layout || []).filter(x=>x && x.id);
     // In edit mode show all widgets (including hidden ones) so the user can re-enable them directly.
     const visibleNow = _edit ? layout : layout.filter(x=>x.on);
@@ -483,19 +514,13 @@ App.widgets = App.widgets || {};
     const cx = Math.floor(xPx / colUnit) + 1;  // 1.._cols
     const cy = Math.floor(yPx / rowUnit) + 1;
 
-    // Convert rendered column (1.._cols) into virtual base grid (1..20)
-    // so edits work even in responsive 12-col mode.
-    const cols = _cols || GRID_COLS_BASE;
-    let xBase;
-    if (cols === GRID_COLS_BASE) {
-      xBase = cx;
-    } else {
-      const scale = GRID_COLS_BASE / cols;
-      xBase = Math.round((cx - 1) * scale) + 1;
-    }
+    // Convert rendered column (1.._cols) into virtual base grid (1..BASE_COLS)
+    // so edits work in responsive layouts.
+    const cols = _cols || BASE_COLS;
+    const xBase = Math.round((cx - 1) * BASE_COLS / cols) + 1;
 
     return {
-      x: clampInt(xBase, 1, GRID_COLS_BASE),
+      x: clampInt(xBase, 1, BASE_COLS),
       y: clampInt(cy, 1, 9999)
     };
   }
@@ -554,7 +579,7 @@ App.widgets = App.widgets || {};
 
     if (_drag.kind === 'move') {
       let cand = {
-        x: clampInt(_drag.startItem.x + dx, 1, GRID_COLS_BASE - it.w + 1),
+        x: clampInt(_drag.startItem.x + dx, 1, BASE_COLS - it.w + 1),
         y: clampInt(_drag.startItem.y + dy, 1, 9999),
         w: it.w,
         h: it.h,
@@ -571,13 +596,13 @@ App.widgets = App.widgets || {};
       let newH = _drag.startItem.h;
 
       if (_drag.kind === 'resize' || _drag.kind === 'resizeR') {
-        newW = clampInt(_drag.startItem.w + dx, 1, GRID_COLS_BASE);
+        newW = clampInt(_drag.startItem.w + dx, 1, BASE_COLS);
       }
       if (_drag.kind === 'resize' || _drag.kind === 'resizeB') {
         newH = clampInt(_drag.startItem.h + dy, 1, 9999);
       }
 
-      if (_drag.startItem.x + newW - 1 > GRID_COLS_BASE) newW = GRID_COLS_BASE - _drag.startItem.x + 1;
+      if (_drag.startItem.x + newW - 1 > BASE_COLS) newW = BASE_COLS - _drag.startItem.x + 1;
 
       let cand = { x: it.x, y: it.y, w: newW, h: newH };
       cand = applySnap(_layout, it.id, cand);
@@ -796,7 +821,8 @@ App.widgets = App.widgets || {};
       }).catch(()=>{});
 
       window.addEventListener('resize', ()=>{
-        const newCols = renderCols();
+        const rr = App.util.$(_hostSelector);
+        const newCols = renderCols(rr ? rr.getBoundingClientRect().width : undefined);
         if (newCols !== _cols) render();
       });
     },

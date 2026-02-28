@@ -1,5 +1,8 @@
 window.App=window.App||{};
 let sse=null;
+let pollTimer=null;
+function startPolling(){ if(pollTimer) return; pollTimer=setInterval(refreshOnce,5000); }
+function stopPolling(){ if(!pollTimer) return; clearInterval(pollTimer); pollTimer=null; }
 let currentPage='dashboard';
 App.state={fast:null,bleStatus:null,configText:null,config:null};
 const PAGE_TITLES={dashboard:'Dashboard',equitherm:'Ekviterm',opentherm:'OpenTherm',heatloss:'Tepelné ztráty',dhw:'Ohřev TUV',recirc:'Cirkulace',aku:'Akumulační nádrž',thermometers:'Teploměry',settings:'Nastavení',ota:'OTA',fileman:'Správce souborů'};
@@ -15,6 +18,46 @@ function fmtUptime(tsMs){
 }
 function updHeader(fast){
 if(!fast) return;
+// RTC / device time (from /api/fast -> n.ti)
+const nt = fast.n || {};
+const timeEl = App.util.$('#hdrTime');
+if(timeEl){
+  const iso = nt.ti || nt.timeIso || null;
+  if(iso){
+    // Display HH:MM:SS (local) + optional source badge
+    const d = new Date(iso);
+    const hh = String(d.getHours()).padStart(2,'0');
+    const mm = String(d.getMinutes()).padStart(2,'0');
+    const ss = String(d.getSeconds()).padStart(2,'0');
+    const src = nt.ts || nt.timeSource || '';
+    timeEl.textContent = `${hh}:${mm}:${ss}${src?` (${src})`:``}`;
+    timeEl.className = 'v ' + ((nt.tv===false)?'warn':'ok');
+  }else{
+    timeEl.textContent = '—';
+    timeEl.className = 'v warn';
+  }
+}
+
+// OpenTherm quick status
+const otEl = App.util.$('#hdrOt');
+if(otEl){
+  const ot = fast.ot || {};
+  let txt = 'off';
+  let cls = 'warn';
+  if(ot.en){
+    if(ot.fl){ txt = 'FAULT'; cls = 'bad'; }
+    else if(ot.rd){
+      // show activity flags compactly
+      const flags = [ot.ca?'CH':'', ot.da?'DHW':'', ot.fo?'🔥':''].filter(Boolean).join(' ');
+      txt = flags ? `OK ${flags}` : 'OK';
+      cls = 'ok';
+    }
+    else { txt = 'init'; cls = 'warn'; }
+  }
+  otEl.textContent = txt;
+  otEl.className = 'v ' + cls;
+}
+
 // Header system status
 App.util.$('#hdrUptime')&&(App.util.$('#hdrUptime').textContent=fmtUptime(fast.ts));
 const ctrl = fast.ctrl==='A' ? 'AUTO' : (fast.ctrl==='M' ? 'MANUAL' : (fast.ctrl||'—'));
@@ -177,6 +220,7 @@ function startSSE(){
         el.textContent=st;
         el.className='v '+(st==='connected'?'ok':(st==='connecting'?'warn':'bad'));
       }
+      if(st==='connected') stopPolling(); else startPolling();
       if(typeof App.onSseState==='function') try{ App.onSseState(st); }catch(_){ }
     }
   );
@@ -188,7 +232,7 @@ async function main(){
   setPage('dashboard');
   await loadBleStatus();
   await refreshOnce();
+  startPolling();
   startSSE();
-  setInterval(refreshOnce,5000);
 }
 document.addEventListener('DOMContentLoaded',main);

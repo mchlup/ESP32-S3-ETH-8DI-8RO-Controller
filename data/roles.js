@@ -5,8 +5,7 @@ App.roles = {
   ROLE_OPTIONS: [
     { v: 'none',       t: '(nepoužito)' },
     { v: 'outdoor',    t: 'Venkovní teplota' },
-    { v: 'flow',       t: 'Topná voda za směšovačem (flow)' },
-    { v: 'boiler_out', t: 'Výstup z kotle' },
+    { v: 'flow',       t: 'Topná voda (výstup z kotle / za směšovačem)' },
     { v: 'return',     t: 'Zpátečka' },
     { v: 'dhw_tank',   t: 'Bojler TUV' },
     { v: 'dhw_return', t: 'Vratka TUV (cirkulace)' },
@@ -29,7 +28,21 @@ App.roles = {
     { topic:'', role:'none', jsonKey:'' },
     { topic:'', role:'none', jsonKey:'' },
   ],
+  // OpenTherm virtual thermometer roles (fixed temperature channels)
+  // Stored in /config.json as: openthermThermometers.{outside|boiler|dhw}.role
+  opentherm: {
+    outside: 'none',
+    boiler:  'none',
+    dhw:     'none',
+  },
   loaded: false,
+
+  normalizeRole(v){
+    v = String(v || '').trim().toLowerCase().replace(/\s+/g,'_').replace(/-/g,'_');
+    while(v.includes('__')) v = v.replace(/__+/g,'_');
+    if (v === 'boiler_out' || v === 'boiler_output') v = 'flow';
+    return v || 'none';
+  },
 
   getTempRoles(){
     return this.tempRoles.slice();
@@ -57,10 +70,23 @@ App.roles = {
       // pokud config neexistuje, začneme prázdným a umožníme vytvoření přes apply
       obj = {};
     }
+    // Legacy compatibility: older firmwares stored some top-level sections under equitherm.*
+    const eqLegacy = (obj && typeof obj.equitherm === "object") ? obj.equitherm : null;
+    if (eqLegacy) {
+      if (obj.ble == null && typeof eqLegacy.ble === "object") obj.ble = eqLegacy.ble;
+      if (obj.bleThermometer == null && typeof eqLegacy.bleThermometer === "object") obj.bleThermometer = eqLegacy.bleThermometer;
+      if (obj.mqttThermometers == null && typeof eqLegacy.mqttThermometers === "object") obj.mqttThermometers = eqLegacy.mqttThermometers;
+      if (obj.tempRoles == null && Array.isArray(eqLegacy.tempRoles)) obj.tempRoles = eqLegacy.tempRoles;
+      if (obj.opentherm == null && typeof eqLegacy.opentherm === "object") obj.opentherm = eqLegacy.opentherm;
+      if (obj.iofunc == null && typeof eqLegacy.iofunc === "object") obj.iofunc = eqLegacy.iofunc;
+      if (obj.dhwRecirc == null && typeof eqLegacy.dhwRecirc === "object") obj.dhwRecirc = eqLegacy.dhwRecirc;
+      if (obj.akuHeater == null && typeof eqLegacy.akuHeater === "object") obj.akuHeater = eqLegacy.akuHeater;
+    }
+
 
     const tr = Array.isArray(obj.tempRoles) ? obj.tempRoles : [];
-    this.tempRoles = Array.from({length:8}).map((_,i) => (tr[i] || 'none'));
-    this.bleRole = obj.bleThermometer?.role || 'outdoor';
+    this.tempRoles = Array.from({length:8}).map((_,i) => this.normalizeRole(tr[i] || 'none'));
+    this.bleRole = this.normalizeRole(obj.bleThermometer?.role || 'outdoor');
     this.bleId = obj.bleThermometer?.id || '';
 
 // BLE receiver config (global)
@@ -83,9 +109,17 @@ this.ble.mesh.preferDirect = (bm.preferDirect != null) ? !!bm.preferDirect : tru
     const mt = Array.isArray(obj.mqttThermometers) ? obj.mqttThermometers : [];
     this.mqtt = [0,1].map((i)=>({
       topic: String(mt[i]?.topic || ''),
-      role:  String(mt[i]?.role || 'none'),
+      role:  this.normalizeRole(mt[i]?.role || 'none'),
       jsonKey: String(mt[i]?.jsonKey || ''),
     }));
+
+    // OpenTherm thermometer roles
+    const ot = (obj.openthermThermometers && typeof obj.openthermThermometers === 'object') ? obj.openthermThermometers : {};
+    const getRole = (k) => this.normalizeRole((ot[k] && typeof ot[k] === 'object') ? (ot[k].role || 'none') : (ot[k] || 'none'));
+    this.opentherm = this.opentherm || {};
+    this.opentherm.outside = getRole('outside');
+    this.opentherm.boiler  = getRole('boiler');
+    this.opentherm.dhw     = getRole('dhw');
 
     App.state.config = obj;
     this.loaded = true;
@@ -109,15 +143,36 @@ obj.ble.mesh.minRelayRssi = Number.isFinite(Number(this.ble?.mesh?.minRelayRssi)
 obj.ble.mesh.preferDirect = (this.ble?.mesh?.preferDirect != null) ? !!this.ble.mesh.preferDirect : true;
 
     obj.bleThermometer = obj.bleThermometer || {};
-    obj.bleThermometer.role = this.bleRole || 'outdoor';
+    obj.bleThermometer.role = this.normalizeRole(this.bleRole || 'outdoor');
     if (this.bleId && this.bleId.trim()) obj.bleThermometer.id = this.bleId.trim();
     else if (obj.bleThermometer.id) delete obj.bleThermometer.id;
 
     obj.mqttThermometers = Array.from({length:2}).map((_,i)=>({
       topic: (this.mqtt?.[i]?.topic || '').trim(),
-      role:  (this.mqtt?.[i]?.role  || 'none').trim(),
+      role:  this.normalizeRole(this.mqtt?.[i]?.role  || 'none'),
       jsonKey: (this.mqtt?.[i]?.jsonKey || '').trim(),
     }));
+
+    // OpenTherm thermometer roles
+    obj.openthermThermometers = obj.openthermThermometers || {};
+    const put = (k, role) => {
+      obj.openthermThermometers[k] = obj.openthermThermometers[k] || {};
+      obj.openthermThermometers[k].role = this.normalizeRole(role || 'none');
+    };
+    put('outside', this.opentherm?.outside);
+    put('boiler',  this.opentherm?.boiler);put('dhw',     this.opentherm?.dhw);
+
+    // Remove legacy duplicates under equitherm.* (keep single source of truth at top-level)
+    if (obj.equitherm && typeof obj.equitherm === "object") {
+      delete obj.equitherm.ble;
+      delete obj.equitherm.bleThermometer;
+      delete obj.equitherm.mqttThermometers;
+      delete obj.equitherm.tempRoles;
+      delete obj.equitherm.opentherm;
+      delete obj.equitherm.iofunc;
+      delete obj.equitherm.dhwRecirc;
+      delete obj.equitherm.akuHeater;
+    }
 
     const json = JSON.stringify(obj, null, 2);
     await App.api.postText('/api/config/apply', json, 'application/json');
