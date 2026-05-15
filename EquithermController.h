@@ -8,7 +8,7 @@
 // - Uses OpenTherm Outside temperature (ID27) and Boiler flow temperature (ID25).
 // - Computes desired heating water temperature from outside temperature
 //   with separate day/night curves and optional weekly schedule.
-// - Can drive a mixing valve (R1/R2 by default) to reach the desired flow temperature.
+// - Can drive a mixing valve (fixed R1=heat/open, R2=cool/close) to reach the desired flow temperature.
 // - Can optionally "assist" the boiler by requesting higher CH setpoint than the target
 //   (useful when mixing valve needs hot water headroom).
 
@@ -75,7 +75,7 @@ struct EquithermConfig {
   uint8_t nightRelayIndex = 5; // 0..7 = R1..R8
   bool nightRelayOnWhenNight = true;
 
-  // Mixing valve relay mapping is fixed by project wiring: R1 = direction A, R2 = direction B.
+  // Mixing valve relay mapping is fixed by project wiring: R1 = heat/open, R2 = cool/close.
   bool mixingEnabled = false;
   uint8_t mixOpenRelayIndex = 0;  // 0..7 = R1..R8
   uint8_t mixCloseRelayIndex = 1; // 0..7 = R1..R8

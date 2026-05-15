@@ -40,6 +40,13 @@ namespace {
   static constexpr uint32_t kMixEffectEvalGraceMs = 5000;
   static constexpr float kMixExpectedTempDeltaC = 0.12f;
   static constexpr uint8_t kMixIneffectivePulseThreshold = 3;
+  static constexpr uint8_t kMixHeatRelayIndex = 0; // R1: přimíchat teplejší vodu / zvýšit teplotu za ventilem
+  static constexpr uint8_t kMixCoolRelayIndex = 1; // R2: zavřít teplou větev / snížit teplotu za ventilem
+  static constexpr uint8_t kDefaultNightRelayIndex = 5; // R6, mimo pevně vyhrazená R1/R2
+
+  static inline bool isMixRelayIndex(uint8_t idx) {
+    return idx == kMixHeatRelayIndex || idx == kMixCoolRelayIndex;
+  }
 
   float s_lastMixFeedbackC = NAN;
   uint32_t s_lastMixFeedbackMs = 0;
@@ -160,10 +167,14 @@ namespace {
     clampFloat(s_cfg.minChSetpointC, 10.0f, 90.0f);
     clampFloat(s_cfg.maxChSetpointC, 10.0f, 90.0f);
     if (s_cfg.minChSetpointC > s_cfg.maxChSetpointC) { float t=s_cfg.minChSetpointC; s_cfg.minChSetpointC=s_cfg.maxChSetpointC; s_cfg.maxChSetpointC=t; }
-    if (s_cfg.nightRelayIndex > 7) s_cfg.nightRelayIndex = 5;
-    // Mixing valve relay mapping is fixed by hardware: R1 = direction A, R2 = direction B.
-    s_cfg.mixOpenRelayIndex = 0;
-    s_cfg.mixCloseRelayIndex = 1;
+    if (s_cfg.nightRelayIndex > 7) s_cfg.nightRelayIndex = kDefaultNightRelayIndex;
+    // Mixing valve relay mapping is fixed by hardware:
+    // R1 heats the after-mix circuit, R2 cools/closes the hot branch.
+    s_cfg.mixOpenRelayIndex = kMixHeatRelayIndex;
+    s_cfg.mixCloseRelayIndex = kMixCoolRelayIndex;
+    if (s_cfg.driveNightRelay && isMixRelayIndex(s_cfg.nightRelayIndex)) {
+      s_cfg.nightRelayIndex = kDefaultNightRelayIndex;
+    }
     clampFloat(s_cfg.mixDeadbandC, 0.1f, 10.0f);
     clampFloat(s_cfg.mixTargetOffsetC, -20.0f, 20.0f);
     if (s_cfg.mixPulseMs < 100) s_cfg.mixPulseMs = 100;
@@ -381,8 +392,8 @@ namespace {
   }
 
   static void mixAllOff() {
-    relaySet(rid(s_cfg.mixOpenRelayIndex), false);
-    relaySet(rid(s_cfg.mixCloseRelayIndex), false);
+    relaySet(rid(kMixHeatRelayIndex), false);
+    relaySet(rid(kMixCoolRelayIndex), false);
   }
 
   static uint32_t mixElapsedMs(uint32_t now) {
@@ -626,12 +637,14 @@ namespace {
     s_mix.forceEndPosition = false;
     if (!ignoreMinInterval && s_mix.lastActMs != 0 && (now - s_mix.lastActMs) < s_cfg.mixMinIntervalMs) return false;
 
-    // Interlock: never allow both directions on.
+    // Interlock: never allow both directions on. Direction is intentionally fixed:
+    // +1 => R1 heats/opens the hot branch when feedback is below target,
+    // -1 => R2 cools/closes it when feedback is above target.
     mixAllOff();
     if (dir > 0) {
-      relaySet(rid(s_cfg.mixOpenRelayIndex), true);
+      relaySet(rid(kMixHeatRelayIndex), true);
     } else {
-      relaySet(rid(s_cfg.mixCloseRelayIndex), true);
+      relaySet(rid(kMixCoolRelayIndex), true);
     }
 
     s_mix.active = true;
@@ -1079,8 +1092,10 @@ namespace {
 
     JsonObject mix = out.createNestedObject("mixing");
     mix["enabled"] = s_cfg.mixingEnabled;
-    mix["openRelay"] = 1;
-    mix["closeRelay"] = 2;
+    mix["openRelay"] = (uint32_t)(kMixHeatRelayIndex + 1);
+    mix["closeRelay"] = (uint32_t)(kMixCoolRelayIndex + 1);
+    mix["heatRelay"] = (uint32_t)(kMixHeatRelayIndex + 1);
+    mix["coolRelay"] = (uint32_t)(kMixCoolRelayIndex + 1);
     mix["deadbandC"] = s_cfg.mixDeadbandC;
     mix["targetOffsetC"] = s_cfg.mixTargetOffsetC;
     mix["pulseMs"] = (uint32_t)s_cfg.mixPulseMs;
@@ -1134,6 +1149,8 @@ namespace {
     outv["lastSendMs"] = (uint32_t)s_st.lastSendMs;
 
     JsonObject mix = out.createNestedObject("mix");
+    mix["heatRelay"] = (uint32_t)(kMixHeatRelayIndex + 1);
+    mix["coolRelay"] = (uint32_t)(kMixCoolRelayIndex + 1);
     mix["state"] = s_st.mixState.length() ? s_st.mixState : "idle";
     mix["pulsing"] = s_st.mixPulsing;
     mix["manual"] = s_st.mixManual;
@@ -1222,6 +1239,8 @@ void equithermFillFastJson(JsonObject& out) {
   if (isfinite(s_st.targetBaseFlowC)) out["tb"] = s_st.targetBaseFlowC; else out["tb"] = nullptr;
   if (isfinite(s_st.targetFlowC)) out["tf"] = s_st.targetFlowC; else out["tf"] = nullptr;
   JsonObject mix = out.createNestedObject("mix");
+  mix["hr"] = (uint32_t)(kMixHeatRelayIndex + 1);
+  mix["cr"] = (uint32_t)(kMixCoolRelayIndex + 1);
   mix["state"] = s_st.mixState.length() ? s_st.mixState : "idle";
   mix["pulsing"] = s_st.mixPulsing;
   mix["manual"] = s_st.mixManual;
@@ -1367,10 +1386,12 @@ static void applyConfigDoc(JsonObjectConst o) {
 
     if (out.containsKey("driveNightRelay")) ConfigStore::setEqDriveNightRelay((bool)(out["driveNightRelay"] | true));
     if (out.containsKey("nightRelay")) {
-      int r = (int)(out["nightRelay"] | 6);
+      int r = (int)(out["nightRelay"] | (int)(kDefaultNightRelayIndex + 1));
       if (r < 1) r = 1;
       if (r > 8) r = 8;
-      ConfigStore::setEqNightRelayIndex((uint8_t)(r - 1));
+      uint8_t idx = (uint8_t)(r - 1);
+      if (isMixRelayIndex(idx)) idx = kDefaultNightRelayIndex;
+      ConfigStore::setEqNightRelayIndex(idx);
     }
     if (out.containsKey("nightRelayOnWhenNight")) ConfigStore::setEqNightRelayOnWhenNight((bool)(out["nightRelayOnWhenNight"] | true));
   }
@@ -1378,13 +1399,13 @@ static void applyConfigDoc(JsonObjectConst o) {
   if (o.containsKey("mixing") && o["mixing"].is<JsonObjectConst>()) {
     JsonObjectConst m = o["mixing"].as<JsonObjectConst>();
     if (m.containsKey("enabled")) ConfigStore::setEqMixingEnabled((bool)(m["enabled"] | false));
-    if (m.containsKey("openRelay")) {
-      // Ignored: relay mapping is fixed by hardware (R1 = direction A).
-      ConfigStore::setEqMixOpenRelayIndex(0);
+    if (m.containsKey("openRelay") || m.containsKey("heatRelay")) {
+      // Ignored: relay mapping is fixed by hardware (R1 = heating/open direction).
+      ConfigStore::setEqMixOpenRelayIndex(kMixHeatRelayIndex);
     }
-    if (m.containsKey("closeRelay")) {
-      // Ignored: relay mapping is fixed by hardware (R2 = direction B).
-      ConfigStore::setEqMixCloseRelayIndex(1);
+    if (m.containsKey("closeRelay") || m.containsKey("coolRelay")) {
+      // Ignored: relay mapping is fixed by hardware (R2 = cooling/close direction).
+      ConfigStore::setEqMixCloseRelayIndex(kMixCoolRelayIndex);
     }
     if (m.containsKey("deadbandC")) ConfigStore::setEqMixDeadbandC(m["deadbandC"].as<float>());
     if (m.containsKey("targetOffsetC")) ConfigStore::setEqMixTargetOffsetC(m["targetOffsetC"].as<float>());

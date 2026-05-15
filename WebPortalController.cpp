@@ -105,6 +105,34 @@ namespace {
   };
 
   FastSectionCache g_fastCache;
+
+  struct ConfigSectionDef {
+    const char* name;
+    size_t postDocCap;
+    const char* rateKey;
+  };
+
+  static constexpr ConfigSectionDef kConfigSections[] = {
+    {"inputs", 1024, "cfg_inputs"},
+    {"opentherm", 2048, "cfg_ot"},
+    {"ble", 1024, "cfg_ble"},
+    {"dallas", 4096, "cfg_dallas"},
+    {"ota", 1024, "cfg_ota"},
+    {"mqtt", 4096, "cfg_mqtt"},
+    {"time", 1024, "cfg_time"},
+    {"equitherm", 4096, "cfg_eq"},
+    {"dhw", 8192, "cfg_dhw"},
+    {"alerts", 1024, "cfg_alerts"},
+  };
+
+  static const ConfigSectionDef* findConfigSection(const char* section) {
+    if (!section || !*section) return nullptr;
+    for (const auto& def : kConfigSections) {
+      if (strcmp(def.name, section) == 0) return &def;
+    }
+    return nullptr;
+  }
+
   static const char* kCollectedHeaders[] = {"Accept-Encoding"};
 
   static const char* getContentType(const String& path) {
@@ -325,7 +353,9 @@ namespace {
   static bool allowAction(const char* key, unsigned long minIntervalMs, uint16_t maxPerWindow, unsigned long windowMs, const char* detailOnBlock) {
     static RateLimitEntry entries[] = {
       {"relay"}, {"config"}, {"reboot"}, {"dhw_cmd"}, {"ot_cmd"}, {"eq_cmd"}, {"ot_scan_start"}, {"ot_scan_stop"},
-      {"ot_data_write"}, {"fs_write"}, {"fs_mkdir"}, {"fs_rename"}, {"fs_delete"}, {"fs_upload"}, {"fw_update"}, {"fs_update"}
+      {"ot_data_write"}, {"cfg_inputs"}, {"cfg_ot"}, {"cfg_ble"}, {"cfg_dallas"}, {"cfg_ota"}, {"cfg_mqtt"},
+      {"cfg_time"}, {"cfg_eq"}, {"cfg_dhw"}, {"cfg_alerts"}, {"cfg_apply"}, {"cfg_import"}, {"cfg_export"},
+      {"fs_write"}, {"fs_mkdir"}, {"fs_rename"}, {"fs_delete"}, {"fs_upload"}, {"fw_update"}, {"fs_update"}
     };
     const unsigned long now = millis();
     for (RateLimitEntry& e : entries) {
@@ -1191,10 +1221,9 @@ namespace {
 
   static void fillConfigDoc(DynamicJsonDocument& doc) {
     doc["ok"] = true;
-    static const char* sections[] = {"inputs","opentherm","ble","dallas","ota","mqtt","time","equitherm","dhw","alerts"};
-    for (size_t i = 0; i < sizeof(sections)/sizeof(sections[0]); ++i) {
-      JsonObject out = doc.createNestedObject(sections[i]);
-      fillConfigSectionObject(String(sections[i]), out);
+    for (const auto& def : kConfigSections) {
+      JsonObject out = doc.createNestedObject(def.name);
+      fillConfigSectionObject(String(def.name), out);
       yield();
     }
   }
@@ -1205,16 +1234,11 @@ namespace {
     DynamicJsonDocument doc(14336);
     fillConfigDoc(doc);
     bool ok = writeJsonVariantToFile("/config.json", doc.as<JsonVariantConst>());
-    ok = writeJsonVariantToFile("/config/equitherm.json", doc["equitherm"].as<JsonVariantConst>()) && ok;
-    ok = writeJsonVariantToFile("/config/opentherm.json", doc["opentherm"].as<JsonVariantConst>()) && ok;
-    ok = writeJsonVariantToFile("/config/dhw.json", doc["dhw"].as<JsonVariantConst>()) && ok;
-    ok = writeJsonVariantToFile("/config/mqtt.json", doc["mqtt"].as<JsonVariantConst>()) && ok;
-    ok = writeJsonVariantToFile("/config/time.json", doc["time"].as<JsonVariantConst>()) && ok;
-    ok = writeJsonVariantToFile("/config/ble.json", doc["ble"].as<JsonVariantConst>()) && ok;
-    ok = writeJsonVariantToFile("/config/ota.json", doc["ota"].as<JsonVariantConst>()) && ok;
-    ok = writeJsonVariantToFile("/config/dallas.json", doc["dallas"].as<JsonVariantConst>()) && ok;
-    ok = writeJsonVariantToFile("/config/inputs.json", doc["inputs"].as<JsonVariantConst>()) && ok;
-    ok = writeJsonVariantToFile("/config/alerts.json", doc["alerts"].as<JsonVariantConst>()) && ok;
+    for (const auto& def : kConfigSections) {
+      const String path = String("/config/") + def.name + ".json";
+      ok = writeJsonVariantToFile(path.c_str(), doc[def.name].as<JsonVariantConst>()) && ok;
+      yield();
+    }
     return ok;
   }
 
@@ -1243,8 +1267,16 @@ namespace {
   }
 
   static void handleConfigSectionGet(const char* section) {
-    DynamicJsonDocument doc(8192);
-    const bool ok = loadConfigSectionLiveOrSnapshot(section, doc);
+    const ConfigSectionDef* def = findConfigSection(section);
+    if (!def) {
+      DynamicJsonDocument err(128);
+      err["ok"] = false;
+      err["err"] = "unknown_section";
+      sendJsonDoc(404, err);
+      return;
+    }
+    DynamicJsonDocument doc(def->postDocCap > 4096 ? def->postDocCap : 4096);
+    const bool ok = loadConfigSectionLiveOrSnapshot(def->name, doc);
     if (!ok) {
       DynamicJsonDocument err(128);
       err["ok"] = false;
@@ -1287,16 +1319,10 @@ namespace {
       applied++;
     };
 
-    applyIfPresent("inputs");
-    applyIfPresent("opentherm");
-    applyIfPresent("ble");
-    applyIfPresent("dallas");
-    applyIfPresent("ota");
-    applyIfPresent("mqtt");
-    applyIfPresent("time");
-    applyIfPresent("equitherm");
-    applyIfPresent("dhw");
-    applyIfPresent("alerts");
+    for (const auto& def : kConfigSections) {
+      applyIfPresent(def.name);
+      yield();
+    }
     return applied;
   }
 
@@ -1329,15 +1355,13 @@ namespace {
       }
     }
 
-    static const char* sections[] = {"inputs","opentherm","ble","dallas","ota","mqtt","time","equitherm","dhw","alerts"};
-    for (size_t i = 0; i < sizeof(sections)/sizeof(sections[0]); ++i) {
-      const char* section = sections[i];
-      const String path = String("/config/") + section + ".json";
-      DynamicJsonDocument sectionDoc(8192);
+    for (const auto& def : kConfigSections) {
+      const String path = String("/config/") + def.name + ".json";
+      DynamicJsonDocument sectionDoc(def.postDocCap > 4096 ? def.postDocCap : 4096);
       if (!loadJsonFileToDoc(path.c_str(), sectionDoc)) continue;
       JsonObjectConst obj = sectionDoc.as<JsonObjectConst>();
       if (obj.isNull()) continue;
-      applySectionByName(String(section), obj);
+      applySectionByName(String(def.name), obj);
       applied++;
       importedAny = true;
       yield();
@@ -1351,28 +1375,50 @@ namespace {
     return applied;
   }
 
-  static void handleSectionPost(const char* rateKey, const char* section, size_t docCap = 4096) {
-    if (rejectActionRateLimit(rateKey, 1000UL, 8, 60000UL, "config_guard")) return;
-    DynamicJsonDocument docIn(docCap);
+  static void handleSectionPost(const char* section) {
+    const ConfigSectionDef* def = findConfigSection(section);
+    if (!def) { writeUploadJson(404, false, "unknown_section"); return; }
+    if (rejectActionRateLimit(def->rateKey, 1000UL, 8, 60000UL, "config_guard")) return;
+    DynamicJsonDocument docIn(def->postDocCap);
     if (deserializeJson(docIn, g_srv.arg("plain"))) { writeUploadJson(400, false, "bad_json"); return; }
     JsonObject root = docIn.as<JsonObject>();
     if (root.isNull()) { writeUploadJson(400, false, "bad_body"); return; }
-    applySectionByName(String(section), root);
+    applySectionByName(String(def->name), root);
     const bool snapshotOk = saveConfigSnapshot();
     DynamicJsonDocument doc(192);
     doc["ok"] = true;
     doc["snapshotSaved"] = snapshotOk;
     if (!snapshotOk) doc["warn"] = "snapshot_failed";
     sendJsonDoc(200, doc);
-    recordAdminAction(rateKey, true, snapshotOk ? "saved" : "saved_no_snapshot");
+    recordAdminAction(def->rateKey, true, snapshotOk ? "saved" : "saved_no_snapshot");
   }
 
   static void handleConfigExport() {
+    if (rejectActionRateLimit("cfg_export", 1000UL, 6, 60000UL, "config_export_guard")) return;
     const bool ok = saveConfigSnapshot();
     DynamicJsonDocument doc(256);
     doc["ok"] = ok;
     doc["msg"] = ok ? "snapshot_saved" : "snapshot_failed";
     sendJsonDoc(ok ? 200 : 500, doc);
+    recordAdminAction("cfg_export", ok, ok ? "snapshot_saved" : "snapshot_failed");
+  }
+
+  static void handleConfigApply() {
+    if (rejectActionRateLimit("cfg_apply", 1000UL, 8, 60000UL, "config_apply_guard")) return;
+    DynamicJsonDocument docIn(16384);
+    if (deserializeJson(docIn, g_srv.arg("plain"))) { writeUploadJson(400, false, "bad_json"); return; }
+    JsonObject root = docIn.as<JsonObject>();
+    if (root.isNull()) { writeUploadJson(400, false, "bad_body"); return; }
+    const size_t applied = applyImportedRootConfig(root);
+    if (!applied) { writeUploadJson(400, false, "no_known_sections"); return; }
+    const bool snapshotOk = saveConfigSnapshot();
+    DynamicJsonDocument doc(256);
+    doc["ok"] = true;
+    doc["appliedSections"] = (uint32_t)applied;
+    doc["snapshotSaved"] = snapshotOk;
+    if (!snapshotOk) doc["warn"] = "snapshot_failed";
+    sendJsonDoc(200, doc);
+    recordAdminAction("cfg_apply", true, snapshotOk ? "applied" : "applied_no_snapshot");
   }
 
   static void handleConfigImport() {
@@ -1393,16 +1439,16 @@ namespace {
     recordAdminAction("cfg_import", true, snapshotOk ? "imported" : "imported_no_snapshot");
   }
 
-  static void handleInputsConfigPost() { handleSectionPost("cfg_inputs", "inputs", 1024); }
-  static void handleEquithermConfigPost() { handleSectionPost("cfg_eq", "equitherm", 4096); }
-  static void handleOpenThermConfigPost() { handleSectionPost("cfg_ot", "opentherm", 2048); }
-  static void handleBleConfigPost() { handleSectionPost("cfg_ble", "ble", 1024); }
-  static void handleOtaConfigPost() { handleSectionPost("cfg_ota", "ota", 1024); }
-  static void handleDhwConfigPost() { handleSectionPost("cfg_dhw", "dhw", 8192); }
-  static void handleDallasConfigPost() { handleSectionPost("cfg_dallas", "dallas", 4096); }
-  static void handleAlertsConfigPost() { handleSectionPost("cfg_alerts", "alerts", 1024); }
-  static void handleMqttConfigPost() { handleSectionPost("cfg_mqtt", "mqtt", 4096); }
-  static void handleTimeConfigPost() { handleSectionPost("cfg_time", "time", 1024); }
+  static void handleInputsConfigPost() { handleSectionPost("inputs"); }
+  static void handleEquithermConfigPost() { handleSectionPost("equitherm"); }
+  static void handleOpenThermConfigPost() { handleSectionPost("opentherm"); }
+  static void handleBleConfigPost() { handleSectionPost("ble"); }
+  static void handleOtaConfigPost() { handleSectionPost("ota"); }
+  static void handleDhwConfigPost() { handleSectionPost("dhw"); }
+  static void handleDallasConfigPost() { handleSectionPost("dallas"); }
+  static void handleAlertsConfigPost() { handleSectionPost("alerts"); }
+  static void handleMqttConfigPost() { handleSectionPost("mqtt"); }
+  static void handleTimeConfigPost() { handleSectionPost("time"); }
 
   static void handleConfigGet() {
     DynamicJsonDocument doc(14336);
@@ -2277,6 +2323,7 @@ void webPortalInit() {
   g_srv.on("/api/fast", HTTP_GET, handleFast);
   g_srv.on("/api/bootstrap", HTTP_GET, handleBootstrap);
   g_srv.on("/api/config", HTTP_GET, handleConfigGet);
+  g_srv.on("/api/config/apply", HTTP_POST, handleConfigApply);
   g_srv.on("/api/config/export", HTTP_POST, handleConfigExport);
   g_srv.on("/api/config/import", HTTP_POST, handleConfigImport);
   g_srv.on("/api/config/inputs", HTTP_GET, handleInputsConfigGet);
