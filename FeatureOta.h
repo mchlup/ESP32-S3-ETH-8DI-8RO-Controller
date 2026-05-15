@@ -3,8 +3,9 @@
 // ---------------------------------------------------------------------------
 // Optional module flag
 //
-// BLE client (NimBLE) for ESP-Meteostanice-Outdoor.
+// Enables Arduino IDE network upload (ArduinoOTA).
+// To disable OTA in the build, comment out this include in Features.h.
 // ---------------------------------------------------------------------------
-#define FEATURE_BLE 1
+#define FEATURE_OTA 1
 
-#include "BleController.h"
+#include "OtaController.h"

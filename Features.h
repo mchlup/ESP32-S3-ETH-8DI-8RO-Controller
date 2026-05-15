@@ -1,54 +1,22 @@
 #pragma once
 
+// Minimal build feature list.
+// Only the modules needed for base functionality are enabled.
 
-// ---------------------------------------------------------------------------
-// Feature switches
-//
-// Comment out a single #include below to completely remove the feature from
-// the build (including all related calls guarded by FEATURE_* macros).
-// ---------------------------------------------------------------------------
+// Network (WiFiManager)
+#include "FeatureNetwork.h"
 
-// --- UI indicators ---
+// OpenTherm boiler communication (read-only polling + discovery)
+#include "FeatureOpenTherm.h"
 
-// RGB status LED (GPIO38)
-#if !defined(DISABLE_RGB_LED)
-  #include "FeatureRgbLed.h"
-#endif
+// BLE client (ESP-Meteostanice-Outdoor)
+#include "FeatureBle.h"
 
-// Buzzer (GPIO46)
-#if !defined(DISABLE_BUZZER)
-  #include "FeatureBuzzer.h"
-#endif
+// Web portal (UI + API)
+#include "FeatureWebPortal.h"
 
-// --- Services / protocols ---
+// Arduino IDE OTA (network upload)
+#include "FeatureOta.h"
 
-// Network (WiFi/Ethernet + time)
-#if !defined(DISABLE_NETWORK)
-  #include "FeatureNetwork.h"
-#endif
-
-// MQTT client
-#if !defined(DISABLE_MQTT)
-  #include "FeatureMqtt.h"
-#endif
-
-// OTA updates (HTTP)
-#if !defined(DISABLE_OTA)
-  #include "FeatureOTA.h"
-#endif
-
-// OpenTherm boiler communication
-#if !defined(DISABLE_OPENTHERM)
-  #include "FeatureOpenTherm.h"
-#include "FeatureHeatLoss.h"
-#endif
-
-// BLE (scanner + outdoor sensor + optional mesh relay)
-#if !defined(DISABLE_BLE)
-  #include "FeatureBle.h"
-#endif
-
-// WebServer (UI + REST API)
-#if !defined(DISABLE_WEBSERVER)
-  #include "FeatureWebServer.h"
-#endif
+// Ekviterm (day/night curves + weekly schedule)
+#include "FeatureEquitherm.h"

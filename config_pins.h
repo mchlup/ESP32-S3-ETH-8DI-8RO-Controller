@@ -41,6 +41,14 @@
 #define DALLAS_IO2_PIN DS18B20_PIN_3
 #define DALLAS_IO3_PIN DS18B20_PIN_4
 
+// Role-specific default busses (requested wiring)
+// - GPIO3: 3x DS18B20 akumulační nádrž (top/mid/bottom)
+// - GPIO2: DS18B20 return (zpátečka do kotle)
+// - GPIO1: DS18B20 dhw_return (zpátečka cirkulace TUV)
+#define DALLAS_TANK_PIN DALLAS_IO3_PIN
+#define DALLAS_RETURN_PIN DALLAS_IO2_PIN
+#define DALLAS_DHW_RETURN_PIN DALLAS_IO1_PIN
+
 // TCA9554 default I2C address on many boards
 #ifndef TCA9554_ADDR
 #define TCA9554_ADDR 0x20

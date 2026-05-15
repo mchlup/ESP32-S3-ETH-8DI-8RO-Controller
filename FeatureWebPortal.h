@@ -3,8 +3,8 @@
 // ---------------------------------------------------------------------------
 // Optional module flag
 //
-// BLE client (NimBLE) for ESP-Meteostanice-Outdoor.
+// Minimal Web Portal (HTTP server + simple UI + JSON API).
 // ---------------------------------------------------------------------------
-#define FEATURE_BLE 1
+#define FEATURE_WEBPORTAL 1
 
-#include "BleController.h"
+#include "WebPortalController.h"
