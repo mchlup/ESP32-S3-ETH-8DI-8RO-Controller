@@ -49,7 +49,7 @@ namespace {
 
   static constexpr size_t kFsReadChunkDefault = 4096;
   static constexpr size_t kFsReadChunkMax = 32768;
-  static constexpr bool kServePrecompressedAssets = false;
+  static constexpr bool kServePrecompressedAssets = true;
   static constexpr size_t kActionLogCapacity = 16;
   static constexpr unsigned long kActionLogRetentionMs = 15UL * 60UL * 1000UL;
 
@@ -127,6 +127,8 @@ namespace {
   }
 
   static bool isValidGzipFile(const String& path) {
+    // Validate precompressed LittleFS assets only once per request candidate.
+    // A bad .gz served with Content-Encoding would break the whole UI load.
     File f = LittleFS.open(path, "r");
     if (!f) return false;
     const int b0 = f.read();
@@ -363,87 +365,131 @@ namespace {
     return out;
   }
 
+  static void fillFastWsStateObject(JsonObject out) {
+    JsonObject sys = out.createNestedObject("sys");
+    const bool wifiOk = networkIsWifiConnected();
+    const bool ethOk = networkIsEthernetConnected();
+    const String ip = getBestIpString();
+
+    sys["wifi"] = wifiOk;
+    sys["eth"] = ethOk;
+    sys["ip"] = ip;
+    const int rssi = wifiOk ? WiFi.RSSI() : 0;
+    if (wifiOk) sys["rssi"] = rssi; else sys["rssi"] = nullptr;
+
+    // Backward-compatible root aliases used by older UI code.
+    out["wifi"] = wifiOk;
+    out["eth"] = ethOk;
+    out["ip"] = ip;
+    if (wifiOk) out["rssi"] = rssi; else out["rssi"] = nullptr;
+
+    JsonObject temps = out.createNestedObject("temps");
+    fillTemps(temps);
+
+    JsonObject rel = out.createNestedObject("rel");
+    rel["mask"] = relayGetMask();
+    rel["ok"] = relayIsOk();
+    rel["i2cErr"] = relayGetI2cErrorCount();
+    rel["i2cRec"] = relayGetI2cRecoveryCount();
+
+    JsonObject in = out.createNestedObject("in");
+    fillInputs(in);
+
+    JsonObject ot = out.createNestedObject("ot");
+    openthermFillFastJson(ot);
+
+    JsonObject ble = out.createNestedObject("ble");
+    bleFillFastJson(ble);
+
+    JsonObject ota = out.createNestedObject("ota");
+    otaFillFastJson(ota);
+    JsonObject upload = ota.createNestedObject("upload");
+    JsonObject fw = upload.createNestedObject("fw");
+    fillUploadJson(fw, g_fwUpload);
+    JsonObject fs = upload.createNestedObject("fs");
+    fillUploadJson(fs, g_fsImageUpload);
+
+    JsonObject time = out.createNestedObject("time");
+    time["valid"] = networkIsTimeValid();
+    time["src"] = networkGetTimeSource();
+    if (networkIsTimeValid()) time["epochMin"] = (uint32_t)(millis() / 60000UL);
+    else time["epochMin"] = nullptr;
+
+    JsonObject eq = out.createNestedObject("eq");
+    equithermFillFastJson(eq);
+
+    JsonObject dhw = out.createNestedObject("dhw");
+    dhwFillFastJson(dhw);
+
+    JsonObject alerts = out.createNestedObject("alerts");
+    pressureAlarmFillFastJson(alerts);
+  }
+
+  static String serializeJsonVariant(JsonVariantConst value) {
+    String out;
+    serializeJson(value, out);
+    return out;
+  }
+
   static String buildFastWsFrame(bool forceFull) {
-    const String sysStr = serializeJsonObject([](JsonObject& obj){
-      obj["wifi"] = networkIsWifiConnected();
-      obj["eth"] = networkIsEthernetConnected();
-      obj["ip"] = getBestIpString();
-      if (networkIsWifiConnected()) obj["rssi"] = WiFi.RSSI(); else obj["rssi"] = nullptr;
-    }, 192);
-    const String tempsStr = serializeJsonObject([](JsonObject& obj){ fillTemps(obj); }, 768);
-    const String relStr = serializeJsonObject([](JsonObject& obj){ obj["mask"] = relayGetMask(); obj["ok"] = relayIsOk(); obj["i2cErr"] = relayGetI2cErrorCount(); obj["i2cRec"] = relayGetI2cRecoveryCount(); }, 256);
-    const String inStr = serializeJsonObject([](JsonObject& obj){ fillInputs(obj); }, 256);
-    const String otStr = serializeJsonObject([](JsonObject& obj){ openthermFillFastJson(obj); }, 768);
-    const String bleStr = serializeJsonObject([](JsonObject& obj){ bleFillFastJson(obj); }, 256);
-    const String otaStr = serializeJsonObject([](JsonObject& obj){ otaFillFastJson(obj); JsonObject up = obj.createNestedObject("upload"); JsonObject fw = up.createNestedObject("fw"); fillUploadJson(fw, g_fwUpload); JsonObject fs = up.createNestedObject("fs"); fillUploadJson(fs, g_fsImageUpload); }, 768);
-    const String timeStr = serializeJsonObject([](JsonObject& obj){
-      obj["valid"] = networkIsTimeValid();
-      obj["src"] = networkGetTimeSource();
-      if (networkIsTimeValid()) obj["epochMin"] = (uint32_t)(millis() / 60000UL);
-      else obj["epochMin"] = nullptr;
-    }, 192);
-    const String eqStr = serializeJsonObject([](JsonObject& obj){ equithermFillFastJson(obj); }, 768);
-    const String dhwStr = serializeJsonObject([](JsonObject& obj){ dhwFillFastJson(obj); }, 768);
-    const String alertsStr = serializeJsonObject([](JsonObject& obj){ pressureAlarmFillFastJson(obj); }, 256);
+    // Build the current fast snapshot once and reuse its JsonVariant values for
+    // the outgoing WebSocket frame. The previous version serialized each
+    // section into a String and then parsed it back into another JSON document;
+    // avoiding that parse cycle reduces heap churn and CPU load on ESP32.
+    DynamicJsonDocument curDoc(4096);
+    JsonObject cur = curDoc.to<JsonObject>();
+    fillFastWsStateObject(cur);
+
+    const String sysStr = serializeJsonVariant(cur["sys"]);
+    const String tempsStr = serializeJsonVariant(cur["temps"]);
+    const String relStr = serializeJsonVariant(cur["rel"]);
+    const String inStr = serializeJsonVariant(cur["in"]);
+    const String otStr = serializeJsonVariant(cur["ot"]);
+    const String bleStr = serializeJsonVariant(cur["ble"]);
+    const String otaStr = serializeJsonVariant(cur["ota"]);
+    const String timeStr = serializeJsonVariant(cur["time"]);
+    const String eqStr = serializeJsonVariant(cur["eq"]);
+    const String dhwStr = serializeJsonVariant(cur["dhw"]);
+    const String alertsStr = serializeJsonVariant(cur["alerts"]);
 
     DynamicJsonDocument doc(4096);
     doc["seq"] = ++g_fastCache.seq;
-    auto parseInto = [&](JsonObject dst, const String& src, size_t cap){ DynamicJsonDocument t(cap); if (!deserializeJson(t, src)) dst.set(t.as<JsonObjectConst>()); };
     if (forceFull || !g_fastCache.primed) {
       doc["type"] = "fast_full";
-      JsonObject data = doc.createNestedObject("data");
-      parseInto(data.createNestedObject("sys"), sysStr, 192);
-      DynamicJsonDocument ts(192);
-      if (!deserializeJson(ts, sysStr)) {
-        JsonObjectConst so = ts.as<JsonObjectConst>();
-        for (JsonPairConst kv : so) data[kv.key()] = kv.value();
-      }
-      parseInto(data.createNestedObject("temps"), tempsStr, 768);
-      parseInto(data.createNestedObject("rel"), relStr, 256);
-      parseInto(data.createNestedObject("in"), inStr, 256);
-      parseInto(data.createNestedObject("ot"), otStr, 768);
-      parseInto(data.createNestedObject("ble"), bleStr, 256);
-      parseInto(data.createNestedObject("ota"), otaStr, 1024);
-      parseInto(data.createNestedObject("time"), timeStr, 192);
-      parseInto(data.createNestedObject("eq"), eqStr, 1024);
-      parseInto(data.createNestedObject("dhw"), dhwStr, 768);
-      parseInto(data.createNestedObject("alerts"), alertsStr, 256);
+      doc.createNestedObject("data").set(cur);
       g_fastCache = {sysStr, tempsStr, relStr, inStr, otStr, bleStr, otaStr, timeStr, eqStr, dhwStr, alertsStr, true, g_fastCache.seq};
     } else {
       JsonObject changed = doc.createNestedObject("changed");
-      auto maybe = [&](const char* key, String& prev, const String& cur, size_t cap){
-        if (prev != cur) {
-          DynamicJsonDocument t(cap);
-          if (!deserializeJson(t, cur)) changed[key] = t.as<JsonVariant>();
-          prev = cur;
+      auto maybe = [&](const char* key, String& prev, const String& curSerialized){
+        if (prev != curSerialized) {
+          changed[key].set(cur[key].as<JsonVariantConst>());
+          prev = curSerialized;
         }
       };
       doc["type"] = "fast_patch";
-      maybe("temps", g_fastCache.temps, tempsStr, 768);
-      maybe("rel", g_fastCache.rel, relStr, 256);
-      maybe("in", g_fastCache.in, inStr, 256);
-      maybe("ot", g_fastCache.ot, otStr, 768);
-      maybe("ble", g_fastCache.ble, bleStr, 256);
-      maybe("ota", g_fastCache.ota, otaStr, 1024);
-      maybe("time", g_fastCache.time, timeStr, 192);
-      maybe("eq", g_fastCache.eq, eqStr, 1024);
-      maybe("dhw", g_fastCache.dhw, dhwStr, 768);
-      maybe("alerts", g_fastCache.alerts, alertsStr, 256);
+      maybe("temps", g_fastCache.temps, tempsStr);
+      maybe("rel", g_fastCache.rel, relStr);
+      maybe("in", g_fastCache.in, inStr);
+      maybe("ot", g_fastCache.ot, otStr);
+      maybe("ble", g_fastCache.ble, bleStr);
+      maybe("ota", g_fastCache.ota, otaStr);
+      maybe("time", g_fastCache.time, timeStr);
+      maybe("eq", g_fastCache.eq, eqStr);
+      maybe("dhw", g_fastCache.dhw, dhwStr);
+      maybe("alerts", g_fastCache.alerts, alertsStr);
       if (g_fastCache.sys != sysStr) {
-        DynamicJsonDocument t(192);
-        if (!deserializeJson(t, sysStr)) {
-          JsonObjectConst o = t.as<JsonObjectConst>();
-          JsonObject sys = changed.createNestedObject("sys");
-          for (JsonPairConst kv : o) {
-            changed[kv.key()] = kv.value();
-            sys[kv.key()] = kv.value();
-          }
-        }
+        changed["wifi"] = cur["wifi"];
+        changed["eth"] = cur["eth"];
+        changed["ip"] = cur["ip"];
+        changed["rssi"] = cur["rssi"];
+        changed["sys"].set(cur["sys"].as<JsonVariantConst>());
         g_fastCache.sys = sysStr;
       }
       if (changed.size() == 0) return String();
     }
-    String out; serializeJson(doc, out); return out;
+    String out;
+    serializeJson(doc, out);
+    return out;
   }
 
   static bool removeFsEntryRecursive(const String& path) {
