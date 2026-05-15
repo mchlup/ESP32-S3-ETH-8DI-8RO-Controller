@@ -14,6 +14,26 @@ static constexpr uint8_t REG_CFG    = 0x03;
 static bool s_ok = false;
 static uint8_t s_mask = 0x00; // logical ON bits (bit0=R1 ... bit7=R8)
 
+// Safety interlock: configured mixing valve relays must never be ON at the same time.
+// Default remains R1/R2, but Equitherm can remap the pair.
+static uint8_t s_mixInterlockOpenIdx = 0;
+static uint8_t s_mixInterlockCloseIdx = 1;
+
+static inline void applyMixingInterlock(uint8_t& logicalMask) {
+  if (s_mixInterlockOpenIdx >= RELAY_COUNT || s_mixInterlockCloseIdx >= RELAY_COUNT) return;
+  if (s_mixInterlockOpenIdx == s_mixInterlockCloseIdx) return;
+
+  const uint8_t openBit = (uint8_t)(1U << s_mixInterlockOpenIdx);
+  const uint8_t closeBit = (uint8_t)(1U << s_mixInterlockCloseIdx);
+  const uint8_t bothBits = (uint8_t)(openBit | closeBit);
+  if ((logicalMask & bothBits) == bothBits) {
+    logicalMask &= (uint8_t)~bothBits;
+    LOGW("RELAY interlock: R%u+R%u requested -> forcing OFF",
+         (unsigned)(s_mixInterlockOpenIdx + 1),
+         (unsigned)(s_mixInterlockCloseIdx + 1));
+  }
+}
+
 // ---- Non-blocking apply state ----
 static bool     s_applyPending = false;
 static uint8_t  s_pendingMask  = 0x00;
@@ -201,6 +221,8 @@ void relaySet(RelayId id, bool on) {
   if (on) s_mask |= bit;
   else    s_mask &= (uint8_t)~bit;
 
+  applyMixingInterlock(s_mask);
+
   scheduleApply(s_mask);
   processPending(millis());
 }
@@ -222,12 +244,26 @@ void relayAllOn() {
   relaySetMask(0xFF);
 }
 
+void relaySetMixingInterlockRelays(uint8_t openRelayIndex, uint8_t closeRelayIndex) {
+  if (openRelayIndex >= RELAY_COUNT) openRelayIndex = 0;
+  if (closeRelayIndex >= RELAY_COUNT) closeRelayIndex = 1;
+  if (openRelayIndex == closeRelayIndex) closeRelayIndex = (openRelayIndex == 0 ? 1 : 0);
+
+  s_mixInterlockOpenIdx = openRelayIndex;
+  s_mixInterlockCloseIdx = closeRelayIndex;
+
+  applyMixingInterlock(s_mask);
+  scheduleApply(s_mask);
+  processPending(millis());
+}
+
 uint8_t relayGetMask() {
   return s_mask;
 }
 
 void relaySetMask(uint8_t mask) {
   s_mask = mask;
+  applyMixingInterlock(s_mask);
   scheduleApply(s_mask);
   processPending(millis());
 }

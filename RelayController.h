@@ -29,6 +29,10 @@ void relaySetMask(uint8_t mask);
 void relayAllOff();
 void relayAllOn();
 
+// Configurable safety interlock for mixing valve outputs.
+// Indices are 0..7 (= R1..R8). Passing 0,1 keeps the legacy default R1/R2.
+void relaySetMixingInterlockRelays(uint8_t openRelayIndex, uint8_t closeRelayIndex);
+
 // !!! DŮLEŽITÉ: Print& (ne Stream&) – kvůli LogicController / .ino
 void relayPrintStates(Print& out);
 
