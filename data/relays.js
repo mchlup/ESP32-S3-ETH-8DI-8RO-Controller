@@ -4,10 +4,10 @@ const RELAY_LABELS = [
   'Směšovací ventil A (OPEN)',
   'Směšovací ventil B (CLOSE)',
   'TUV ventil (přepínací)',
-  'Rezerva',
+  'Cirkulace TUV',
   'Požadavek kotle: TUV',
   'Křivka: den / noc',
-  'Cirkulace TUV',
+  'Omezení výkonu kotle',
   'Topná tyč AKU',
 ];
 
@@ -17,8 +17,10 @@ function relayBitmaskToBool(mask, idx){
 }
 
 async function relayCmd(id, cmd){
-  // Server expects query args even for POST; body can be empty
-  await App.api.postJson(`/api/relay?id=${id}&cmd=${cmd}`, {});
+  const payload = { id:Number(id) };
+  if(cmd === 'toggle') payload.toggle = true;
+  else payload.on = cmd === 'on';
+  await App.api.postJson('/api/relay', payload);
 }
 
 App.registerWidget({
@@ -27,7 +29,7 @@ App.registerWidget({
   defaultSpan:6,
   render(card){
     card.innerHTML = `
-      <div class="hint">Popisky odpovídají pevné HW konfiguraci ve firmwaru (R4 je rezerva).</div>
+      <div class="hint">Popisky odpovídají pevné HW konfiguraci ve firmwaru.</div>
       <div class="relays" id="relaysGrid"></div>
     `;
     const grid = card.querySelector('#relaysGrid');
@@ -52,6 +54,12 @@ App.registerWidget({
           <button class="btn" data-tgl>Toggle</button>
         </div>
       `;
+      if(i === 7){
+        tile.querySelector('[data-on]').disabled = true;
+        tile.querySelector('[data-tgl]').disabled = true;
+        tile.querySelector('[data-on]').title = 'R8 topná tyč vyžaduje servisní bezpečnostní příkaz';
+        tile.querySelector('[data-tgl]').title = 'R8 topná tyč vyžaduje servisní bezpečnostní příkaz';
+      }
       tile.querySelector('[data-on]').onclick = ()=>relayCmd(i+1,'on');
       tile.querySelector('[data-off]').onclick = ()=>relayCmd(i+1,'off');
       tile.querySelector('[data-tgl]').onclick = ()=>relayCmd(i+1,'toggle');

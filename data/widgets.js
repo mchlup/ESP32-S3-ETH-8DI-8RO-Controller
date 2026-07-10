@@ -1,7 +1,7 @@
 window.App=window.App||{};
 const RELAY_LABELS=[
-"Směšovací ventil A (OPEN)","Směšovací ventil B (CLOSE)","TUV ventil (přepínací)","Rezerva",
-"Požadavek kotle: TUV","Křivka: den / noc","Cirkulace TUV","Topná tyč AKU"
+"Směšovací ventil A (OPEN)","Směšovací ventil B (CLOSE)","TUV ventil (přepínací)","Cirkulace TUV",
+"Požadavek kotle: TUV","Křivka: den / noc","Omezení výkonu kotle","Topná tyč AKU"
 ];
 const INPUT_LABELS=["Požadavek TUV","Den / noc","Požadavek cirkulace","Volné","Volné","Volné","Volné","Volné"];
 function fmtUptime(ts){if(ts==null) return '—';const sec=Math.floor(Number(ts)/1000);const d=Math.floor(sec/86400);const h=Math.floor((sec%86400)/3600);const m=Math.floor((sec%3600)/60);const s=sec%60;return (d?`${d}d `:'')+`${h}h ${m}m ${s}s`;}
@@ -24,11 +24,10 @@ App.dashboard.register({
 App.dashboard.register({
  id:'relays',
  title:'Relé',
- render(){let h='<div class="hint">Popisky odpovídají pevné HW konfiguraci ve firmwaru (R4 je rezerva).</div><div class="relays" id="w_relays"></div><div class="row"><button class="btn" id="allOff">Vše OFF</button><button class="btn" id="allOn">Vše ON</button></div>';return h;},
- update(f){if(!f) return;const root=App.util.$('#w_relays');if(!root) return;const on=bits(f.r);root.innerHTML='';for(let i=0;i<8;i++){const label=RELAY_LABELS[i]||'';const isFixed=!!label&&label!=='Rezerva';const tile=document.createElement('div');tile.className='tile';tile.innerHTML=`<div class="t"><div class="head"><div class="id"><b>R${i+1}</b></div><div class="desc">${esc(label)}</div></div><div class="badges">${isFixed?'<div class="badge fixed">FIXED</div>':''}<div class="badge ${on[i]?'on':'off'}">${on[i]?'ON':'OFF'}</div></div></div><div class="row"><button class="btn" data-id="${i+1}" data-cmd="on">ON</button><button class="btn" data-id="${i+1}" data-cmd="off">OFF</button><button class="btn" data-id="${i+1}" data-cmd="toggle">Toggle</button></div>`;root.appendChild(tile);} 
- root.querySelectorAll('button[data-id]').forEach(b=>b.onclick=async()=>{try{await App.api.getJson(`/api/relay?id=${b.dataset.id}&cmd=${b.dataset.cmd}`);}catch(e){App.util.$('#s_hint')&&(App.util.$('#s_hint').textContent=`Chyba relé: ${e.message}`);}});
- App.util.$('#allOff')&&( App.util.$('#allOff').onclick=()=>App.api.getJson('/api/relay_all?cmd=off').catch(()=>{}) );
- App.util.$('#allOn')&&( App.util.$('#allOn').onclick=()=>App.api.getJson('/api/relay_all?cmd=on').catch(()=>{}) );
+ render(){let h='<div class="hint">Popisky odpovídají pevné HW konfiguraci ve firmwaru.</div><div class="relays" id="w_relays"></div><div class="row"><button class="btn danger" id="allOff">Bezpečně zastavit</button></div>';return h;},
+ update(f){if(!f) return;const root=App.util.$('#w_relays');if(!root) return;const on=bits(f.r);root.innerHTML='';for(let i=0;i<8;i++){const label=RELAY_LABELS[i]||'';const isFixed=!!label;const tile=document.createElement('div');tile.className='tile';tile.innerHTML=`<div class="t"><div class="head"><div class="id"><b>R${i+1}</b></div><div class="desc">${esc(label)}</div></div><div class="badges">${isFixed?'<div class="badge fixed">FIXED</div>':''}<div class="badge ${on[i]?'on':'off'}">${on[i]?'ON':'OFF'}</div></div></div><div class="row"><button class="btn" data-id="${i+1}" data-cmd="on">ON</button><button class="btn" data-id="${i+1}" data-cmd="off">OFF</button><button class="btn" data-id="${i+1}" data-cmd="toggle">Toggle</button></div>`;root.appendChild(tile);} 
+ root.querySelectorAll('button[data-id]').forEach(b=>{if(Number(b.dataset.id)===8 && b.dataset.cmd!=='off') b.disabled=true;b.onclick=async()=>{try{const id=Number(b.dataset.id);const cmd=b.dataset.cmd;const payload={id};if(cmd==='toggle') payload.toggle=true;else payload.on=cmd==='on';await App.api.postJson('/api/relay',payload);}catch(e){App.util.$('#s_hint')&&(App.util.$('#s_hint').textContent=`Chyba relé: ${e.message}`);}}});
+ App.util.$('#allOff')&&( App.util.$('#allOff').onclick=()=>App.api.postJson('/api/system/cmd',{command:'safeStop'}).catch(()=>{}) );
  }
 });
 

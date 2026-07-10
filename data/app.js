@@ -13,6 +13,7 @@
       source: "device", // fixed (device)
       apiBase: localStorage.getItem("ui2026_apiBase") || "",
       dev: {},
+      system: { uptimeSec: null },
       fast: {},
       eqFast: {},
       dhwFast: {},
@@ -304,10 +305,10 @@
       const last = state.last || {};
       const now = Date.now();
       const temps = (state.fast && typeof state.fast.temps === "object") ? state.fast.temps : {};
-      const out = firstFinite(roleValueFromFast("outside", temps), state?.ot?.outsideTempC, state?.bleFast?.t, last?.out, 0);
-      const ch = firstFinite(roleValueFromFast("flow", temps), state?.ot?.chTemp, last?.ch, 0);
-      const dhw = firstFinite(roleValueFromFast("dhw_tank", temps), state?.ot?.dhwTemp, last?.dhw, 0);
-      const pr = firstFinite(state?.ot?.pressure, last?.pr, 0);
+      const out = firstFinite(roleValueFromFast("outside", temps), state?.ot?.outsideTempC, state?.bleFast?.t, last?.out);
+      const ch = firstFinite(roleValueFromFast("flow", temps), state?.ot?.chTemp, last?.ch);
+      const dhw = firstFinite(roleValueFromFast("dhw_tank", temps), state?.ot?.dhwTemp, last?.dhw);
+      const pr = firstFinite(state?.ot?.pressure, last?.pr);
       const afterMix = firstFinite(getAfterMixTempFromTemps(temps), last?.mixAfter, state?.accu?.after, state?.ot?.returnTempC, ch);
       return {
         now,
@@ -1762,6 +1763,10 @@ async function thermoSave(){
 
       async dhwCmd(obj){
         return await api.postJson("/api/dhw/cmd", obj ?? {}, 6000);
+      },
+
+      async systemCmd(obj){
+        return await api.postJson("/api/system/cmd", obj ?? {}, 8000);
       },
 
       async reboot(){
@@ -3247,6 +3252,11 @@ async function serviceIoCall(payload){
       // Fast root/system snapshot
       state.dev = state.dev || {};
       if(fast.ip != null) state.dev.ip = String(fast.ip);
+      const uptimeSec = firstFinite(fast?.system?.uptimeSec, fast?.sys?.uptimeSec, Number.isFinite(Number(fast?.ms)) ? Number(fast.ms) / 1000 : NaN);
+      if(Number.isFinite(uptimeSec)){
+        state.system = state.system || {};
+        state.system.uptimeSec = Math.max(0, Math.floor(uptimeSec));
+      }
       if(fast.rel && typeof fast.rel === "object" && hasOwn(fast.rel, "mask")){
         const mask = Number(fast.rel.mask) & 0xFF;
         state.dev.relMask = mask;
@@ -3365,17 +3375,21 @@ async function serviceIoCall(payload){
       for(let i=0;i<8;i++){
         const on = !!state.io.relays[i];
         const managedByDhw = [2,3,4].includes(i);
+        const protectedOutput = i === 7;
+        const blocked = managedByDhw || protectedOutput;
+        const blockTitle = managedByDhw ? "Použijte ovládání TUV/Cirkulace" : (protectedOutput ? "R8 topná tyč vyžaduje servisní bezpečnostní příkaz" : "");
+        const actionLabel = blocked ? (managedByDhw ? "Řízeno" : "Blokováno") : (on ? "Vypnout" : "Zapnout");
         const tr = document.createElement("tr");
         tr.innerHTML = `
           <td class="mono">R${i+1}</td>
-          <td><strong>${escapeHtml(relayNames[i])}</strong>${managedByDhw ? '<div class="muted" style="margin-top:4px">řízeno funkcemi TUV / cirkulace</div>' : ''}</td>
+          <td><strong>${escapeHtml(relayNames[i])}</strong>${managedByDhw ? '<div class="muted" style="margin-top:4px">řízeno funkcemi TUV / cirkulace</div>' : ''}${protectedOutput ? '<div class="muted" style="margin-top:4px">chráněný výkonový výstup</div>' : ''}</td>
           <td>${on ? '<span class="badge good"><span class="b"></span>ON</span>' : '<span class="badge"><span class="b"></span>OFF</span>'}</td>
           <td>
-            <button class="btn" data-relay="${i}" ${managedByDhw ? 'disabled title="Použijte ovládání TUV/Cirkulace"' : ''}>${managedByDhw ? "Řízeno" : (on ? "Vypnout" : "Zapnout")}</button>
+            <button class="btn" data-relay="${i}" ${blocked ? `disabled title="${escapeHtml(blockTitle)}"` : ''}>${actionLabel}</button>
           </td>
         `;
         const relayBtn = tr.querySelector("button");
-        if(!managedByDhw) relayBtn.addEventListener("click", async () => {
+        if(!blocked) relayBtn.addEventListener("click", async () => {
           try{
             const resp = await api.setRelay(i+1, null);
             const mask = Number(resp?.rel?.mask ?? resp?.fast?.rel?.mask ?? state.dev?.relMask ?? 0) & 0xFF;
@@ -3486,6 +3500,25 @@ async function serviceIoCall(payload){
       setBadge("#bDhwOtMode", active ? "warn" : "", `Kotel TUV přes OT: ${active ? "ANO" : "NE"}`);
     }
 
+    function evaluateHealth(){
+      const critical = [];
+      const warnings = [];
+      const relMask = Number(state.dev?.relMask ?? state.fast?.rel?.mask ?? 0) & 0xFF;
+      if((relMask & 0x03) === 0x03) critical.push("R1+R2");
+      if(state.alerts?.pressure?.active) critical.push("tlak");
+      if(state.ot?.enabled && state.ot?.fault) critical.push("OpenTherm");
+      if(state.fast?.rel?.ok === false) warnings.push("relé/I2C");
+      if(state.ot?.enabled && !state.ot?.comm && !state.ot?.fault) warnings.push("OpenTherm komunikace");
+      const lastFastOkMs = Number(state.net?.lastFastOkMs);
+      if(Number.isFinite(lastFastOkMs) && Date.now() - lastFastOkMs > 60000) warnings.push("stará data");
+      const mixState = String(state.eqFast?.mix?.state || state.eqFast?.mix?.st || "").toLowerCase();
+      if(/^fault_/.test(mixState) || /^blocked_/.test(mixState)) warnings.push("směšovací ventil");
+
+      if(critical.length) return { level:"bad", label:"PORUCHA", details:critical.join(", ") };
+      if(warnings.length) return { level:"warn", label:"POZOR", details:warnings.join(", ") };
+      return { level:"good", label:"OK", details:"" };
+    }
+
     function renderOverviewBadges(){
       const audit = getEquithermAuditState();
       const dn = heatingModeLabel(audit.modeEff || "day");
@@ -3529,11 +3562,10 @@ async function serviceIoCall(payload){
       setText("#sumCirc", `Požadavek: ${circReq ? "ano" : "ne"} • relé: ${circOn ? "ON" : "OFF"}${state.circPulse.enable ? ` • pulz: ${circPulseOn ? "ON" : "OFF"}` : ""}`);
 
       // overall badge
-      const ok = true;
-      $("#bOverall").classList.toggle("good", ok);
-      $("#bOverall").classList.toggle("warn", !ok);
-      $("#bOverall").childNodes.forEach(n=>{ if(n.nodeType===3) n.remove(); });
-      $("#bOverall").appendChild(document.createTextNode(" " + (ok ? "OK" : "POZOR")));
+      const health = evaluateHealth();
+      setBadge("#bOverall", health.level, health.label);
+      const overall = $("#bOverall");
+      if(overall) overall.title = health.details ? `Důvod: ${health.details}` : "Bez aktivních varování";
     }
 
     function pushHistory(key, value){
@@ -3815,15 +3847,19 @@ async function serviceIoCall(payload){
       $("#sbDevice").textContent = ip + " • device";
     }
 
-    // Uptime (client session)
-    const startMs = Date.now();
-    function uptimeString(){
-      const s = Math.floor((Date.now() - startMs)/1000);
+    function formatDurationSec(value){
+      const s = Math.max(0, Math.floor(Number(value)));
+      if(!Number.isFinite(s)) return "--";
       const d = Math.floor(s/86400);
       const h = Math.floor((s%86400)/3600);
       const m = Math.floor((s%3600)/60);
       const ss = s%60;
       return `${d}d ${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;
+    }
+
+    function uptimeString(){
+      const uptimeSec = Number(state.system?.uptimeSec);
+      return Number.isFinite(uptimeSec) ? formatDurationSec(uptimeSec) : "--";
     }
 
     
@@ -3878,11 +3914,11 @@ async function serviceIoCall(payload){
       state.dev = state.dev || {};
       state.dev.dhwCfgLoaded = false;
       state.dev.dhwCfgRaw = Object.assign({}, state.dev.dhwCfgRaw || {}, { heat: Object.assign({}, state.dev?.dhwCfgRaw?.heat || {}, { requestMode, targetTempC, otEnableDhw: requestMode === "opentherm", otDhwSetpointC: targetTempC }) });
-      await api.dhwCmd({ heatActive: true });
+      await api.dhwCmd({ command: "start", durationSec: 900, targetC: targetTempC });
     }
 
     async function dhwStopFromUi(){
-      await api.dhwCmd({ heatActive: false });
+      await api.dhwCmd({ command: "stop" });
     }
 
     async function dhwBoostFromUi(targetTempC, requestMode, boostMin=15){
@@ -3891,11 +3927,11 @@ async function serviceIoCall(payload){
       state.dev = state.dev || {};
       state.dev.dhwCfgLoaded = false;
       state.dev.dhwCfgRaw = Object.assign({}, state.dev.dhwCfgRaw || {}, { heat: Object.assign({}, state.dev?.dhwCfgRaw?.heat || {}, { requestMode, targetTempC, otEnableDhw: requestMode === "opentherm", otDhwSetpointC: targetTempC }) });
-      await api.dhwCmd({ boostMin });
+      await api.dhwCmd({ command: "boost", durationSec: Math.max(1, Number(boostMin) || 15) * 60, targetC: targetTempC });
     }
 
     async function dhwCircSetFromUi(on){
-      await api.dhwCmd({ circActive: !!on });
+      await api.dhwCmd(on ? { command: "circulation", active: true, durationSec: 300 } : { command: "circulation", active: false });
     }
 
     async function dhwReloadConfigFromDevice(){
@@ -3988,6 +4024,15 @@ async function serviceIoCall(payload){
       state.dev.relMask = nextMask;
       state.io.relays = Array.from({length:8}, (_,k) => ((nextMask >> k) & 1) === 1);
       return { mask: nextMask, managedSkipped: (safeMask !== (Number(mask) & 0xFF)) || resp?.warn === "managed_relays_ignored" };
+    }
+
+    async function safeStopSystem(){
+      const resp = await api.systemCmd({ command: "safeStop" });
+      const mask = Number(resp?.rel?.mask ?? resp?.fast?.rel?.mask ?? state.dev?.relMask ?? 0) & 0xFF;
+      state.dev = state.dev || {};
+      state.dev.relMask = mask;
+      state.io.relays = Array.from({length:8}, (_,k) => ((mask >> k) & 1) === 1);
+      return resp;
     }
 
     function uploadWithProgress(url, fileInputId, prefix){
@@ -4335,7 +4380,7 @@ async function refresh(forceToast=false){
           if(act === "dhwBoost"){
             await dhwBoostFromUi(Number($("#dhw2Target")?.value || $("#dhwTarget")?.value || 50), String(document.getElementById("dhwRequestMode")?.value || "relay"), 15);
             toast("TUV", "Boost 15 min (zařízení).", "⚡");
-            log("dhwBoost -> /api/dhw/cmd boostMin=15");
+            log("dhwBoost -> /api/dhw/cmd command=boost durationSec=900");
             await refresh(false);
             return;
           }
@@ -4364,7 +4409,7 @@ async function refresh(forceToast=false){
         try{
           await dhwStartFromUi(Number($("#dhw2Target")?.value || $("#dhwTarget")?.value || 50), String(document.getElementById("dhwRequestMode")?.value || "relay"));
           toast("TUV", "Ohřev spuštěn (zařízení).", "🚿");
-          log("dhw start -> /api/dhw/cmd heatActive=true");
+          log("dhw start -> /api/dhw/cmd command=start");
           await refresh(false);
         }catch(e){
           toast("Chyba", e.message || String(e), "⚠");
@@ -4375,7 +4420,7 @@ async function refresh(forceToast=false){
         try{
           await dhwStopFromUi();
           toast("TUV", "Zastaveno.", "⛔");
-          log("dhw stop -> /api/dhw/cmd heatActive=false");
+          log("dhw stop -> /api/dhw/cmd command=stop");
           await refresh(false);
         }catch(e){
           toast("Chyba", e.message || String(e), "⚠");
@@ -4387,7 +4432,7 @@ async function refresh(forceToast=false){
         try{
           await dhwCircSetFromUi(true);
           toast("Cirkulace", "Zapnuto.", "✅");
-          log("circ on -> /api/dhw/cmd circActive=true");
+          log("circ on -> /api/dhw/cmd command=circulation");
           await refresh(false);
         }catch(e){
           toast("Chyba", e.message || String(e), "⚠");
@@ -4398,7 +4443,7 @@ async function refresh(forceToast=false){
         try{
           await dhwCircSetFromUi(false);
           toast("Cirkulace", "Vypnuto.", "⭕");
-          log("circ vypnuto -> /api/dhw/cmd circActive=false");
+          log("circ vypnuto -> /api/dhw/cmd command=circulation active=false");
           await refresh(false);
         }catch(e){
           toast("Chyba", e.message || String(e), "⚠");
@@ -4408,12 +4453,12 @@ async function refresh(forceToast=false){
 
       $("#btnAllOff").addEventListener("click", async () => {
         try{
-          const res = await setUnmanagedRelayMask(0x00);
-          toast("Vše", res.managedSkipped ? "Ruční relé vypnuta. TUV/cirkulace zůstaly řízené funkcemi." : "Relé vypnuta (zařízení).", "⛔");
+          const res = await safeStopSystem();
+          toast("Bezpečné zastavení", res?.state === "safe" ? "Zařízení přešlo do bezpečného stavu." : "Sekvence proběhla jen částečně.", "⛔");
           await refresh(false);
         }catch(e){
           toast("Chyba", e.message || String(e), "⚠");
-          log("all vypnuto error: " + (e.message || e));
+          log("safeStop error: " + (e.message || e));
         }
       });
 
@@ -4789,25 +4834,15 @@ updatePlannerStateBadges();
         }
       }));
 
-      // IO mass actions
-      $("#ioAllOn").addEventListener("click", async () => {
+      // IO safe stop
+      $("#ioAllOff")?.addEventListener("click", async () => {
         try{
-          const res = await setUnmanagedRelayMask(0xFF);
-          toast("Relé", res.managedSkipped ? "Zapnuta jen ruční relé. TUV/cirkulace zůstaly řízené funkcemi." : "Zapnuto vše (zařízení).", "✅");
+          const res = await safeStopSystem();
+          toast("Bezpečné zastavení", res?.state === "safe" ? "Zařízení přešlo do bezpečného stavu." : "Sekvence proběhla jen částečně.", "⛔");
           renderIO(); renderOverviewBadges();
         }catch(e){
           toast("Chyba", e.message || String(e), "⚠");
-          log("io all on error: " + (e.message || e));
-        }
-      });
-      $("#ioAllOff").addEventListener("click", async () => {
-        try{
-          const res = await setUnmanagedRelayMask(0x00);
-          toast("Relé", res.managedSkipped ? "Vypnuta jen ruční relé. TUV/cirkulace zůstaly řízené funkcemi." : "Vypnuto vše (zařízení).", "⛔");
-          renderIO(); renderOverviewBadges();
-        }catch(e){
-          toast("Chyba", e.message || String(e), "⚠");
-          log("io all vypnuto error: " + (e.message || e));
+          log("io safeStop error: " + (e.message || e));
         }
       });
 
