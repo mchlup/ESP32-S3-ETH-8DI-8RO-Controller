@@ -52,6 +52,15 @@ namespace {
   static constexpr bool kServePrecompressedAssets = true;
   static constexpr size_t kActionLogCapacity = 16;
   static constexpr unsigned long kActionLogRetentionMs = 15UL * 60UL * 1000UL;
+  static constexpr uint8_t kRelayMixOpenIdx = 0;       // R1
+  static constexpr uint8_t kRelayMixCloseIdx = 1;      // R2
+  static constexpr uint8_t kRelayDhwValveIdx = 2;      // R3
+  static constexpr uint8_t kRelayDhwCircIdx = 3;       // R4
+  static constexpr uint8_t kRelayDhwBoilerIdx = 4;     // R5
+  static constexpr uint8_t kRelayAccuHeaterIdx = 7;    // R8
+  static constexpr uint8_t kRelayMixOpenBit = (uint8_t)(1u << kRelayMixOpenIdx);
+  static constexpr uint8_t kRelayMixCloseBit = (uint8_t)(1u << kRelayMixCloseIdx);
+  static constexpr uint8_t kRelayAccuHeaterBit = (uint8_t)(1u << kRelayAccuHeaterIdx);
 
   struct RateLimitEntry {
     const char* key = nullptr;
@@ -352,7 +361,7 @@ namespace {
 
   static bool allowAction(const char* key, unsigned long minIntervalMs, uint16_t maxPerWindow, unsigned long windowMs, const char* detailOnBlock) {
     static RateLimitEntry entries[] = {
-      {"relay"}, {"config"}, {"reboot"}, {"dhw_cmd"}, {"ot_cmd"}, {"eq_cmd"}, {"ot_scan_start"}, {"ot_scan_stop"},
+      {"relay"}, {"config"}, {"reboot"}, {"system_cmd"}, {"dhw_cmd"}, {"ot_cmd"}, {"eq_cmd"}, {"ot_scan_start"}, {"ot_scan_stop"},
       {"ot_data_write"}, {"cfg_inputs"}, {"cfg_ot"}, {"cfg_ble"}, {"cfg_dallas"}, {"cfg_ota"}, {"cfg_mqtt"},
       {"cfg_time"}, {"cfg_eq"}, {"cfg_dhw"}, {"cfg_alerts"}, {"cfg_apply"}, {"cfg_import"}, {"cfg_export"},
       {"fs_write"}, {"fs_mkdir"}, {"fs_rename"}, {"fs_delete"}, {"fs_upload"}, {"fw_update"}, {"fs_update"}
@@ -404,6 +413,7 @@ namespace {
     sys["wifi"] = wifiOk;
     sys["eth"] = ethOk;
     sys["ip"] = ip;
+    sys["uptimeSec"] = (uint32_t)(millis() / 1000UL);
     const int rssi = wifiOk ? WiFi.RSSI() : 0;
     if (wifiOk) sys["rssi"] = rssi; else sys["rssi"] = nullptr;
 
@@ -412,6 +422,8 @@ namespace {
     out["eth"] = ethOk;
     out["ip"] = ip;
     if (wifiOk) out["rssi"] = rssi; else out["rssi"] = nullptr;
+    JsonObject system = out.createNestedObject("system");
+    system["uptimeSec"] = (uint32_t)(millis() / 1000UL);
 
     JsonObject temps = out.createNestedObject("temps");
     fillTemps(temps);
@@ -702,6 +714,8 @@ namespace {
     out["eth"] = networkIsEthernetConnected();
     out["ip"] = getBestIpString();
     if (wifiOk) out["rssi"] = WiFi.RSSI(); else out["rssi"] = nullptr;
+    JsonObject system = out.createNestedObject("system");
+    system["uptimeSec"] = (uint32_t)(millis() / 1000UL);
 
     JsonObject temps = out.createNestedObject("temps");
     fillTemps(temps);
@@ -806,6 +820,10 @@ namespace {
     return (uint8_t)(1u << relayIndex);
   }
 
+  static bool relayMaskHasMixingConflict(uint8_t mask) {
+    return (mask & (uint8_t)(kRelayMixOpenBit | kRelayMixCloseBit)) == (uint8_t)(kRelayMixOpenBit | kRelayMixCloseBit);
+  }
+
   static uint8_t getControllerManagedRelayMask() {
     const DhwConfig dc = dhwGetConfig();
     uint8_t mask = 0;
@@ -828,14 +846,28 @@ namespace {
 
     const uint8_t managedMask = getControllerManagedRelayMask();
     bool managedSkipped = false;
+    bool heaterSkipped = false;
 
     JsonObjectConst o = docIn.as<JsonObjectConst>();
     if (o.containsKey("mask")) {
+      const uint8_t requestedMask = (uint8_t)(o["mask"] | 0);
+      if (relayMaskHasMixingConflict(requestedMask)) {
+        DynamicJsonDocument err(384);
+        err["ok"] = false;
+        err["err"] = "mixing_relays_mutually_exclusive";
+        err["detail"] = "R1 and R2 must not be ON at the same time";
+        sendJsonDoc(409, err);
+        return;
+      }
+
       // /api/relay must not override relays managed by higher-level controllers
       // (DHW valve / DHW request / DHW circulation). Keep current managed bits as-is.
-      const uint8_t requestedMask = (uint8_t)(o["mask"] | 0);
       const uint8_t currentMask = relayGetMask();
-      const uint8_t safeMask = (uint8_t)((requestedMask & ~managedMask) | (currentMask & managedMask));
+      uint8_t safeMask = (uint8_t)((requestedMask & ~managedMask) | (currentMask & managedMask));
+      if (safeMask & kRelayAccuHeaterBit) {
+        safeMask &= (uint8_t)~kRelayAccuHeaterBit;
+        heaterSkipped = true;
+      }
       managedSkipped = ((requestedMask ^ safeMask) & managedMask) != 0;
       relaySetMask(safeMask);
     } else if (o.containsKey("id")) {
@@ -858,10 +890,19 @@ namespace {
       }
       RelayId rid = (RelayId)relayIndex;
       const bool toggle = (bool)(o["toggle"] | false);
+      const bool wantOn = (toggle || !o.containsKey("on")) ? !relayGetState(rid) : (bool)o["on"];
+      if (relayIndex == kRelayAccuHeaterIdx && wantOn) {
+        DynamicJsonDocument err(384);
+        err["ok"] = false;
+        err["err"] = "relay_requires_service_command";
+        err["detail"] = "R8 heater cannot be enabled through generic relay API";
+        sendJsonDoc(409, err);
+        return;
+      }
       if (toggle || !o.containsKey("on")) {
         relayToggle(rid);
       } else {
-        relaySet(rid, (bool)o["on"]);
+        relaySet(rid, wantOn);
       }
     }
 
@@ -870,6 +911,7 @@ namespace {
     doc["ok"] = true;
     doc["managedMask"] = managedMask;
     if (managedSkipped) doc["warn"] = "managed_relays_ignored";
+    if (heaterSkipped) doc["heaterWarn"] = "heater_relay_ignored";
     JsonObject rel = doc.createNestedObject("rel");
     rel["mask"] = relayGetMask();
 
@@ -880,7 +922,55 @@ namespace {
     JsonObject rel2 = fast.createNestedObject("rel");
     rel2["mask"] = relayGetMask();
     sendJsonDoc(200, doc);
-    recordAdminAction("relay", true, managedSkipped ? "managed_relays_ignored" : "applied");
+    recordAdminAction("relay", true, managedSkipped ? "managed_relays_ignored" : (heaterSkipped ? "heater_relay_ignored" : "applied"));
+  }
+
+  static void handleSystemCmd() {
+    if (rejectActionRateLimit("system_cmd", 500UL, 8, 10000UL, "system_guard")) return;
+    const String body = g_srv.arg("plain");
+    DynamicJsonDocument docIn(256);
+    if (deserializeJson(docIn, body) || !docIn.is<JsonObject>()) {
+      DynamicJsonDocument err(256);
+      err["ok"] = false; err["err"] = "bad_json";
+      sendJsonDoc(400, err);
+      return;
+    }
+
+    JsonObjectConst o = docIn.as<JsonObjectConst>();
+    const char* command = o["command"] | "";
+    String cmd(command);
+    cmd.toLowerCase();
+    if (cmd != "safestop" && cmd != "safe_stop") {
+      DynamicJsonDocument err(256);
+      err["ok"] = false;
+      err["err"] = "bad_command";
+      sendJsonDoc(400, err);
+      return;
+    }
+
+    String dhwErr;
+    const bool dhwOk = dhwHandleCmdJson("{\"command\":\"safeStop\"}", dhwErr);
+    relaySet((RelayId)kRelayMixOpenIdx, false);
+    relaySet((RelayId)kRelayMixCloseIdx, false);
+    relaySet((RelayId)kRelayDhwValveIdx, false);
+    relaySet((RelayId)kRelayDhwCircIdx, false);
+    relaySet((RelayId)kRelayDhwBoilerIdx, false);
+    relaySet((RelayId)kRelayAccuHeaterIdx, false);
+
+    DynamicJsonDocument out(512);
+    out["ok"] = dhwOk;
+    out["state"] = dhwOk ? "safe" : "partial";
+    if (!dhwOk) out["err"] = dhwErr;
+    JsonArray actions = out.createNestedArray("actions");
+    actions.add("mixing_stop");
+    actions.add("dhw_valve_ch");
+    actions.add("dhw_request_off");
+    actions.add("circulation_off");
+    actions.add("heater_off");
+    JsonObject rel = out.createNestedObject("rel");
+    rel["mask"] = relayGetMask();
+    sendJsonDoc(dhwOk ? 200 : 500, out);
+    recordAdminAction("system_cmd", dhwOk, dhwOk ? "safeStop" : dhwErr.c_str());
   }
 
 
@@ -2361,6 +2451,7 @@ void webPortalInit() {
     out["ok"]=true; sendJsonDoc(200,out); EventLog::record("service", "io_test", "manual");
   });
   g_srv.on("/api/relay", HTTP_POST, handleRelayPost);
+  g_srv.on("/api/system/cmd", HTTP_POST, handleSystemCmd);
   g_srv.on("/api/reboot", HTTP_POST, handleReboot);
 
   g_srv.on("/api/opentherm/status", HTTP_GET, handleOpenThermStatus);
