@@ -266,7 +266,14 @@ namespace {
 
     if (isfinite(g_reqChSetpointC)) {
       float v = g_reqChSetpointC;
-      clampMaybe(v, g_cfg.minChSetpointC, g_cfg.maxChSetpointC);
+
+      // EquithermController has already applied its configured minFlowC/maxFlowC
+      // and its CH safety limits. Do not raise an equitherm request again using
+      // the independent OpenTherm UI default (historically fixed at 25 C).
+      // Keep the OpenTherm lower clamp for manual and DHW-originated requests.
+      const float effectiveMinCh =
+          g_activeSource.equalsIgnoreCase("equitherm") ? 10.0f : g_cfg.minChSetpointC;
+      clampMaybe(v, effectiveMinCh, g_cfg.maxChSetpointC);
       if (!g_bus->setCHWaterSetpoint(v)) {
         stNoteResponse(g_bus->lastStatus());
         if (!outErr.length()) outErr = "setCHWaterSetpoint failed";
@@ -792,7 +799,9 @@ void openthermInit() {
   g_cfg.mapDhw = true;
   g_cfg.mapNightMode = true;
 
-  g_cfg.minChSetpointC = 25.0f;
+  // Default only for manual/OpenTherm commands. Equitherm requests are already
+  // clamped by EquithermController according to the heating UI limits.
+  g_cfg.minChSetpointC = 22.0f;
   g_cfg.maxChSetpointC = 75.0f;
   g_cfg.dhwSetpointC = 50.0f;
   g_cfg.dhwBoostChSetpointC = 10.0f;

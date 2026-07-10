@@ -1,4 +1,4 @@
-#include "LogicController.h"
+﻿#include "LogicController.h"
 #include "RelayController.h"
 #include "InputController.h"
 #include "ConfigStore.h"
@@ -712,7 +712,7 @@ static String   s_eqConfigWarning = "";
 static uint32_t s_eqLastAdjustMs = 0;
 static String   s_eqReason = "";
 
-static EquithermStatus s_eqStatus = {};
+static LogicEquithermStatus s_eqStatus = {};
 
 static bool isValidTimeNow(struct tm &outTm, time_t &outEpoch) {
     outEpoch = time(nullptr);
@@ -805,72 +805,35 @@ static bool tryGetTempFromSource(const EqSourceCfg& src, float &outC, EqSourceDi
     }
 
     if (s == "mqtt"){
-        String topic = src.topic;
-        String jsonKey = src.jsonKey;
-
-        // Pokud je nastavené mqttIdx (přednastavený MQTT teploměr z "Teploměry"),
-        // vždy preferujeme aktuální topic/jsonKey z tohoto nastavení.
-        if (src.mqttIdx >= 1 && src.mqttIdx <= 2) {
-            const MqttThermometerCfg &mc = thermometersGetMqtt((uint8_t)(src.mqttIdx - 1));
-            if (mc.topic.length()) topic = mc.topic;
-            if (mc.jsonKey.length()) jsonKey = mc.jsonKey;
-        }
-
-        if (!topic.length()) {
-            if (diag) diag->reason = "mqtt no topic";
-            return false;
-        }
-        String payload;
-        uint32_t lastMs = 0;
-        if (!mqttGetLastValueInfo(topic, &payload, &lastMs)) {
-            if (diag) diag->reason = "mqtt no data";
-            return false;
-        }
-        const uint32_t nowMs = millis();
-        const uint32_t ageMs = (uint32_t)(nowMs - lastMs);
-        if (diag) diag->ageMs = ageMs;
-        if (src.maxAgeMs > 0 && ageMs > src.maxAgeMs) {
-            if (diag) diag->reason = "mqtt stale";
-            return false;
-        }
-
-        float tC = NAN;
-        if (!tempParseFromPayload(payload, jsonKey, tC)) {
-            if (diag) diag->reason = "mqtt parse";
-            return false;
-        }
-        outC = tC;
-        if (diag) diag->valid = isfinite(outC);
-        return isfinite(outC);
+        if (diag) diag->reason = "mqtt source unsupported";
+        return false;
     }
 
     if (s == "ble"){
-    // BLE: default "meteo.tempC".
-    // bleId může být prázdné (default) nebo např. "meteo", "meteo.tempC".
-    // maxAgeMs nyní platí i pro BLE (override proti ble.maxAgeMs).
-    const String id = src.bleId;
-    uint32_t ageMs = 0;
-    const uint32_t maxAge = src.maxAgeMs; // 0 = použij ble.maxAgeMs
-    const bool ok = bleGetTempCByIdEx(id, outC, maxAge, diag ? &ageMs : nullptr);
-    if (diag) {
-        diag->ageMs = ageMs;
-        diag->valid = ok && isfinite(outC);
-        if (!diag->valid) diag->reason = ok ? "ble non-finite" : "ble invalid/stale";
+        BleMeteoData meteo = bleGetMeteo();
+        const uint32_t ageMs = meteo.lastUpdateMs ? (uint32_t)(millis() - meteo.lastUpdateMs) : 0xFFFFFFFFUL;
+        const bool fresh = (src.maxAgeMs == 0) || (ageMs <= src.maxAgeMs);
+        const bool ok = meteo.valid && fresh && isfinite(meteo.tempC);
+        if (ok) outC = meteo.tempC;
+        if (diag) {
+            diag->ageMs = ageMs;
+            diag->valid = ok;
+            if (!diag->valid) diag->reason = meteo.valid ? "ble stale/non-finite" : "ble invalid";
+        }
+        return ok;
     }
-    return ok;
-}
 
 
     if (s.startsWith("opentherm")){
         #if defined(FEATURE_OPENTHERM)
-        OpenThermStatus ot = openthermGetStatus();
+        OpenThermStatusSnapshot ot = openthermGetStatus();
         if (!ot.ready) {
             if (diag) diag->reason = "OT not ready";
             return false;
         }
         if (s == "opentherm_boiler") outC = ot.boilerTempC;
         else if (s == "opentherm_return") outC = ot.returnTempC;
-        else if (s == "opentherm_outdoor") outC = ot.outdoorTempC;
+        else if (s == "opentherm_outdoor") outC = ot.outsideTempC;
         else outC = NAN;
 
         if (!isfinite(outC)) {
@@ -952,7 +915,7 @@ static bool isAkuMixingAllowed(float targetFlowC, float boilerInC, bool night, S
 }
 
 static void equithermRecompute(){
-    s_eqStatus = EquithermStatus{};
+    s_eqStatus = LogicEquithermStatus{};
     s_eqStatus.enabled = s_eqEnabled;
     s_eqStatus.night   = s_nightMode;
     s_eqStatus.valveMaster = (s_eqValveMaster0 >= 0) ? (uint8_t)(s_eqValveMaster0 + 1) : 0;
@@ -979,12 +942,12 @@ static void equithermRecompute(){
 
     // Auto-map: pokud není venkovní teplota nastavená (source none) a je k dispozici BLE meteo, použij ji.
     if ((!outdoorOk || !isfinite(tout)) && (!s_eqOutdoorCfg.source.length() || s_eqOutdoorCfg.source == "none")) {
-        float tBle = NAN;
-        if (bleGetMeteoTempC(tBle) && isfinite(tBle)) {
-            tout = tBle;
+        BleMeteoData meteo = bleGetMeteo();
+        if (meteo.valid && isfinite(meteo.tempC)) {
+            tout = meteo.tempC;
             outdoorOk = true;
             outDiag.valid = true;
-            outDiag.ageMs = 0;
+            outDiag.ageMs = meteo.lastUpdateMs ? (uint32_t)(millis() - meteo.lastUpdateMs) : 0;
             outDiag.reason = "auto BLE meteo";
         }
     }
@@ -1434,7 +1397,7 @@ static bool isTuvEnabledEffective() {
 static void applyTuvRequest() {
     #if defined(FEATURE_OPENTHERM)
     const OpenThermConfig otCfg = openthermGetConfig();
-    if (otCfg.enabled && otCfg.mapDhw && otCfg.boilerControl == OpenThermBoilerControl::OPENTHERM) {
+    if (otCfg.enabled && otCfg.mapDhw && String(otCfg.boilerControl) == "opentherm") {
         // In full OpenTherm mode, DHW request is expressed via OT flags/setpoints.
         return;
     }
@@ -1448,7 +1411,7 @@ static void applyTuvRequest() {
 static void applyNightModeRelay() {
     #if defined(FEATURE_OPENTHERM)
     const OpenThermConfig otCfg = openthermGetConfig();
-    if (otCfg.enabled && otCfg.mapNightMode && otCfg.boilerControl == OpenThermBoilerControl::OPENTHERM) {
+    if (otCfg.enabled && otCfg.mapNightMode && String(otCfg.boilerControl) == "opentherm") {
         // In full OpenTherm mode, day/night mapping is handled by Ekviterm setpoints.
         return;
     }
@@ -1465,7 +1428,7 @@ static void applyOpenThermMapping(uint32_t nowMs) {
     #else
     const OpenThermConfig cfg = openthermGetConfig();
     if (!cfg.enabled) return;
-    if (cfg.boilerControl == OpenThermBoilerControl::RELAY) return; // read-only / not integrated
+    if (String(cfg.boilerControl) == "relay") return; // read-only / not integrated
 
     static float lastCh = NAN;
     static float lastDhw = NAN;
@@ -1494,11 +1457,18 @@ static void applyOpenThermMapping(uint32_t nowMs) {
         const bool flagsChanged = (chEn != lastChEn) || (dhwEn != lastDhwEn);
 
         if (flagsChanged || dhwChanged || chChanged || lastSendMs == 0 || (uint32_t)(nowMs - lastSendMs) >= 5000) {
-            if (cfg.boilerControl == OpenThermBoilerControl::OPENTHERM) {
-                openthermCmdSetEnable(chEn, dhwEn);
-            }
-            openthermCmdSetDhwSetpoint(dhwSp);
-            if (isfinite(chSp)) openthermCmdSetChSetpoint(chSp);
+            OpenThermSourceRequest req;
+            req.active = true;
+            req.chEnableSet = true;
+            req.chEnable = chEn;
+            req.dhwEnableSet = true;
+            req.dhwEnable = dhwEn;
+            req.dhwSetpointSet = isfinite(dhwSp);
+            req.dhwSetpointC = dhwSp;
+            req.chSetpointSet = isfinite(chSp);
+            req.chSetpointC = chSp;
+            String err;
+            openthermSetDhwRequest(req, err);
 
             lastChEn = chEn;
             lastDhwEn = dhwEn;
@@ -1518,10 +1488,16 @@ static void applyOpenThermMapping(uint32_t nowMs) {
         const bool flagsChanged = (chEn != lastChEn) || (dhwEn != lastDhwEn);
 
         if (flagsChanged || chChanged || lastSendMs == 0 || (uint32_t)(nowMs - lastSendMs) >= 5000) {
-            if (cfg.boilerControl == OpenThermBoilerControl::OPENTHERM) {
-                openthermCmdSetEnable(chEn, dhwEn);
-            }
-            openthermCmdSetChSetpoint(chSp);
+            OpenThermSourceRequest req;
+            req.active = true;
+            req.chEnableSet = true;
+            req.chEnable = chEn;
+            req.dhwEnableSet = true;
+            req.dhwEnable = dhwEn;
+            req.chSetpointSet = true;
+            req.chSetpointC = chSp;
+            String err;
+            openthermSetEquithermRequest(req, err);
             lastChEn = chEn;
             lastDhwEn = dhwEn;
             lastCh = chSp;
@@ -3478,7 +3454,7 @@ float logicGetTempC(uint8_t idx){
     return s_tempC[idx];
 }
 
-EquithermStatus logicGetEquithermStatus(){
+LogicEquithermStatus logicGetLogicEquithermStatus(){
     return s_eqStatus;
 }
 
@@ -3843,3 +3819,4 @@ uint32_t logicGetConfigApplyLastInputLen() {
 const char* logicGetConfigApplyLastError() {
     return g_logicApplyLastErr;
 }
+

@@ -1359,6 +1359,13 @@ static void applyConfigDoc(JsonObjectConst o) {
       float mn = l["minFlowC"] | ConfigStore::getEqMinFlowC();
       float mx = l["maxFlowC"] | ConfigStore::getEqMaxFlowC();
       ConfigStore::setEqFlowLimits(mn, mx);
+
+      // The heating page exposes one pair of flow limits. Use the same pair as
+      // the safety limits for the CH setpoint sent through OpenTherm unless the
+      // request explicitly supplies separate CH limits below.
+      if (!l.containsKey("minChSetpointC") && !l.containsKey("maxChSetpointC")) {
+        ConfigStore::setEqChSetpointLimits(mn, mx);
+      }
     }
     if (l.containsKey("minChSetpointC") || l.containsKey("maxChSetpointC")) {
       float mn = l["minChSetpointC"] | ConfigStore::getEqMinChSetpointC();

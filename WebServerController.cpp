@@ -127,7 +127,7 @@ namespace {
     }
 
     // Key status fields for instant UI feedback
-    EquithermStatus eq = logicGetEquithermStatus();
+    LogicEquithermStatus eq = logicGetEquithermStatus();
     JsonObject je = doc.createNestedObject("e");
     je["en"] = eq.enabled;
     je["ac"] = eq.active;
@@ -175,7 +175,7 @@ namespace {
     bleFillFastJson(jb);
 
     // OpenTherm snapshot (optional; header provides stubs when disabled)
-    OpenThermStatus ot = openthermGetStatus();
+    OpenThermStatusSnapshot ot = openthermGetStatus();
     JsonObject jot = doc.createNestedObject("ot");
     jot["en"] = (bool)ot.present; // compiled-in
     jot["rd"] = (bool)ot.ready;
@@ -248,7 +248,7 @@ namespace {
       valid.add(logicIsTempValid(i));
     }
 
-    EquithermStatus eq = logicGetEquithermStatus();
+    LogicEquithermStatus eq = logicGetEquithermStatus();
     JsonObject jeq = doc.createNestedObject("equitherm");
     jeq["enabled"] = eq.enabled;
     jeq["active"] = eq.active;
@@ -371,8 +371,11 @@ namespace {
   static void handleOpenThermStatus() {
     StaticJsonDocument<2048> doc;
 
-    OpenThermStatus ot = openthermGetStatus();
+    OpenThermStatusSnapshot ot = openthermGetStatus();
     OpenThermConfig cfg = openthermGetConfig();
+    const float estimatedPowerKw = isfinite(ot.modulationPct)
+      ? (ot.modulationPct / 100.0f) * cfg.assumedMaxBoilerKw
+      : NAN;
 
     JsonObject s = doc.createNestedObject("status");
     s["present"] = ot.present;
@@ -387,75 +390,64 @@ namespace {
     s["returnTempC"] = ot.returnTempC;
     s["dhwTempC"] = ot.dhwTempC;
     s["roomTempC"] = ot.roomTempC;
-    s["outdoorTempC"] = ot.outdoorTempC;
-    s["roomSetpointC"] = ot.roomSetpointC;
-    s["maxChWaterSetpointC"] = ot.maxChWaterSetpointC;
+    s["outdoorTempC"] = ot.outsideTempC;
+    s["roomSetpointC"] = nullptr;
+    s["maxChWaterSetpointC"] = ot.maxChSetpointC;
     s["dhwSetpointC"] = ot.dhwSetpointC;
     s["modulationPct"] = ot.modulationPct;
     s["pressureBar"] = ot.pressureBar;
-    s["flowRateLpm"] = ot.flowRateLpm;
-    s["powerKw"] = ot.powerKw;
+    s["flowRateLpm"] = nullptr;
+    s["powerKw"] = estimatedPowerKw;
     s["faultFlags"] = ot.faultFlags;
     s["oemFaultCode"] = ot.oemFaultCode;
     s["reqChSetpointC"] = ot.reqChSetpointC;
     s["reqDhwSetpointC"] = ot.reqDhwSetpointC;
     s["reqMaxModulationPct"] = ot.reqMaxModulationPct;
-    s["reqRoomSetpointC"] = ot.reqRoomSetpointC;
-    s["reqMaxChWaterSetpointC"] = ot.reqMaxChWaterSetpointC;
+    s["reqRoomSetpointC"] = nullptr;
+    s["reqMaxChWaterSetpointC"] = ot.reqChSetpointC;
     s["lastUpdateMs"] = (uint32_t)ot.lastUpdateMs;
     s["lastCmdMs"] = (uint32_t)ot.lastCmdMs;
     s["reason"] = ot.reason;
     s["lastCmd"] = ot.lastCmd;
 
-    s["totalCount"] = (uint32_t)ot.totalCount;
+    s["totalCount"] = (uint32_t)(ot.okCount + ot.timeoutCount + ot.invalidCount);
     s["okCount"] = (uint32_t)ot.okCount;
     s["timeoutCount"] = (uint32_t)ot.timeoutCount;
-    s["frameErrorCount"] = (uint32_t)ot.frameErrorCount;
-    s["parityErrorCount"] = (uint32_t)ot.parityErrorCount;
-    s["badResponseCount"] = (uint32_t)ot.badResponseCount;
-    s["notInitializedCount"] = (uint32_t)ot.notInitializedCount;
-    s["isrOverflowCount"] = (uint32_t)ot.isrOverflowCount;
+    s["frameErrorCount"] = (uint32_t)ot.invalidCount;
+    s["parityErrorCount"] = nullptr;
+    s["badResponseCount"] = (uint32_t)ot.invalidCount;
+    s["notInitializedCount"] = nullptr;
+    s["isrOverflowCount"] = nullptr;
 
 
-    // Raw polled values (subset of protocol IDs)
-    JsonArray raw = doc.createNestedArray("raw");
-    OpenThermRawValue rv[24];
-    const uint8_t rn = openthermGetRaw(rv, 24);
-    for (uint8_t i = 0; i < rn; i++) {
-      JsonObject r = raw.createNestedObject();
-      r["id"] = rv[i].id;
-      r["msgType"] = rv[i].msgType;
-      r["u16"] = rv[i].u16;
-      r["f88"] = rv[i].f88;
-      r["valid"] = rv[i].valid;
-      r["tsMs"] = (uint32_t)rv[i].tsMs;
-    }
+    // Raw Data-ID access is exposed by the current OpenTherm advanced endpoints.
+    doc.createNestedArray("raw");
 
     JsonObject c = doc.createNestedObject("config");
     c["enabled"] = cfg.enabled;
     c["pollMs"] = (uint32_t)cfg.pollMs;
     c["minChSetpointC"] = cfg.minChSetpointC;
     c["maxChSetpointC"] = cfg.maxChSetpointC;
-    c["boilerControl"] = (cfg.boilerControl == OpenThermBoilerControl::OPENTHERM)
-                            ? "opentherm"
-                            : (cfg.boilerControl == OpenThermBoilerControl::HYBRID ? "hybrid" : "relay");
+    c["boilerControl"] = cfg.boilerControl;
+    c["mode"] = cfg.mode;
+    c["allowRawWrite"] = cfg.allowRawWrite;
     c["mapEquithermChSetpoint"] = cfg.mapEquithermChSetpoint;
     c["mapDhw"] = cfg.mapDhw;
     c["mapNightMode"] = cfg.mapNightMode;
     c["dhwSetpointC"] = cfg.dhwSetpointC;
     c["dhwBoostChSetpointC"] = cfg.dhwBoostChSetpointC;
-    c["roomSetpointC"] = cfg.roomSetpointC;
-    c["maxChWaterSetpointC"] = cfg.maxChWaterSetpointC;
+    c["roomSetpointC"] = nullptr;
+    c["maxChWaterSetpointC"] = cfg.maxChSetpointC;
     c["txPin"] = cfg.txPin;
     c["rxPin"] = cfg.rxPin;
     c["assumedMaxBoilerKw"] = cfg.assumedMaxBoilerKw;
     c["invertTx"] = cfg.invertTx;
     c["invertRx"] = cfg.invertRx;
     c["autoDetectLogic"] = cfg.autoDetectLogic;
-    c["logEnabled"] = cfg.logEnabled;
-    c["logIntervalMs"] = (uint32_t)cfg.logIntervalMs;
+    c["logEnabled"] = nullptr;
+    c["logIntervalMs"] = nullptr;
     JsonArray pids = c.createNestedArray("pollIds");
-    for (uint8_t i = 0; i < cfg.pollIdCount; i++) pids.add(cfg.pollIds[i]);
+    for (uint8_t i = 0; i < cfg.pollIdsCount; i++) pids.add(cfg.pollIds[i]);
 
     sendJson(200, doc);
   }
@@ -466,40 +458,11 @@ namespace {
       g_server.send(400, "text/plain", "empty");
       return;
     }
-    DynamicJsonDocument doc(1024);
-    DeserializationError e = deserializeJson(doc, body);
-    if (e || !doc.is<JsonObject>()) {
-      g_server.send(400, "text/plain", "bad_json");
-      return;
-    }
-    JsonObject o = doc.as<JsonObject>();
 
-    if (!o["chEnable"].isNull() || !o["dhwEnable"].isNull()) {
-      const bool ch = (bool)(o["chEnable"] | false);
-      const bool dhw = (bool)(o["dhwEnable"] | false);
-      openthermCmdSetEnable(ch, dhw);
-    }
-    if (!o["chSetpointC"].isNull()) {
-      openthermCmdSetChSetpoint((float)(o["chSetpointC"] | NAN));
-    }
-    if (!o["dhwSetpointC"].isNull()) {
-      openthermCmdSetDhwSetpoint((float)(o["dhwSetpointC"] | NAN));
-    }
-    if (!o["maxModulationPct"].isNull()) {
-      openthermCmdSetMaxModulation((float)(o["maxModulationPct"] | NAN));
-    }
-    if (!o["roomSetpointC"].isNull()) {
-      openthermCmdSetRoomSetpoint((float)(o["roomSetpointC"] | NAN));
-    }
-    if (!o["maxChWaterSetpointC"].isNull()) {
-      openthermCmdSetMaxChWaterSetpoint((float)(o["maxChWaterSetpointC"] | NAN));
-    }
-    if ((bool)(o["resetFault"] | false)) {
-      openthermCmdResetFault();
-    }
-
+    String err;
+    const bool ok = openthermHandleCmdJson(body, err);
     webserverNotifyStateChanged();
-    g_server.send(200, "text/plain", "ok");
+    g_server.send(ok ? 200 : 400, "text/plain", ok ? "ok" : err);
   }
 
   static void handleRelay() {

@@ -46,19 +46,19 @@ namespace {
     }
 
     if (s == "opentherm.room") {
-      OpenThermStatus ot = openthermGetStatus();
+      OpenThermStatusSnapshot ot = openthermGetStatus();
       if (isfinite(ot.roomTempC)) { if (ok) *ok = true; return ot.roomTempC; }
       if (why) *why = "ot room NAN";
       return NAN;
     }
     if (s == "opentherm.outdoor") {
-      OpenThermStatus ot = openthermGetStatus();
-      if (isfinite(ot.outdoorTempC)) { if (ok) *ok = true; return ot.outdoorTempC; }
+      OpenThermStatusSnapshot ot = openthermGetStatus();
+      if (isfinite(ot.outsideTempC)) { if (ok) *ok = true; return ot.outsideTempC; }
       if (why) *why = "ot outdoor NAN";
       return NAN;
     }
     if (s == "equitherm.outdoor") {
-      EquithermStatus es = logicGetEquithermStatus();
+      LogicEquithermStatus es = logicGetEquithermStatus();
       if (es.outdoorValid && isfinite(es.outdoorC)) { if (ok) *ok = true; return es.outdoorC; }
       if (why) *why = "equitherm outdoor invalid";
       return NAN;
@@ -70,10 +70,7 @@ namespace {
 
   static float getPowerKw(bool* ok, String* why) {
     if (ok) *ok = false;
-    OpenThermStatus ot = openthermGetStatus();
-    if (isfinite(ot.powerKw)) { if (ok) *ok = true; return ot.powerKw; }
-
-    // Fallback: modulation% * assumedMaxBoilerKw
+    OpenThermStatusSnapshot ot = openthermGetStatus();
     if (isfinite(ot.modulationPct)) {
       if (ok) *ok = true;
       return (ot.modulationPct / 100.0f) * g_cfg.assumedMaxBoilerKw;

@@ -28,7 +28,7 @@ bool  logicIsTempValid(uint8_t idx);
 float logicGetTempC(uint8_t idx);
 
 // Equitherm – stav pro UI/MQTT (výpočet cílové teploty)
-struct EquithermStatus {
+struct LogicEquithermStatus {
     bool  enabled = false;
     bool  active  = false;
     bool  night   = false;
@@ -71,7 +71,7 @@ struct EquithermStatus {
     // Optional diagnostic
     String reason = "";
 };
-EquithermStatus logicGetEquithermStatus();
+LogicEquithermStatus logicGetEquithermStatus();
 String logicGetEquithermReason();
 
 // Manuální / kalibrační ovládání 3c ventilů (neblokující, řízeno časem)

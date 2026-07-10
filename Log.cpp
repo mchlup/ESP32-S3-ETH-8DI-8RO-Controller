@@ -1,5 +1,8 @@
 #include "Log.h"
 
+#include <stdarg.h>
+#include <stdio.h>
+
 namespace {
     LogLevel s_logLevel = LogLevel::Info;
 }
