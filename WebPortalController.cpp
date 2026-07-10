@@ -49,7 +49,7 @@ namespace {
 
   static constexpr size_t kFsReadChunkDefault = 4096;
   static constexpr size_t kFsReadChunkMax = 32768;
-  static constexpr bool kServePrecompressedAssets = true;
+  static constexpr bool kServePrecompressedAssets = false;
   static constexpr size_t kActionLogCapacity = 16;
   static constexpr unsigned long kActionLogRetentionMs = 15UL * 60UL * 1000UL;
   static constexpr uint8_t kRelayMixOpenIdx = 0;       // R1
@@ -144,6 +144,13 @@ namespace {
 
   static const char* kCollectedHeaders[] = {"Accept-Encoding"};
 
+  struct ServiceRelayPulseState {
+    bool active = false;
+    uint8_t relayIndex = 0;
+    uint32_t offAtMs = 0;
+  };
+  static ServiceRelayPulseState g_servicePulse;
+
   static const char* getContentType(const String& path) {
     if (path.endsWith(".html") || path.endsWith(".htm")) return "text/html; charset=utf-8";
     if (path.endsWith(".css")) return "text/css; charset=utf-8";
@@ -179,7 +186,7 @@ namespace {
   static void sendStaticCacheHeaders(const String& path) {
     g_srv.sendHeader("Vary", "Accept-Encoding");
     if (path.endsWith(".css") || path.endsWith(".js")) {
-      g_srv.sendHeader("Cache-Control", "public, max-age=86400, immutable");
+      g_srv.sendHeader("Cache-Control", "public, max-age=300, must-revalidate");
       return;
     }
     if (path.endsWith(".html")) {
@@ -671,12 +678,15 @@ namespace {
   }
 
   static void handleFileManager() {
-    if (tryServeFsFile("/index.html")) return;
-    sendEmbeddedAsset("text/html; charset=utf-8", WEB_INDEX_HTML, "no-cache");
+    // The service file manager must remain available even when LittleFS contains
+    // a broken/incomplete UI. Never redirect it to /index.html.
+    g_srv.sendHeader("X-Content-Type-Options", "nosniff");
+    sendEmbeddedAsset("text/html; charset=utf-8", WEB_INDEX_HTML, "no-store, max-age=0");
   }
 
   static void handleRoot() {
     if (tryServeFsFile("/index.html")) return;
+    // If the main UI is missing, the embedded service UI is still a usable fallback.
     handleFileManager();
   }
 
@@ -2446,7 +2456,17 @@ void webPortalInit() {
     if (deserializeJson(in, g_srv.arg("plain"))) { out["ok"]=false; out["err"]="bad_json"; sendJsonDoc(400,out); return; }
     JsonObject o = in.as<JsonObject>();
     if (o.containsKey("relay")) { int r=(int)(o["relay"]|0); bool on=(bool)(o["on"]|false); if (r>=1 && r<=8) relaySet((RelayId)(r-1), on); }
-    if (o.containsKey("pulseRelay")) { int r=(int)(o["pulseRelay"]|0); uint32_t ms=(uint32_t)(o["pulseMs"]|500); if (r>=1 && r<=8) { relaySet((RelayId)(r-1), true); delay(ms); relaySet((RelayId)(r-1), false);} }
+    if (o.containsKey("pulseRelay")) {
+      const int r = (int)(o["pulseRelay"] | 0);
+      const uint32_t ms = (uint32_t)constrain((int)(o["pulseMs"] | 500), 50, 5000);
+      if (r < 1 || r > 8) { out["ok"]=false; out["err"]="invalid_relay"; sendJsonDoc(400,out); return; }
+      if (g_servicePulse.active) { out["ok"]=false; out["err"]="pulse_busy"; sendJsonDoc(409,out); return; }
+      g_servicePulse.active = true;
+      g_servicePulse.relayIndex = (uint8_t)(r - 1);
+      g_servicePulse.offAtMs = millis() + ms;
+      relaySet((RelayId)g_servicePulse.relayIndex, true);
+      out["pulseMs"] = ms;
+    }
     const char* bz = o["buzzer"] | nullptr; if (bz && !strcmp(bz, "startup")) buzzerPlayStartup(); else if (bz && !strcmp(bz, "warning")) buzzerPlayWarning(true); else if (bz && !strcmp(bz, "off")) buzzerPlayWarning(false);
     out["ok"]=true; sendJsonDoc(200,out); EventLog::record("service", "io_test", "manual");
   });
@@ -2498,6 +2518,10 @@ void webPortalLoop() {
   g_ws.loop();
 
   const unsigned long now = millis();
+  if (g_servicePulse.active && (int32_t)(now - g_servicePulse.offAtMs) >= 0) {
+    relaySet((RelayId)g_servicePulse.relayIndex, false);
+    g_servicePulse.active = false;
+  }
   if (g_wsClientCount > 0 && (now - g_wsLastPushMs) >= 1000UL) {
     g_wsLastPushMs = now;
     const String msg = buildFastWsFrame(false);

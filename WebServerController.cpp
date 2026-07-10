@@ -1077,11 +1077,10 @@ static void handleNetworkPortalStart() {
     String path = uriPath;
     if (path == "/") path = "/index.html";
 
-    const bool wantGz = clientAcceptsGzip();
-    const String gzPath = path + ".gz";
-    const bool hasGz = wantGz && LittleFS.exists(gzPath);
-
-    const String servePath = hasGz ? gzPath : path;
+    // Serve plain LittleFS assets only. This keeps filesystem uploads and
+    // browser behaviour deterministic on all supported Arduino cores.
+    const bool hasGz = false;
+    const String servePath = path;
     if (!LittleFS.exists(servePath)) {
       g_server.send(404, "text/plain", "not found");
       return;
@@ -1090,7 +1089,6 @@ static void handleNetworkPortalStart() {
     fsLock();
     File f = LittleFS.open(servePath, "r");
     const String ctype = guessContentType(path); // note: original path, not .gz
-    if (hasGz) g_server.sendHeader("Content-Encoding", "gzip");
 
     if (isCacheableAsset(path)) {
       g_server.sendHeader("Cache-Control", "public, max-age=31536000, immutable");
