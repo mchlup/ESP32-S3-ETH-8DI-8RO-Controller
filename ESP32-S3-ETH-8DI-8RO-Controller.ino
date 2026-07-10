@@ -35,7 +35,7 @@ static void printHelp() {
   Serial.println(F("  R4     = cirkulační čerpadlo TUV"));
   Serial.println(F("  R5     = požadavek kotli pro TUV"));
   Serial.println(F("  R6     = den/noc ekvitermní křivka na kotli"));
-  Serial.println(F("  R7     = rezerva"));
+  Serial.println(F("  R7     = omezovaci rele vykonu kotle"));
   Serial.println(F("  R8     = stykač topné tyče (akumulační nádrž)"));
   Serial.println();
   Serial.println(F("Inputs mapping:"));

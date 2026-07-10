@@ -21,6 +21,7 @@ namespace {
   int s_legionellaLastDayKey = -1;
   uint32_t s_forceHeatUntilMs = 0;
   bool s_forceCirc = false;
+  uint32_t s_forceCircUntilMs = 0;
   bool s_circPulseAnchorValid = false;
   uint32_t s_circPulseAnchorMs = 0;
   int s_circPulseAnchorWeekday = -1;
@@ -42,6 +43,39 @@ namespace {
   uint32_t s_heatPhaseUntilMs = 0;
 
   static inline RelayId rid(uint8_t idx) { return (RelayId)idx; }
+  static void applyOutputs(bool valveOn, bool boilerRelayOn, bool circActive);
+  static void syncOpenTherm(bool boilerDemandActive);
+
+  static uint32_t commandDurationMs(JsonObjectConst o, uint32_t defaultSec) {
+    uint32_t sec = defaultSec;
+    if (o.containsKey("durationSec")) sec = (uint32_t)(o["durationSec"] | defaultSec);
+    else if (o.containsKey("durationMs")) return (uint32_t)(o["durationMs"] | (defaultSec * 1000UL));
+    else if (o.containsKey("boostMin")) sec = (uint32_t)(o["boostMin"] | (defaultSec / 60UL)) * 60UL;
+    if (sec > 24UL * 60UL * 60UL) sec = 24UL * 60UL * 60UL;
+    return sec * 1000UL;
+  }
+
+  static void applyCommandTarget(JsonObjectConst o) {
+    if (!o.containsKey("targetC")) return;
+    float target = (float)(o["targetC"] | s_cfg.heat.targetTempC);
+    if (!isfinite(target)) return;
+    if (target < 20.0f) target = 20.0f;
+    if (target > 80.0f) target = 80.0f;
+    s_cfg.heat.targetTempC = target;
+    s_cfg.heat.otDhwSetpointC = target;
+  }
+
+  static void stopManualHeatAndCirc() {
+    s_forceHeat = false;
+    s_forceHeatUntilMs = 0;
+    s_forceCirc = false;
+    s_forceCircUntilMs = 0;
+    s_heatPhase = DhwHeatPhase::Idle;
+    s_heatPhaseUntilMs = 0;
+    applyOutputs(false, false, false);
+    syncOpenTherm(false);
+    equithermSetExternalBlock(false);
+  }
 
   static const char* heatPhaseName(DhwHeatPhase p) {
     switch (p) {
@@ -665,12 +699,18 @@ void dhwLoop() {
   else if (boilerDemandActive) s_st.heatReason = s_st.antiLegionellaActive ? "anti_legionella" : "heating";
   else s_st.heatReason = "target_reached";
 
-  s_st.circRequested = s_st.circInputActive || s_st.circScheduleActive || s_forceCirc;
+  const bool manualCircActive = s_forceCirc && (s_forceCircUntilMs == 0 || (int32_t)(millis() - s_forceCircUntilMs) < 0);
+  if (s_forceCirc && !manualCircActive) {
+    s_forceCirc = false;
+    s_forceCircUntilMs = 0;
+  }
+
+  s_st.circRequested = s_st.circInputActive || s_st.circScheduleActive || manualCircActive;
   updateCircPulseAnchor(s_st.circRequested, s_st.circScheduleActive, circScheduleWeekday, circStartMin, s_st.lastEvalMs);
   s_st.circPulseOn = s_st.circRequested ? circPulseOn(s_st.lastEvalMs, s_st.circScheduleActive, circSchedTimeValid, circScheduleWeekday, circNowMin, circStartMin) : false;
   s_st.circActive = s_st.circRequested && (s_cfg.circ.pulseEnabled ? s_st.circPulseOn : true);
   if (!s_st.circRequested) s_st.circReason = "idle";
-  else if (s_forceCirc) s_st.circReason = s_cfg.circ.pulseEnabled ? (s_st.circPulseOn ? "manual_pulse_on" : "manual_pulse_off") : "manual";
+  else if (manualCircActive) s_st.circReason = s_cfg.circ.pulseEnabled ? (s_st.circPulseOn ? "manual_pulse_on" : "manual_pulse_off") : "manual";
   else if (!s_cfg.circ.pulseEnabled) s_st.circReason = "continuous";
   else s_st.circReason = s_st.circPulseOn ? "pulse_on" : "pulse_off";
 
@@ -855,11 +895,59 @@ bool dhwHandleCmdJson(const String& json, String& outErr) {
     return false;
   }
   JsonObject o = doc.as<JsonObject>();
+  applyCommandTarget(o);
+
+  const char* rawCommand = o["command"] | nullptr;
+  if (rawCommand && *rawCommand) {
+    String command(rawCommand);
+    command.toLowerCase();
+
+    if (command == "boost") {
+      const uint32_t durationMs = commandDurationMs(o, 15UL * 60UL);
+      s_forceHeat = true;
+      s_forceHeatUntilMs = millis() + durationMs;
+      return true;
+    }
+
+    if (command == "start" || command == "heat" || command == "heat_on") {
+      const uint32_t durationMs = commandDurationMs(o, 15UL * 60UL);
+      s_forceHeat = true;
+      s_forceHeatUntilMs = millis() + durationMs;
+      return true;
+    }
+
+    if (command == "stop" || command == "safe_stop" || command == "safestop") {
+      stopManualHeatAndCirc();
+      return true;
+    }
+
+    if (command == "circulation" || command == "circ" || command == "manual") {
+      bool on = true;
+      if (o.containsKey("active")) on = (bool)(o["active"] | true);
+      else if (o.containsKey("on")) on = (bool)(o["on"] | true);
+      s_forceCirc = on;
+      s_forceCircUntilMs = on ? (millis() + commandDurationMs(o, 5UL * 60UL)) : 0;
+      if (!on) relaySet(rid(s_cfg.circ.relayIndex), false);
+      return true;
+    }
+
+    if (command == "circ_off" || command == "circulation_off") {
+      s_forceCirc = false;
+      s_forceCircUntilMs = 0;
+      relaySet(rid(s_cfg.circ.relayIndex), false);
+      return true;
+    }
+
+    outErr = "bad command";
+    return false;
+  }
+
   if (o.containsKey("heatActive")) {
     const bool on = (bool)(o["heatActive"] | false);
     s_forceHeat = on;
     s_forceHeatUntilMs = on ? (millis() + 15UL * 60000UL) : 0;
     if (!on) {
+      s_forceHeatUntilMs = 0;
       s_heatPhase = DhwHeatPhase::Idle;
       s_heatPhaseUntilMs = 0;
       applyOutputs(false, false, s_st.circActive);
@@ -874,6 +962,7 @@ bool dhwHandleCmdJson(const String& json, String& outErr) {
   if (o.containsKey("circActive")) {
     const bool on = (bool)(o["circActive"] | false);
     s_forceCirc = on;
+    s_forceCircUntilMs = 0;
     if (!on) {
       relaySet(rid(s_cfg.circ.relayIndex), false);
     }
