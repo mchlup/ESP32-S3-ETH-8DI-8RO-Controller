@@ -28,7 +28,7 @@
 //  R4 = cirkulační čerpadlo
 //  R5 = požadavek ohřevu TUV do kotle (DHW request)
 //  R6 = požadavek Denní/Noční křivka do kotle
-//  R7 = Omezovací relé výkonu kotle (rezerva)
+//  R7 = Omezovací relé výkonu kotle
 //  R8 = stykač topné spirály akumulační nádrže
 //
 // Vstupy (IN1..IN8):
@@ -43,7 +43,7 @@ static constexpr uint8_t FIX_RELAY_TUV_VALVE0       = 2; // R3
 static constexpr uint8_t FIX_RELAY_RECIRC_PUMP0     = 3; // R4
 static constexpr uint8_t FIX_RELAY_BOILER_DHW_REQ0  = 4; // R5
 static constexpr uint8_t FIX_RELAY_BOILER_NIGHT0    = 5; // R6
-static constexpr uint8_t FIX_RELAY_RESERVED_7_0     = 6; // R7 (rezerva / omezovací relé)
+static constexpr uint8_t FIX_RELAY_RESERVED_7_0     = 6; // R7 (omezovací relé výkonu kotle)
 static constexpr uint8_t FIX_RELAY_AKU_HEATER0      = 7; // R8
 
 // Vstupy dle zadání projektu:

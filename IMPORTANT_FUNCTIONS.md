@@ -21,7 +21,7 @@ Tento soubor je **živý** a má se aktualizovat při každé úpravě kódu, ab
 - `R4` = cirkulační čerpadlo TUV
 - `R5` = požadavek kotli pro TUV
 - `R6` = den/noc ekvitermní křivka na kotli
-- `R7` = rezerva
+- `R7` = omezovací relé výkonu kotle
 - `R8` = stykač topné tyče (akumulační nádrž)
 
 **Důležité k R1/R2 / směšovacímu ventilu:**
@@ -243,4 +243,3 @@ Co zatím chybí (pro „funkci směšovacího ventilu“):
 - Stavová/regulační logika (např. časované pulsy OPEN/CLOSE, deadband, limitace doběhu)
 - Využití teplotních rolí (`TemperatureManager`) pro regulaci směšování
 - Interlock i ve web API (`/api/relay`) + případně blokace současného řízení z více zdrojů
-
