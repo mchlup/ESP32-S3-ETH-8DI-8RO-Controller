@@ -38,6 +38,9 @@ namespace {
     bool connected = false;
     bool discoveryPublished = false;
     bool subscribed = false;
+    uint16_t discoveryExpected = 0;
+    uint16_t discoveryQueued = 0;
+    uint16_t discoveryFailed = 0;
     uint32_t lastConnectAttemptMs = 0;
     uint32_t lastPublishMs = 0;
     uint32_t lastDiscoveryMs = 0;
@@ -58,6 +61,7 @@ namespace {
   RuntimeState s_st;
 
   static constexpr uint32_t kReconnectMinMs = 5000;
+  static constexpr uint32_t kDiscoveryRetryMs = 30000;
 
   static String copyMqttSpan(const char* data, int len) {
     if (!data || len <= 0) return String();
@@ -138,6 +142,9 @@ namespace {
     s_st.connected = false;
     s_st.discoveryPublished = false;
     s_st.subscribed = false;
+    s_st.discoveryExpected = 0;
+    s_st.discoveryQueued = 0;
+    s_st.discoveryFailed = 0;
   }
 
   static void mqttNoteError(const String& msg, int code = 0) {
@@ -234,13 +241,36 @@ namespace {
     publishRaw(mqttTopicAvailability(), String(payload), true, 1);
   }
 
-  static void publishDiscoveryEntity(const char* component, const char* objectId, DynamicJsonDocument& doc) {
-    String topic = s_cfg.discoveryPrefix + "/" + component + "/" + s_cfg.nodeId + "/" + objectId + "/config";
-    publishJson(topic, doc, true, 1);
+  static bool publishDiscoveryEntity(const char* component, const char* objectId, DynamicJsonDocument& doc) {
+    const String topic = s_cfg.discoveryPrefix + "/" + component + "/" + s_cfg.nodeId + "/" + objectId + "/config";
+
+    // A default-constructed DynamicJsonDocument contains JSON null. Calling
+    // as<JsonObject>() does not create its root object, so serializing it would
+    // publish the literal payload "null". Reject such a payload explicitly.
+    if (doc.overflowed()) {
+      mqttNoteError(String("discovery JSON overflow: ") + topic);
+      return false;
+    }
+    JsonObjectConst root = doc.as<JsonObjectConst>();
+    if (root.isNull()) {
+      mqttNoteError(String("discovery JSON root is null: ") + topic);
+      return false;
+    }
+
+    String payload;
+    serializeJson(doc, payload);
+    if (!payload.length() || payload == "null") {
+      mqttNoteError(String("discovery payload is null: ") + topic);
+      return false;
+    }
+    return publishRaw(topic, payload, true, 1);
   }
 
-  static void addCommonEntityFields(DynamicJsonDocument& doc, const char* name, const char* uniqSuffix) {
-    JsonObject root = doc.as<JsonObject>();
+  static JsonObject addCommonEntityFields(DynamicJsonDocument& doc, const char* name, const char* uniqSuffix) {
+    // to<JsonObject>() creates the root object. Using as<JsonObject>() here
+    // would only attempt to view the current value and leaves a new document
+    // as JSON null.
+    JsonObject root = doc.to<JsonObject>();
     root["name"] = name;
     root["uniq_id"] = s_cfg.nodeId + String("_") + uniqSuffix;
     root["stat_t"] = mqttTopicState();
@@ -249,10 +279,22 @@ namespace {
     root["pl_not_avail"] = "offline";
     JsonObject device = root.createNestedObject("dev");
     fillDevice(device);
+    return root;
   }
 
   static void publishDiscovery() {
     if (!s_st.connected || !s_cfg.haEnabled || !s_cfg.haDiscovery) return;
+
+    s_st.lastDiscoveryMs = millis();
+    s_st.discoveryExpected = 0;
+    s_st.discoveryQueued = 0;
+    s_st.discoveryFailed = 0;
+
+    const auto publishEntity = [&](const char* component, const char* objectId, DynamicJsonDocument& doc) {
+      ++s_st.discoveryExpected;
+      if (publishDiscoveryEntity(component, objectId, doc)) ++s_st.discoveryQueued;
+      else ++s_st.discoveryFailed;
+    };
 
     // Sensors
     struct SensorDef {
@@ -278,14 +320,13 @@ namespace {
     };
     for (const auto& def : sensors) {
       DynamicJsonDocument doc(1024);
-      addCommonEntityFields(doc, def.name, def.objectId);
-      JsonObject root = doc.as<JsonObject>();
+      JsonObject root = addCommonEntityFields(doc, def.name, def.objectId);
       root["val_tpl"] = def.valueTpl;
       if (def.unit) root["unit_of_meas"] = def.unit;
       if (def.deviceClass) root["dev_cla"] = def.deviceClass;
       if (def.stateClass) root["stat_cla"] = def.stateClass;
       if (def.icon) root["icon"] = def.icon;
-      publishDiscoveryEntity("sensor", def.objectId, doc);
+      publishEntity("sensor", def.objectId, doc);
     }
 
     // Relay switches
@@ -293,8 +334,7 @@ namespace {
       DynamicJsonDocument doc(1152);
       const String objectId = String("relay_") + String(i + 1);
       const String name = String("Relé ") + String(i + 1);
-      addCommonEntityFields(doc, name.c_str(), objectId.c_str());
-      JsonObject root = doc.as<JsonObject>();
+      JsonObject root = addCommonEntityFields(doc, name.c_str(), objectId.c_str());
       root["cmd_t"] = mqttTopicCmdRoot() + "/relay/" + String(i + 1) + "/set";
       root["val_tpl"] = relayStateTemplate(i);
       root["pl_on"] = "ON";
@@ -302,7 +342,7 @@ namespace {
       root["stat_on"] = "ON";
       root["stat_off"] = "OFF";
       root["icon"] = "mdi:electric-switch";
-      publishDiscoveryEntity("switch", objectId.c_str(), doc);
+      publishEntity("switch", objectId.c_str(), doc);
     }
 
     // Inputs as binary sensors
@@ -310,19 +350,17 @@ namespace {
     for (uint8_t i = 0; i < 3; i++) {
       DynamicJsonDocument doc(1024);
       const String objectId = String("input_") + String(i + 1);
-      addCommonEntityFields(doc, inputNames[i], objectId.c_str());
-      JsonObject root = doc.as<JsonObject>();
+      JsonObject root = addCommonEntityFields(doc, inputNames[i], objectId.c_str());
       root["val_tpl"] = inputStateTemplate(i);
       root["pl_on"] = "ON";
       root["pl_off"] = "OFF";
-      publishDiscoveryEntity("binary_sensor", objectId.c_str(), doc);
+      publishEntity("binary_sensor", objectId.c_str(), doc);
     }
 
     // Mode select
     {
       DynamicJsonDocument doc(1024);
-      addCommonEntityFields(doc, "Ekviterm mode", "equitherm_mode");
-      JsonObject root = doc.as<JsonObject>();
+      JsonObject root = addCommonEntityFields(doc, "Ekviterm mode", "equitherm_mode");
       root["cmd_t"] = mqttTopicCmdRoot() + "/equitherm/mode/set";
       root["val_tpl"] = "{{ value_json.eq.me if value_json.eq.me is defined and value_json.eq.me else value_json.eq.m }}";
       JsonArray opts = root.createNestedArray("options");
@@ -330,14 +368,13 @@ namespace {
       opts.add("day");
       opts.add("night");
       root["icon"] = "mdi:radiator";
-      publishDiscoveryEntity("select", "equitherm_mode", doc);
+      publishEntity("select", "equitherm_mode", doc);
     }
 
     // DHW + circulation switches
     {
       DynamicJsonDocument doc(1024);
-      addCommonEntityFields(doc, "Ohrev TUV", "dhw_heat");
-      JsonObject root = doc.as<JsonObject>();
+      JsonObject root = addCommonEntityFields(doc, "Ohrev TUV", "dhw_heat");
       root["cmd_t"] = mqttTopicCmdRoot() + "/dhw/heat/set";
       root["val_tpl"] = "{{ 'ON' if value_json.dhw.ha else 'OFF' }}";
       root["pl_on"] = "ON";
@@ -345,12 +382,11 @@ namespace {
       root["stat_on"] = "ON";
       root["stat_off"] = "OFF";
       root["icon"] = "mdi:water-boiler";
-      publishDiscoveryEntity("switch", "dhw_heat", doc);
+      publishEntity("switch", "dhw_heat", doc);
     }
     {
       DynamicJsonDocument doc(1024);
-      addCommonEntityFields(doc, "Cirkulace TUV", "dhw_circ");
-      JsonObject root = doc.as<JsonObject>();
+      JsonObject root = addCommonEntityFields(doc, "Cirkulace TUV", "dhw_circ");
       root["cmd_t"] = mqttTopicCmdRoot() + "/dhw/circ/set";
       root["val_tpl"] = "{{ 'ON' if value_json.dhw.ca else 'OFF' }}";
       root["pl_on"] = "ON";
@@ -358,11 +394,18 @@ namespace {
       root["stat_on"] = "ON";
       root["stat_off"] = "OFF";
       root["icon"] = "mdi:pump";
-      publishDiscoveryEntity("switch", "dhw_circ", doc);
+      publishEntity("switch", "dhw_circ", doc);
     }
 
-    s_st.discoveryPublished = true;
-    s_st.lastDiscoveryMs = millis();
+    s_st.discoveryPublished =
+      s_st.discoveryExpected > 0 &&
+      s_st.discoveryQueued == s_st.discoveryExpected &&
+      s_st.discoveryFailed == 0;
+
+    if (!s_st.discoveryPublished) {
+      mqttNoteError(String("discovery incomplete: queued=") + String(s_st.discoveryQueued) +
+                    "/" + String(s_st.discoveryExpected));
+    }
   }
 
   static void publishInfo() {
@@ -571,7 +614,11 @@ void mqttLoop() {
   }
   if (s_st.connected) {
     mqttSubscribeCommands();
-    if (!s_st.discoveryPublished) publishDiscovery();
+    const uint32_t now = millis();
+    if (!s_st.discoveryPublished &&
+        (s_st.lastDiscoveryMs == 0 || (uint32_t)(now - s_st.lastDiscoveryMs) >= kDiscoveryRetryMs)) {
+      publishDiscovery();
+    }
     publishState(false);
   }
 }
@@ -612,6 +659,10 @@ void mqttFillStatusJson(JsonObject& mqtt, bool includePreview) {
   mqtt["lastError"] = s_st.lastError;
   if (s_st.lastErrorText.length()) mqtt["lastErrorText"] = s_st.lastErrorText; else mqtt["lastErrorText"] = nullptr;
   mqtt["discoveryPublished"] = s_st.discoveryPublished;
+  mqtt["discoveryExpected"] = (uint32_t)s_st.discoveryExpected;
+  mqtt["discoveryQueued"] = (uint32_t)s_st.discoveryQueued;
+  mqtt["discoveryFailed"] = (uint32_t)s_st.discoveryFailed;
+  mqtt["lastDiscoveryMs"] = (uint32_t)s_st.lastDiscoveryMs;
   mqtt["lastPublishMs"] = (uint32_t)s_st.lastPublishMs;
   JsonObject ha = mqtt.createNestedObject("homeAssistant");
   ha["enabled"] = s_cfg.haEnabled;
