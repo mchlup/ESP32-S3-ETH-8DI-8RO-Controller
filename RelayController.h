@@ -32,6 +32,10 @@ void relayAllOn();
 // Configurable safety interlock for mixing valve outputs.
 // Indices are 0..7 (= R1..R8). Passing 0,1 keeps the legacy default R1/R2.
 void relaySetMixingInterlockRelays(uint8_t openRelayIndex, uint8_t closeRelayIndex);
+// Atomically apply and verify the complete mixing-valve relay pair.
+// direction: +1 = R1/toward port A (hotter), -1 = R2/toward port B (cooler), 0 = both OFF.
+// Returns true only when the TCA9554 output register read-back matches.
+bool relaySetMixingDirection(int8_t direction, uint8_t* appliedMask = nullptr);
 
 // !!! DŮLEŽITÉ: Print& (ne Stream&) – kvůli LogicController / .ino
 void relayPrintStates(Print& out);

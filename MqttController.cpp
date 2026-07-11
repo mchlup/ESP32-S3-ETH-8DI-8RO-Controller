@@ -1,3 +1,4 @@
+#include "Features.h"
 #include "MqttController.h"
 
 #include <WiFi.h>
@@ -85,12 +86,12 @@ namespace {
 
   static String relayStateTemplate(uint8_t idx) {
     const uint8_t mask = (uint8_t)(1u << idx);
-    return String("{{ 'ON' if (value_json.rel.mask | int(0)) & ") + String(mask) + String(" > 0 else 'OFF' }}");
+    return String("{{ 'ON' if ((value_json.rel.mask | int(0)) & ") + String(mask) + String(") > 0 else 'OFF' }}");
   }
 
   static String inputStateTemplate(uint8_t idx) {
     const uint8_t mask = (uint8_t)(1u << idx);
-    return String("{{ 'ON' if (value_json.in.actMask | int(0)) & ") + String(mask) + String(" > 0 else 'OFF' }}");
+    return String("{{ 'ON' if ((value_json.in.actMask | int(0)) & ") + String(mask) + String(") > 0 else 'OFF' }}");
   }
 
   static const char* tempSourceText(TempSource s) {
@@ -148,6 +149,7 @@ namespace {
   static bool publishRaw(const String& topic, const String& payload, bool retain = false, int qos = 0) {
     if (!s_st.client || !s_st.connected) return false;
     const int msgId = esp_mqtt_client_publish(s_st.client, topic.c_str(), payload.c_str(), payload.length(), qos, retain ? 1 : 0);
+    if (msgId < 0) mqttNoteError(String("publish failed: ") + topic, msgId);
     return msgId >= 0;
   }
 
@@ -454,8 +456,9 @@ namespace {
   static void mqttSubscribeCommands() {
     if (!s_st.client || !s_st.connected || s_st.subscribed) return;
     const String root = mqttTopicCmdRoot() + "/#";
-    esp_mqtt_client_subscribe(s_st.client, root.c_str(), 1);
-    s_st.subscribed = true;
+    const int msgId = esp_mqtt_client_subscribe(s_st.client, root.c_str(), 1);
+    s_st.subscribed = (msgId >= 0);
+    if (!s_st.subscribed) mqttNoteError("command subscribe failed", msgId);
   }
 
   static void mqttStartClient() {

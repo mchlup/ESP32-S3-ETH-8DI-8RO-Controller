@@ -30,6 +30,21 @@ namespace {
     {TempRole::DhwReturn,  "dhw_return", "Návrat TUV",        DALLAS_DHW_RETURN_PIN, true},
   };
 
+  constexpr TemperatureManager::SelectableSourceInfo kMixSourcesA[] = {
+    {"none", "Nevybráno"},
+    {"tank_mid", "Akumulační nádrž – Uprostřed (DS18B20)"},
+  };
+
+  constexpr TemperatureManager::SelectableSourceInfo kMixSourcesB[] = {
+    {"none", "Nevybráno"},
+    {"return_dallas", "Zpátečka B – DS18B20 (role Zpátečka / Return.flow)"},
+  };
+
+  constexpr TemperatureManager::SelectableSourceInfo kMixSourcesAB[] = {
+    {"none", "Nevybráno"},
+    {"opentherm_ch", "OpenTherm – CH teplota (měřená)"},
+  };
+
   static const RoleBindingDef* findRoleBinding(TempRole role) {
     for (const auto& it : kRoleBindings) if (it.role == role) return &it;
     return nullptr;
@@ -419,7 +434,7 @@ namespace TemperatureManager {
     return out;
   }
 
-  TempValue getMixFeedback(uint32_t maxAgeMs) {
+  TempValue getDallasReturn(uint32_t maxAgeMs) {
     begin();
     TempValue out;
     float t = NAN;
@@ -440,6 +455,60 @@ namespace TemperatureManager {
     out.gpio = DALLAS_RETURN_PIN;
     out.rom = rom;
     return out;
+  }
+
+  TempValue getMixFeedback(uint32_t maxAgeMs) {
+    return getDallasReturn(maxAgeMs);
+  }
+
+  String normalizeSourceKey(const String& key, const char* fallback) {
+    String value = key;
+    value.trim();
+    value.toLowerCase();
+    value.replace(" ", "_");
+    value.replace("-", "_");
+    value.replace(".", "_");
+    while (value.indexOf("__") >= 0) value.replace("__", "_");
+
+    if (value == "tankmid" || value == "tank_middle" || value == "aku_mid" ||
+        value == "aku_uprostred" || value == "accu_mid") value = "tank_mid";
+    if (value == "dallas_return" || value == "return_ds" || value == "return" ||
+        value == "mix_feedback" || value == "after_mix" || value == "aftermix" ||
+        value == "feedback") value = "return_dallas";
+    if (value == "ot_ch" || value == "ch_measured" || value == "boiler_temp" ||
+        value == "boiler_temperature" || value == "flow" || value == "opentherm_flow") {
+      value = "opentherm_ch";
+    }
+
+    if (value == "none" || value == "tank_mid" || value == "return_dallas" ||
+        value == "opentherm_ch") return value;
+    return String(fallback ? fallback : "none");
+  }
+
+  TempValue getBySourceKey(const String& key, uint32_t maxAgeMs) {
+    const String normalized = normalizeSourceKey(key, "none");
+    if (normalized == "none") return TempValue{};
+    if (normalized == "tank_mid") return get(TempRole::TankMid, maxAgeMs);
+    if (normalized == "return_dallas") return getDallasReturn(maxAgeMs);
+    if (normalized == "opentherm_ch") {
+      const TempValue value = get(TempRole::Flow, maxAgeMs);
+      return value.src == TempSource::OpenTherm ? value : TempValue{};
+    }
+    return TempValue{};
+  }
+
+  const SelectableSourceInfo* getSelectableSourcesForPort(const char* port, size_t& count) {
+    const String p = String(port ? port : "");
+    if (p.equalsIgnoreCase("A")) {
+      count = sizeof(kMixSourcesA) / sizeof(kMixSourcesA[0]);
+      return kMixSourcesA;
+    }
+    if (p.equalsIgnoreCase("B")) {
+      count = sizeof(kMixSourcesB) / sizeof(kMixSourcesB[0]);
+      return kMixSourcesB;
+    }
+    count = sizeof(kMixSourcesAB) / sizeof(kMixSourcesAB[0]);
+    return kMixSourcesAB;
   }
 
   const char* roleName(TempRole role) {
@@ -572,7 +641,15 @@ namespace TemperatureManager {
         out["returnFlowSrc"] = src;
         out["return.flowSrc"] = src;
 
-        const TempValue mix = getMixFeedback(600000);
+        // Dedicated B branch temperature (Dallas-only Return role).
+        const TempValue returnDallas = getDallasReturn(600000);
+        const char* returnDallasSrc = returnDallas.valid ? "dallas" : nullptr;
+        if (returnDallas.valid) out["returnDallasC"] = returnDallas.c; else out["returnDallasC"] = nullptr;
+        out["returnDallasSrc"] = returnDallasSrc;
+
+        // Backward-compatible afterMix fields now mirror hydraulic port AB,
+        // whose configured source is the actual regulation feedback.
+        const TempValue mix = getBySourceKey(ConfigStore::getEqMixTempSourceAB(), 600000);
         const char* mixSrc = nullptr;
         switch (mix.src) {
           case TempSource::OpenTherm: mixSrc = "opentherm"; break;
@@ -607,7 +684,7 @@ namespace TemperatureManager {
     for (const auto &def : kRoleBindings) {
       if (!def.assignable) continue;
       uint64_t rom = cfgRomForRole(def.role);
-      TempValue v = (def.role == TempRole::Return) ? getMixFeedback(600000) : get(def.role, 600000);
+      TempValue v = (def.role == TempRole::Return) ? getDallasReturn(600000) : get(def.role, 600000);
       const char* src = nullptr;
       switch (v.src) {
         case TempSource::OpenTherm: src = "opentherm"; break;
@@ -630,6 +707,35 @@ namespace TemperatureManager {
       a["key"] = def.key;
       a["label"] = def.label;
       a["gpio"] = (int)def.gpio;
+    }
+
+    JsonObject mixingValve = out.createNestedObject("mixingValve");
+    const String sourceA = ConfigStore::getEqMixTempSourceA();
+    const String sourceB = ConfigStore::getEqMixTempSourceB();
+    const String sourceAB = ConfigStore::getEqMixTempSourceAB();
+    mixingValve["a"] = sourceA;
+    mixingValve["b"] = sourceB;
+    mixingValve["ab"] = sourceAB;
+    JsonArray mixPorts = mixingValve.createNestedArray("ports");
+    struct MixPortDef { const char* port; String source; };
+    const MixPortDef mixDefs[] = {{"A", sourceA}, {"B", sourceB}, {"AB", sourceAB}};
+    for (const auto& def : mixDefs) {
+      JsonObject p = mixPorts.createNestedObject();
+      p["port"] = def.port;
+      p["source"] = def.source;
+      const TempValue v = getBySourceKey(def.source, 600000);
+      if (v.valid) p["currentC"] = v.c; else p["currentC"] = nullptr;
+      const char* src = nullptr;
+      switch (v.src) {
+        case TempSource::OpenTherm: src = "opentherm"; break;
+        case TempSource::Dallas: src = "dallas"; break;
+        case TempSource::Ble: src = "ble"; break;
+        default: src = nullptr; break;
+      }
+      p["currentSrc"] = src;
+      p["ageMs"] = v.valid ? (uint32_t)v.ageMs : 0;
+      if (v.src == TempSource::Dallas && v.rom) p["rom"] = romToHex(v.rom); else p["rom"] = nullptr;
+      if (v.valid && v.gpio != 255) p["gpio"] = (int)v.gpio; else p["gpio"] = nullptr;
     }
 
     // Devices per bus

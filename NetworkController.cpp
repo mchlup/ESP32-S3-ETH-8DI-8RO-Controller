@@ -9,6 +9,7 @@
 #include <Preferences.h>
 #include <ETH.h>
 #include <SPI.h>
+#include <esp_arduino_version.h>
 
 #include <time.h>
 #include <stdlib.h>
@@ -16,7 +17,11 @@
 #include "InputController.h"
 #include "ConfigStore.h"
 
-#if defined(ETH_PHY_W5500)
+// ETH_PHY_W5500 is an enum value in Arduino-ESP32, not a preprocessor macro.
+// Testing it with defined(ETH_PHY_W5500) therefore always evaluated to false
+// and disabled Ethernet even on cores that support the SPI W5500 driver.
+// The ETH.begin(..., SPI) overload used below is available in Arduino-ESP32 3.x.
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && (ESP_ARDUINO_VERSION_MAJOR >= 3)
 #define NETWORK_ETH_W5500_SUPPORTED 1
 #else
 #define NETWORK_ETH_W5500_SUPPORTED 0
@@ -131,6 +136,10 @@ namespace {
 
   static void startEthernet() {
     if (s_ethStarted) return;
+    Serial.printf("[ETH] Arduino-ESP32 %d.%d.%d, enabling W5500 SPI driver\n",
+                  ESP_ARDUINO_VERSION_MAJOR,
+                  ESP_ARDUINO_VERSION_MINOR,
+                  ESP_ARDUINO_VERSION_PATCH);
     Network.onEvent(onNetworkEvent);
     SPI.begin(ETH_SPI_SCK_PIN, ETH_SPI_MISO_PIN, ETH_SPI_MOSI_PIN);
     if (!ETH.begin(ETH_PHY_W5500, 1, ETH_SPI_CS_PIN, ETH_SPI_INT_PIN, ETH_SPI_RST_PIN, SPI)) {
@@ -143,7 +152,10 @@ namespace {
   }
 #else
   static void startEthernet() {
-    Serial.println("[ETH] W5500 support not available in this Arduino core");
+    Serial.printf("[ETH] W5500 requires Arduino-ESP32 3.x; detected %d.%d.%d\n",
+                  ESP_ARDUINO_VERSION_MAJOR,
+                  ESP_ARDUINO_VERSION_MINOR,
+                  ESP_ARDUINO_VERSION_PATCH);
   }
 #endif
 
@@ -355,11 +367,32 @@ void networkRequestConfigPortal() {
 }
 
 bool networkIsConnected() { return networkIsWifiConnected() || networkIsEthernetConnected(); }
-bool networkIsWifiConnected() { return (WiFi.status() == WL_CONNECTED); }
-bool networkIsEthernetConnected() { return s_ethConnected; }
+
+bool networkIsWifiConnected() {
+  if (WiFi.status() != WL_CONNECTED) return false;
+  const IPAddress ip = WiFi.localIP();
+  return ip != IPAddress(0, 0, 0, 0);
+}
+
+bool networkIsEthernetConnected() {
+#if NETWORK_ETH_W5500_SUPPORTED
+  // Event flags are the primary source, but also verify the live interface.
+  // This makes startup robust if GOT_IP happened before another module queried
+  // the network state or if an event was missed during initialization.
+  const IPAddress ip = ETH.localIP();
+  const bool live = ETH.linkUp() && ip != IPAddress(0, 0, 0, 0);
+  if (live && !s_ethConnected) s_ethConnected = true;
+  if (!live && s_ethConnected) s_ethConnected = false;
+  return live;
+#else
+  return false;
+#endif
+}
 
 String networkGetIp() {
+#if NETWORK_ETH_W5500_SUPPORTED
   if (networkIsEthernetConnected()) return ETH.localIP().toString();
+#endif
   if (networkIsWifiConnected()) return WiFi.localIP().toString();
   return String();
 }

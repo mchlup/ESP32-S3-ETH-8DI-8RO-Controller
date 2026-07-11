@@ -109,6 +109,8 @@ static bool readRegRaw(uint8_t reg, uint8_t &out) {
   return true;
 }
 
+static bool initTca();
+
 static void scheduleApply(uint8_t logicalMask) {
   s_applyPending = true;
   s_pendingMask  = logicalMask;
@@ -144,6 +146,44 @@ static void processPending(uint32_t now) {
     s_ok = false;
     return;
   }
+}
+
+// Apply one complete logical mask synchronously and verify the TCA9554 output
+// register. This is used by the mixing-valve pair so the control state is only
+// advanced after the physical expander accepted the complete R1/R2 state.
+static bool applyMaskImmediate(uint8_t logicalMask) {
+  applyMixingInterlock(logicalMask);
+  s_pendingMask = logicalMask;
+  s_applyPending = true;
+
+  if (!s_ok) {
+    // One immediate recovery attempt is justified for an operator/control
+    // command. Further attempts remain non-blocking in relayUpdate().
+    if (!initTca()) {
+      scheduleApply(logicalMask);
+      return false;
+    }
+    s_ok = true;
+    s_i2cRecoveries++;
+    s_recoverRetry.onSuccess(millis());
+  }
+
+  const uint8_t hw = toHw(logicalMask);
+  bool ok = writeRegRaw(REG_OUTPUT, hw);
+  if (ok) {
+    uint8_t rb = 0;
+    ok = readRegRaw(REG_OUTPUT, rb) && (rb == hw);
+    if (!ok) noteI2cErrorThrottled("immediate verify mismatch/output read failed");
+  }
+
+  if (ok) {
+    s_applyPending = false;
+    s_applyRetry.onSuccess(millis());
+    return true;
+  }
+
+  scheduleApply(logicalMask);
+  return false;
 }
 
 static bool initTca() {
@@ -255,6 +295,37 @@ void relaySetMixingInterlockRelays(uint8_t openRelayIndex, uint8_t closeRelayInd
   applyMixingInterlock(s_mask);
   scheduleApply(s_mask);
   processPending(millis());
+}
+
+bool relaySetMixingDirection(int8_t direction, uint8_t* appliedMask) {
+  if (direction < -1 || direction > 1) return false;
+  if (s_mixInterlockOpenIdx >= RELAY_COUNT || s_mixInterlockCloseIdx >= RELAY_COUNT) return false;
+  if (s_mixInterlockOpenIdx == s_mixInterlockCloseIdx) return false;
+
+  const uint8_t openBit = (uint8_t)(1U << s_mixInterlockOpenIdx);
+  const uint8_t closeBit = (uint8_t)(1U << s_mixInterlockCloseIdx);
+  const uint8_t pairBits = (uint8_t)(openBit | closeBit);
+
+  uint8_t targetMask = (uint8_t)(s_mask & (uint8_t)~pairBits);
+  if (direction > 0) targetMask |= openBit;
+  else if (direction < 0) targetMask |= closeBit;
+
+  // Update the desired logical state first so diagnostics and retry handling use
+  // the same target. The immediate write below verifies the actual expander state.
+  s_mask = targetMask;
+  const bool ok = applyMaskImmediate(targetMask);
+  if (ok) {
+    if (appliedMask) *appliedMask = s_mask;
+    return true;
+  }
+
+  // Fail safe: a failed ON command must not be applied later by the retry queue
+  // after the controller has already rejected the pulse. Keep both valve relays OFF.
+  const uint8_t safeMask = (uint8_t)(s_mask & (uint8_t)~pairBits);
+  s_mask = safeMask;
+  (void)applyMaskImmediate(safeMask);
+  if (appliedMask) *appliedMask = s_mask;
+  return false;
 }
 
 uint8_t relayGetMask() {
