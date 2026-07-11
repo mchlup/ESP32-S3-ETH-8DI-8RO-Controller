@@ -9,7 +9,7 @@
 // Payload 6B (LE): int16 temp_x10, uint8 hum, uint16 press_hPa, int8 trend
 
 struct BleConfig {
-  bool enabled = true;
+  bool enabled = false;
   String namePrefix = "ESP-Meteostanice"; // matches sensor requirement
   uint32_t scanIntervalMs = 10000;
   uint32_t reconnectBackoffMs = 5000;

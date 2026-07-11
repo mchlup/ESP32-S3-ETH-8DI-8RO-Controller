@@ -236,12 +236,11 @@ namespace {
 }
 
 void bleInit() {
-  ensureInit();
   g_st.enabled = g_cfg.enabled;
+  if (g_cfg.enabled) ensureInit();
 }
 
 void bleLoop() {
-  ensureInit();
   g_st.enabled = g_cfg.enabled;
 
   if (!g_cfg.enabled) {
@@ -257,6 +256,7 @@ void bleLoop() {
     return;
   }
 
+  ensureInit();
   const uint32_t now = millis();
 
   // Connected => nothing to do here; notify callback keeps data updated.
@@ -337,6 +337,9 @@ String bleGetStatusJson() {
   doc["peer"] = g_st.peer;
   doc["err"] = g_st.lastError;
   doc["lu"] = g_st.lastUpdateMs;
+  doc["namePrefix"] = g_cfg.namePrefix;
+  doc["scanIntervalMs"] = g_cfg.scanIntervalMs;
+  doc["reconnectBackoffMs"] = g_cfg.reconnectBackoffMs;
 
   JsonObject m = doc.createNestedObject("meteo");
   m["v"] = g_meteo.valid;

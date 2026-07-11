@@ -18,7 +18,7 @@ namespace {
   String   g_otMode = "readOnly";
   bool     g_otAllowRawWrite = false;
 
-  bool     g_bleEnabled = true;
+  bool     g_bleEnabled = false;
   String   g_bleNamePrefix = "ESP-Meteostanice";
   uint32_t g_bleScanMs = 10000;
 
@@ -153,11 +153,19 @@ namespace {
   uint8_t g_eqMixCloseRelayIndex = 1; // R2
   float  g_eqMixDeadbandC = 0.5f;
   float  g_eqMixTargetOffsetC = 0.0f;
-  uint32_t g_eqMixPulseMs = 600;
-  uint32_t g_eqMixMinIntervalMs = 15000;
-  uint32_t g_eqMixTravelMs = 600;
+  String g_eqMixTargetReachedAction = "return_a";
+  uint32_t g_eqMixPulseMs = 300;
+  uint32_t g_eqMixMinIntervalMs = 30000;
+  uint32_t g_eqMixTravelMs = 6000;
   uint32_t g_eqMixCalibrationSeatMs = 1500;
   uint32_t g_eqMixAutoRecalibrationMs = 21600000UL;
+  // Hydraulic temperature mapping for the three-way mixing valve.
+  // A  = hot supply from the middle of the accumulation tank (DS18B20 role tank_mid)
+  // B  = return/cold branch from the dedicated DS18B20 Return role on GPIO2
+  // AB = mixed output measured by the boiler over OpenTherm (CH measured temperature)
+  String g_eqMixTempSourceA = "tank_mid";
+  String g_eqMixTempSourceB = "return_dallas";
+  String g_eqMixTempSourceAB = "opentherm_ch";
 
   // Boiler assist headroom
   bool   g_eqBoilerAssistEnabled = true;
@@ -246,11 +254,15 @@ static constexpr const char* K_EQ_MIX_O = "eq_mx_o";
 static constexpr const char* K_EQ_MIX_C = "eq_mx_c";
 static constexpr const char* K_EQ_MIX_DB = "eq_mx_db";
 static constexpr const char* K_EQ_MIX_TO = "eq_mx_to";
+static constexpr const char* K_EQ_MIX_DONE = "eq_mx_dn";
 static constexpr const char* K_EQ_MIX_P = "eq_mx_p";
 static constexpr const char* K_EQ_MIX_MI = "eq_mx_mi";
 static constexpr const char* K_EQ_MIX_T = "eq_mx_t";
 static constexpr const char* K_EQ_MIX_SEAT = "eq_mx_se";
 static constexpr const char* K_EQ_MIX_RECAL = "eq_mx_rc";
+static constexpr const char* K_EQ_MIX_SRC_A = "eq_mx_sa";
+static constexpr const char* K_EQ_MIX_SRC_B = "eq_mx_sb";
+static constexpr const char* K_EQ_MIX_SRC_AB = "eq_mx_sab";
 
 static constexpr const char* K_EQ_BA_EN = "eq_ba_en";
 static constexpr const char* K_EQ_BA_D = "eq_ba_d";
@@ -324,6 +336,10 @@ static constexpr const char* K_EQ_BA_CH = "eq_ba_ch";
     hi = (uint32_t)(v >> 32);
     lo = (uint32_t)(v & 0xFFFFFFFFu);
   }
+
+  String normalizeMixTempSourceA(String value);
+  String normalizeMixTempSourceB(String value);
+  String normalizeMixTempSourceAB(String value);
 
   void load() {
     if (!g_prefs.begin(NS, true)) return;
@@ -447,11 +463,15 @@ static constexpr const char* K_EQ_BA_CH = "eq_ba_ch";
       g_eqMixCloseRelayIndex = (uint8_t)g_prefs.getUInt(K_EQ_MIX_C, g_eqMixCloseRelayIndex);
       g_eqMixDeadbandC = g_prefs.getFloat(K_EQ_MIX_DB, g_eqMixDeadbandC);
       g_eqMixTargetOffsetC = g_prefs.getFloat(K_EQ_MIX_TO, g_eqMixTargetOffsetC);
+      g_eqMixTargetReachedAction = g_prefs.getString(K_EQ_MIX_DONE, g_eqMixTargetReachedAction);
       g_eqMixPulseMs = g_prefs.getUInt(K_EQ_MIX_P, g_eqMixPulseMs);
       g_eqMixMinIntervalMs = g_prefs.getUInt(K_EQ_MIX_MI, g_eqMixMinIntervalMs);
       g_eqMixTravelMs = g_prefs.getUInt(K_EQ_MIX_T, g_eqMixTravelMs);
     g_eqMixCalibrationSeatMs = g_prefs.getUInt(K_EQ_MIX_SEAT, g_eqMixCalibrationSeatMs);
     g_eqMixAutoRecalibrationMs = g_prefs.getUInt(K_EQ_MIX_RECAL, g_eqMixAutoRecalibrationMs);
+    g_eqMixTempSourceA = normalizeMixTempSourceA(g_prefs.getString(K_EQ_MIX_SRC_A, g_eqMixTempSourceA));
+    g_eqMixTempSourceB = normalizeMixTempSourceB(g_prefs.getString(K_EQ_MIX_SRC_B, g_eqMixTempSourceB));
+    g_eqMixTempSourceAB = normalizeMixTempSourceAB(g_prefs.getString(K_EQ_MIX_SRC_AB, g_eqMixTempSourceAB));
 
       g_eqBoilerAssistEnabled = g_prefs.getBool(K_EQ_BA_EN, g_eqBoilerAssistEnabled);
       g_eqBoilerAssistDeltaC = g_prefs.getFloat(K_EQ_BA_D, g_eqBoilerAssistDeltaC);
@@ -615,12 +635,20 @@ static constexpr const char* K_EQ_BA_CH = "eq_ba_ch";
     g_eqMixCloseRelayIndex = 1;
     if (g_eqMixDeadbandC < 0.1f) g_eqMixDeadbandC = 0.1f;
     if (g_eqMixDeadbandC > 10.0f) g_eqMixDeadbandC = 10.0f;
+    if (g_eqMixTargetOffsetC < 0.0f) g_eqMixTargetOffsetC = 0.0f;
+    if (g_eqMixTargetOffsetC > 20.0f) g_eqMixTargetOffsetC = 20.0f;
+    g_eqMixTargetReachedAction.trim();
+    g_eqMixTargetReachedAction.toLowerCase();
+    if (g_eqMixTargetReachedAction != "return_a" && g_eqMixTargetReachedAction != "hold") g_eqMixTargetReachedAction = "return_a";
     if (g_eqMixPulseMs < 100) g_eqMixPulseMs = 100;
     if (g_eqMixPulseMs > 10000) g_eqMixPulseMs = 10000;
     if (g_eqMixMinIntervalMs < 500) g_eqMixMinIntervalMs = 500;
     if (g_eqMixMinIntervalMs > 60000) g_eqMixMinIntervalMs = 60000;
     if (g_eqMixTravelMs < 1000) g_eqMixTravelMs = 1000;
     if (g_eqMixTravelMs > 900000) g_eqMixTravelMs = 900000;
+    g_eqMixTempSourceA = normalizeMixTempSourceA(g_eqMixTempSourceA);
+    g_eqMixTempSourceB = normalizeMixTempSourceB(g_eqMixTempSourceB);
+    g_eqMixTempSourceAB = normalizeMixTempSourceAB(g_eqMixTempSourceAB);
     if (g_eqBoilerAssistDeltaC < 0.0f) g_eqBoilerAssistDeltaC = 0.0f;
     if (g_eqBoilerAssistDeltaC > 30.0f) g_eqBoilerAssistDeltaC = 30.0f;
   }
@@ -676,6 +704,49 @@ static constexpr const char* K_EQ_BA_CH = "eq_ba_ch";
     if (!beginWriteSession()) return;
     g_prefs.putFloat(key, v);
     endWriteSessionIfNeeded();
+  }
+
+  String normalizeMixTempSourceToken(String value) {
+    value.trim();
+    value.toLowerCase();
+    value.replace(" ", "_");
+    value.replace("-", "_");
+    value.replace(".", "_");
+    while (value.indexOf("__") >= 0) value.replace("__", "_");
+    return value;
+  }
+
+  String normalizeMixTempSourceA(String value) {
+    value = normalizeMixTempSourceToken(value);
+    if (value == "none" || value == "disabled" || value == "off") return "none";
+    if (value == "tank_mid" || value == "tankmid" || value == "tank_middle" ||
+        value == "aku_mid" || value == "aku_uprostred" || value == "accu_mid" ||
+        value == "flow") { // migrate the interim generic-source build safely
+      return "tank_mid";
+    }
+    return "tank_mid";
+  }
+
+  String normalizeMixTempSourceB(String value) {
+    value = normalizeMixTempSourceToken(value);
+    if (value == "none" || value == "disabled" || value == "off") return "none";
+    if (value == "return_dallas" || value == "dallas_return" || value == "return_ds" ||
+        value == "return" || value == "mix_feedback" || value == "after_mix" ||
+        value == "aftermix" || value == "feedback") {
+      return "return_dallas";
+    }
+    return "return_dallas";
+  }
+
+  String normalizeMixTempSourceAB(String value) {
+    value = normalizeMixTempSourceToken(value);
+    if (value == "none" || value == "disabled" || value == "off") return "none";
+    if (value == "opentherm_ch" || value == "ot_ch" || value == "ch_measured" ||
+        value == "boiler_temp" || value == "boiler_temperature" || value == "flow" ||
+        value == "opentherm_flow") {
+      return "opentherm_ch";
+    }
+    return "opentherm_ch";
   }
 }
 
@@ -1002,10 +1073,22 @@ namespace ConfigStore {
   float getEqMixTargetOffsetC() { begin(); return g_eqMixTargetOffsetC; }
   void setEqMixTargetOffsetC(float v) {
     begin();
-    if (v < -20.0f) v = -20.0f;
+    // Offset is used only as a positive accumulator-support target increase.
+    if (v < 0.0f) v = 0.0f;
     if (v > 20.0f) v = 20.0f;
     g_eqMixTargetOffsetC = v;
     saveFloat(K_EQ_MIX_TO, v);
+  }
+
+  String getEqMixTargetReachedAction() { begin(); return g_eqMixTargetReachedAction; }
+  void setEqMixTargetReachedAction(const String& v) {
+    begin();
+    String normalized = v;
+    normalized.trim();
+    normalized.toLowerCase();
+    if (normalized != "return_a" && normalized != "hold") normalized = "return_a";
+    g_eqMixTargetReachedAction = normalized;
+    saveString(K_EQ_MIX_DONE, normalized);
   }
 
   uint32_t getEqMixPulseMs() { begin(); return g_eqMixPulseMs; }
@@ -1048,6 +1131,27 @@ namespace ConfigStore {
     if (v > 604800000UL) v = 604800000UL;
     g_eqMixAutoRecalibrationMs = v;
     saveUInt(K_EQ_MIX_RECAL, v);
+  }
+
+  String getEqMixTempSourceA() { begin(); return g_eqMixTempSourceA; }
+  void setEqMixTempSourceA(const String& v) {
+    begin();
+    g_eqMixTempSourceA = normalizeMixTempSourceA(v);
+    saveString(K_EQ_MIX_SRC_A, g_eqMixTempSourceA);
+  }
+
+  String getEqMixTempSourceB() { begin(); return g_eqMixTempSourceB; }
+  void setEqMixTempSourceB(const String& v) {
+    begin();
+    g_eqMixTempSourceB = normalizeMixTempSourceB(v);
+    saveString(K_EQ_MIX_SRC_B, g_eqMixTempSourceB);
+  }
+
+  String getEqMixTempSourceAB() { begin(); return g_eqMixTempSourceAB; }
+  void setEqMixTempSourceAB(const String& v) {
+    begin();
+    g_eqMixTempSourceAB = normalizeMixTempSourceAB(v);
+    saveString(K_EQ_MIX_SRC_AB, g_eqMixTempSourceAB);
   }
 
   // Boiler assist headroom

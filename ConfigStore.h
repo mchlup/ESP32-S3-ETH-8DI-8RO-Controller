@@ -165,6 +165,10 @@ namespace ConfigStore {
   void setEqMixDeadbandC(float v);
   float getEqMixTargetOffsetC();
   void setEqMixTargetOffsetC(float v);
+  // Behaviour after the accumulator-support target is reached:
+  // "return_a" = move to end position A, "hold" = keep current position.
+  String getEqMixTargetReachedAction();
+  void setEqMixTargetReachedAction(const String& v);
   uint32_t getEqMixPulseMs();
   void setEqMixPulseMs(uint32_t v);
   uint32_t getEqMixMinIntervalMs();
@@ -177,7 +181,18 @@ namespace ConfigStore {
   uint32_t getEqMixAutoRecalibrationMs();
   void setEqMixAutoRecalibrationMs(uint32_t v);
 
-  // Boiler assist headroom
+  // Temperature sources assigned to the hydraulic ports of the mixing valve.
+  // Valid persisted values are port-specific:
+  // A=tank_mid, B=return_dallas, AB=opentherm_ch (or none).
+  String getEqMixTempSourceA();
+  void setEqMixTempSourceA(const String& v);
+  String getEqMixTempSourceB();
+  void setEqMixTempSourceB(const String& v);
+  String getEqMixTempSourceAB();
+  void setEqMixTempSourceAB(const String& v);
+
+  // Accumulator support for boiler heating. The legacy deltaC value is kept
+  // for configuration compatibility but is no longer added to the OT setpoint.
   bool getEqBoilerAssistEnabled();
   void setEqBoilerAssistEnabled(bool v);
   float getEqBoilerAssistDeltaC();

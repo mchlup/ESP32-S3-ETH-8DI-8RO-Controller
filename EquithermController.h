@@ -8,9 +8,11 @@
 // - Uses OpenTherm Outside temperature (ID27) and Boiler flow temperature (ID25).
 // - Computes desired heating water temperature from outside temperature
 //   with separate day/night curves and optional weekly schedule.
-// - Can drive a mixing valve (fixed R1=heat/open, R2=cool/close) to reach the desired flow temperature.
-// - Can optionally "assist" the boiler by requesting higher CH setpoint than the target
-//   (useful when mixing valve needs hot water headroom).
+// - Can drive a mixing valve with fixed hydraulic semantics:
+//   R1 -> port A / hot accumulator branch / increases AB / 100 %,
+//   R2 -> port B / return branch / decreases AB / 0 %.
+// - Accumulator support raises only the valve target; the boiler still receives
+//   the unmodified equitherm CH setpoint over OpenTherm.
 
 static constexpr uint8_t HEATING_MAX_INTERVALS_PER_DAY = 6;
 
@@ -80,14 +82,23 @@ struct EquithermConfig {
   uint8_t mixOpenRelayIndex = 0;  // 0..7 = R1..R8
   uint8_t mixCloseRelayIndex = 1; // 0..7 = R1..R8
   float mixDeadbandC = 0.5f;
+  // Positive increase used only while accumulator support is active.
+  // It is never added to the OpenTherm CH setpoint.
   float mixTargetOffsetC = 0.0f;
+  // "return_a" = after reaching support target move to A,
+  // "hold" = keep current valve position.
+  String mixTargetReachedAction = "return_a";
   uint32_t mixPulseMs = 300;
   uint32_t mixMinIntervalMs = 30000;
   uint32_t mixTravelMs = 6000;
   uint32_t mixCalibrationSeatMs = 1500;
   uint32_t mixAutoRecalibrationMs = 21600000UL;
+  String mixTempSourceA = "tank_mid";
+  String mixTempSourceB = "return_dallas";
+  String mixTempSourceAB = "opentherm_ch";
 
-  // Boiler assist (setpoint headroom above targetFlowC).
+  // Accumulator support. boilerAssistDeltaC is retained only for compatibility
+  // with older saved/API configurations and is no longer added to OT setpoint.
   bool boilerAssistEnabled = false;
   float boilerAssistDeltaC = 5.0f;
   bool boilerAssistForceChEnable = true;
@@ -115,18 +126,38 @@ struct EquithermStatus {
   uint32_t flowAgeMs = 0;
   String flowSrc;
 
-  // Mixing feedback temperature: preferred source for valve regulation.
-  // Uses dedicated mixing feedback from TemperatureManager::getMixFeedback(),
-  // which must prefer the DS18B20 sensor behind the mixer and must not be
-  // overridden by OpenTherm boiler return temperature.
+  // Mixing feedback temperature used by valve regulation. It mirrors hydraulic
+  // port AB, whose default source is the measured CH temperature from OpenTherm.
   float mixFeedbackC = NAN;
   uint32_t mixFeedbackAgeMs = 0;
   String mixFeedbackSrc;
 
+  // Hydraulic-port temperatures selected on the Thermometers page.
+  float mixTempAC = NAN;
+  uint32_t mixTempAAgeMs = 0;
+  String mixTempASrc;
+  String mixTempASelected;
+  float mixTempBC = NAN;
+  uint32_t mixTempBAgeMs = 0;
+  String mixTempBSrc;
+  String mixTempBSelected;
+  float mixTempABC = NAN;
+  uint32_t mixTempABAgeMs = 0;
+  String mixTempABSrc;
+  String mixTempABSelected;
+
   // Targets
-  float targetFlowC = NAN;      // curve result (after limits + optional mix offset)
-  float targetBaseFlowC = NAN;  // curve result before optional mix offset
-  float boilerSetpointC = NAN;  // what we request from boiler (may include assist delta)
+  float targetFlowC = NAN;         // effective valve target; offset only when accumulator support is active
+  float targetBaseFlowC = NAN;     // equitherm target sent to boiler over OpenTherm
+  float supportTargetFlowC = NAN;  // base + configured support offset
+  float boilerSetpointC = NAN;     // value requested from boiler (does not include support offset)
+
+  // Accumulator support runtime state.
+  bool accumulatorSupportConfigured = false;
+  bool accumulatorSupportAvailable = false;
+  bool accumulatorSupportActive = false;
+  bool accumulatorSupportTargetReached = false;
+  String accumulatorSupportAction;
 
   // Output
   float lastSentChC = NAN;
@@ -148,6 +179,8 @@ struct EquithermStatus {
   bool mixPositionTrusted = false;
   uint32_t mixLastCalibrationMs = 0;
   String mixCalibrationState;
+  bool mixRelayApplyOk = true;
+  uint8_t mixRelayMask = 0;
 
   // Boiler max CH
   float boilerMaxChC = NAN;

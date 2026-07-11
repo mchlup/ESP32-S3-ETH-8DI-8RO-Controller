@@ -18,6 +18,7 @@
 #include "NetworkController.h"
 #include "OpenThermController.h"
 #include "EventLog.h"
+#include "WebPortalController.h"
 
 namespace {
   bool s_inited = false;
@@ -36,12 +37,15 @@ namespace {
   static constexpr uint32_t kMixFeedbackMissingWarnMs = 5000;
   static constexpr uint32_t kMixFeedbackMissingFaultMs = 20000;
   static constexpr uint32_t kMixActuatorRetryHoldMs = 120000;
-  static constexpr uint32_t kMixEffectEvalSettleMs = 2500;
-  static constexpr uint32_t kMixEffectEvalGraceMs = 5000;
+  // A temperature change smaller than this is treated as sensor noise. There is
+  // only one automatic post-pulse evaluation window and its duration is always
+  // the configured mixMinIntervalMs; no hidden fixed 2.5/7.5 s timer exists.
   static constexpr float kMixExpectedTempDeltaC = 0.12f;
   static constexpr uint8_t kMixIneffectivePulseThreshold = 3;
-  static constexpr uint8_t kMixHeatRelayIndex = 0; // R1: přimíchat teplejší vodu / zvýšit teplotu za ventilem
-  static constexpr uint8_t kMixCoolRelayIndex = 1; // R2: zavřít teplou větev / snížit teplotu za ventilem
+  static constexpr int8_t kMixDirectionA = +1; // R1: toward A = hot accumulator branch, AB temperature rises, 100 %
+  static constexpr int8_t kMixDirectionB = -1; // R2: toward B = return/cool branch, AB temperature falls, 0 %
+  static constexpr uint8_t kMixHeatRelayIndex = 0;
+  static constexpr uint8_t kMixCoolRelayIndex = 1;
   static constexpr uint8_t kDefaultNightRelayIndex = 5; // R6, mimo pevně vyhrazená R1/R2
 
   static inline bool isMixRelayIndex(uint8_t idx) {
@@ -54,12 +58,78 @@ namespace {
   uint32_t s_mixFeedbackMissingSinceMs = 0;
   uint32_t s_mixLastFeedbackOkMs = 0;
   bool s_mixFeedbackFaultLatched = false;
-  bool s_mixEffectEvalPending = false;
-  int8_t s_mixEffectExpectedDir = 0;
-  float s_mixEffectStartTempC = NAN;
-  uint32_t s_mixEffectEvalDueMs = 0;
   uint8_t s_mixIneffectivePulseCount = 0;
   uint32_t s_mixActuatorRetryAfterMs = 0;
+  uint32_t s_mixManualHoldUntilMs = 0;
+
+  // Automatic recalibration is considered only once at the beginning of an
+  // actual heating cycle and before the first normal regulation pulse. It is
+  // never started in summer, while heating is blocked, or during regulation.
+  bool s_heatingCycleActive = false;
+  bool s_autoCalibrationAttemptedThisCycle = false;
+  bool s_regularRegulationStartedThisCycle = false;
+
+  // Runtime latch for accumulator support. The latch adds hysteresis to the
+  // decision whether the tank is hot enough and prevents the post-target action
+  // from being repeatedly restarted on every 200 ms control cycle.
+  bool s_accumulatorSupportActive = false;
+  bool s_accumulatorSupportTargetReached = false;
+  uint32_t s_accumulatorSupportTargetCandidateSinceMs = 0;
+  float s_accumulatorSupportLatchedTargetC = NAN;
+  bool s_accumulatorSupportAwaitingSettle = false;
+  float s_accumulatorSupportStableRefC = NAN;
+  uint32_t s_accumulatorSupportStableSinceMs = 0;
+
+  // Target-band confirmation must be backed by a measurable hydraulic response
+  // to an automatic support pulse. Without this guard, the OpenTherm CH value
+  // can already lie inside the target band even when the valve is stuck, which
+  // would falsely trigger the configured post-target action (for example return A).
+  bool s_accumulatorSupportPulseResponseRequired = false;
+  bool s_accumulatorSupportPulseResponseObserved = false;
+  bool s_accumulatorSupportHadEffectivePulse = false;
+  int8_t s_accumulatorSupportLastPulseDir = 0;
+  float s_accumulatorSupportPulseStartC = NAN;
+
+  static void resetAccumulatorSupportSettleTracking() {
+    s_accumulatorSupportAwaitingSettle = false;
+    s_accumulatorSupportStableRefC = NAN;
+    s_accumulatorSupportStableSinceMs = 0;
+  }
+
+  static void resetAccumulatorSupportResponseTracking(bool resetEffectiveHistory = true) {
+    s_accumulatorSupportPulseResponseRequired = false;
+    s_accumulatorSupportPulseResponseObserved = false;
+    s_accumulatorSupportLastPulseDir = 0;
+    s_accumulatorSupportPulseStartC = NAN;
+    if (resetEffectiveHistory) s_accumulatorSupportHadEffectivePulse = false;
+  }
+
+  static void resetAccumulatorSupportTracking() {
+    s_accumulatorSupportActive = false;
+    s_accumulatorSupportTargetReached = false;
+    s_accumulatorSupportTargetCandidateSinceMs = 0;
+    s_accumulatorSupportLatchedTargetC = NAN;
+    resetAccumulatorSupportSettleTracking();
+    resetAccumulatorSupportResponseTracking(true);
+  }
+
+  static void resetHeatingCycleState() {
+    s_heatingCycleActive = false;
+    s_autoCalibrationAttemptedThisCycle = false;
+    s_regularRegulationStartedThisCycle = false;
+  }
+
+  static void resetMixFeedbackTracking() {
+    s_lastMixFeedbackC = NAN;
+    s_lastMixFeedbackMs = 0;
+    s_mixFeedbackTrendCps = 0.0f;
+    s_mixFeedbackMissingSinceMs = 0;
+    s_mixLastFeedbackOkMs = 0;
+    s_mixFeedbackFaultLatched = false;
+    s_mixIneffectivePulseCount = 0;
+    s_mixActuatorRetryAfterMs = 0;
+    resetHeatingCycleState();
+  }
 
   static inline void clampFloat(float& v, float lo, float hi) {
     if (!isfinite(v)) return;
@@ -148,11 +218,15 @@ namespace {
     s_cfg.mixCloseRelayIndex = ConfigStore::getEqMixCloseRelayIndex();
     s_cfg.mixDeadbandC = ConfigStore::getEqMixDeadbandC();
     s_cfg.mixTargetOffsetC = ConfigStore::getEqMixTargetOffsetC();
+    s_cfg.mixTargetReachedAction = ConfigStore::getEqMixTargetReachedAction();
     s_cfg.mixPulseMs = ConfigStore::getEqMixPulseMs();
     s_cfg.mixMinIntervalMs = ConfigStore::getEqMixMinIntervalMs();
     s_cfg.mixTravelMs = ConfigStore::getEqMixTravelMs();
     s_cfg.mixCalibrationSeatMs = ConfigStore::getEqMixCalibrationSeatMs();
     s_cfg.mixAutoRecalibrationMs = ConfigStore::getEqMixAutoRecalibrationMs();
+    s_cfg.mixTempSourceA = TemperatureManager::normalizeSourceKey(ConfigStore::getEqMixTempSourceA(), "tank_mid");
+    s_cfg.mixTempSourceB = TemperatureManager::normalizeSourceKey(ConfigStore::getEqMixTempSourceB(), "return_dallas");
+    s_cfg.mixTempSourceAB = TemperatureManager::normalizeSourceKey(ConfigStore::getEqMixTempSourceAB(), "opentherm_ch");
 
     // Boiler assist
     s_cfg.boilerAssistEnabled = ConfigStore::getEqBoilerAssistEnabled();
@@ -176,7 +250,12 @@ namespace {
       s_cfg.nightRelayIndex = kDefaultNightRelayIndex;
     }
     clampFloat(s_cfg.mixDeadbandC, 0.1f, 10.0f);
-    clampFloat(s_cfg.mixTargetOffsetC, -20.0f, 20.0f);
+    clampFloat(s_cfg.mixTargetOffsetC, 0.0f, 20.0f);
+    s_cfg.mixTargetReachedAction.trim();
+    s_cfg.mixTargetReachedAction.toLowerCase();
+    if (s_cfg.mixTargetReachedAction != "return_a" && s_cfg.mixTargetReachedAction != "hold") {
+      s_cfg.mixTargetReachedAction = "return_a";
+    }
     if (s_cfg.mixPulseMs < 100) s_cfg.mixPulseMs = 100;
     if (s_cfg.mixPulseMs > 10000) s_cfg.mixPulseMs = 10000;
     if (s_cfg.mixMinIntervalMs < 500) s_cfg.mixMinIntervalMs = 500;
@@ -350,8 +429,12 @@ namespace {
     uint32_t lastPulseMs = 0;
     float positionPct = 50.0f;
     bool forceEndPosition = false;
+    bool autoCalibration = false;
+    bool postTargetMove = false;
     float endPositionPct = NAN;
     bool positionTrusted = false;
+    bool lastRelayApplyOk = true;
+    uint8_t lastRelayMask = 0;
     uint32_t lastCalibrationMs = 0;
     int8_t lastCalibrationDir = 0;
     bool feedbackAtStartValid = false;
@@ -359,8 +442,6 @@ namespace {
   };
 
   static MixPulse s_mix;
-
-  static inline RelayId rid(uint8_t idx) { return (RelayId)idx; }
 
   static bool mixFeedbackRecent(uint32_t now) {
     return isfinite(s_lastMixFeedbackC)
@@ -391,9 +472,12 @@ namespace {
     return "trusted";
   }
 
-  static void mixAllOff() {
-    relaySet(rid(kMixHeatRelayIndex), false);
-    relaySet(rid(kMixCoolRelayIndex), false);
+  static bool mixAllOff() {
+    uint8_t appliedMask = relayGetMask();
+    const bool ok = relaySetMixingDirection(0, &appliedMask);
+    s_mix.lastRelayApplyOk = ok;
+    s_mix.lastRelayMask = appliedMask;
+    return ok;
   }
 
   static uint32_t mixElapsedMs(uint32_t now) {
@@ -497,60 +581,6 @@ namespace {
 
   static void mixInvalidateCalibration(bool recenter);
 
-
-  static void mixScheduleEffectEvaluation(int8_t dir, float startTempC, uint32_t now) {
-    if (!isfinite(startTempC) || dir == 0) {
-      s_mixEffectEvalPending = false;
-      s_mixEffectExpectedDir = 0;
-      s_mixEffectStartTempC = NAN;
-      s_mixEffectEvalDueMs = 0;
-      return;
-    }
-    s_mixEffectEvalPending = true;
-    s_mixEffectExpectedDir = dir;
-    s_mixEffectStartTempC = startTempC;
-    s_mixEffectEvalDueMs = now + kMixEffectEvalSettleMs;
-  }
-
-  static void mixClearEffectEvaluation(bool resetFaultCounter = false) {
-    s_mixEffectEvalPending = false;
-    s_mixEffectExpectedDir = 0;
-    s_mixEffectStartTempC = NAN;
-    s_mixEffectEvalDueMs = 0;
-    if (resetFaultCounter) s_mixIneffectivePulseCount = 0;
-  }
-
-  static void mixEvaluateActuatorEffect(float mixFeedbackC, bool valid, uint32_t now) {
-    if (!s_mixEffectEvalPending) return;
-    if (!valid || !isfinite(mixFeedbackC)) {
-      if (now > s_mixEffectEvalDueMs + kMixEffectEvalGraceMs) {
-        if (s_mixIneffectivePulseCount < 255) s_mixIneffectivePulseCount++;
-        mixInvalidateCalibration(false);
-        mixClearEffectEvaluation(false);
-      }
-      return;
-    }
-    if (now < s_mixEffectEvalDueMs) return;
-
-    const float deltaC = mixFeedbackC - s_mixEffectStartTempC;
-    const bool effective = (s_mixEffectExpectedDir > 0)
-      ? (deltaC >= kMixExpectedTempDeltaC)
-      : (deltaC <= -kMixExpectedTempDeltaC);
-
-    if (effective) {
-      mixClearEffectEvaluation(true);
-      return;
-    }
-    if (now <= s_mixEffectEvalDueMs + kMixEffectEvalGraceMs) return;
-
-    if (s_mixIneffectivePulseCount < 255) s_mixIneffectivePulseCount++;
-    mixInvalidateCalibration(false);
-    mixClearEffectEvaluation(false);
-    if (s_mixIneffectivePulseCount >= kMixIneffectivePulseThreshold) {
-      s_mixActuatorRetryAfterMs = now + kMixActuatorRetryHoldMs;
-    }
-  }
-
   static void mixMarkCalibrated(float posPct, int8_t dir) {
     s_mix.positionPct = posPct;
     if (s_mix.positionPct < 0.0f) s_mix.positionPct = 0.0f;
@@ -560,7 +590,6 @@ namespace {
     s_mix.lastCalibrationDir = dir;
     s_mixActuatorRetryAfterMs = 0;
     s_mixIneffectivePulseCount = 0;
-    mixClearEffectEvaluation(true);
   }
 
   static void mixInvalidateCalibration(bool recenter = false) {
@@ -573,24 +602,29 @@ namespace {
     if (!s_mix.active) return;
     const int8_t pulseDir = s_mix.dir;
     const bool pulseManual = s_mix.manual;
+    const bool pulseForceEndPosition = s_mix.forceEndPosition;
+    const bool pulseAutoCalibration = s_mix.autoCalibration;
+    const bool pulsePostTargetMove = s_mix.postTargetMove;
     const bool pulseFeedbackValid = s_mix.feedbackAtStartValid;
     const float pulseStartFeedbackC = s_mix.feedbackAtStartC;
-    mixAllOff();
     const uint32_t elapsedMs = mixElapsedMs(now);
+
+    // The pulse is complete only after both direction relays have been verified
+    // OFF. Even if that verification fails, clear the software pulse state so a
+    // later retry can only target the fail-safe OFF mask.
+    (void)mixAllOff();
     s_mix.lastPulseMs = elapsedMs;
+    s_mix.lastActMs = now; // minimum interval is measured from relay OFF
+
     const float stepPct = (s_cfg.mixTravelMs > 0)
       ? (100.0f * ((float)elapsedMs / (float)s_cfg.mixTravelMs))
       : 0.0f;
-    if (s_mix.forceEndPosition) {
+    if (pulseForceEndPosition) {
       mixMarkCalibrated(s_mix.endPositionPct, pulseDir);
     } else {
       mixApplyPositionDelta(pulseDir > 0 ? stepPct : -stepPct);
-      if (!pulseManual && pulseFeedbackValid && elapsedMs >= 100) {
-        mixScheduleEffectEvaluation(pulseDir, pulseStartFeedbackC, now);
-      } else if (!pulseManual && !pulseFeedbackValid && elapsedMs >= 100) {
-        mixClearEffectEvaluation(false);
-      }
     }
+
     s_mix.active = false;
     s_mix.manual = false;
     s_mix.dir = 0;
@@ -598,8 +632,30 @@ namespace {
     s_mix.untilMs = 0;
     s_mix.requestedMs = 0;
     s_mix.forceEndPosition = false;
+    s_mix.autoCalibration = false;
+    s_mix.postTargetMove = false;
     s_mix.feedbackAtStartValid = false;
     s_mix.feedbackAtStartC = NAN;
+
+    // One and only one automatic post-pulse state machine is used for support.
+    // It waits until AB has been stable for the full configured minimum interval,
+    // detects response in the commanded direction and then either confirms the
+    // target or permits the next pulse. End moves/calibration are terminal and
+    // intentionally do not enter this evaluator.
+    if (!pulseManual && !pulseForceEndPosition && !pulseAutoCalibration
+        && !pulsePostTargetMove && s_accumulatorSupportActive) {
+      s_accumulatorSupportAwaitingSettle = true;
+      s_accumulatorSupportStableRefC = mixFeedbackRecent(now) ? s_lastMixFeedbackC : NAN;
+      s_accumulatorSupportStableSinceMs = now;
+      s_accumulatorSupportTargetReached = false;
+      s_accumulatorSupportTargetCandidateSinceMs = 0;
+      s_accumulatorSupportPulseResponseRequired = true;
+      s_accumulatorSupportPulseResponseObserved = false;
+      s_accumulatorSupportLastPulseDir = pulseDir;
+      s_accumulatorSupportPulseStartC = pulseFeedbackValid
+        ? pulseStartFeedbackC
+        : s_accumulatorSupportStableRefC;
+    }
   }
 
   static void stopMixingNow(uint32_t now = millis(), bool updatePosition = true) {
@@ -608,10 +664,11 @@ namespace {
         mixFinalizePulse(now);
         return;
       }
-      mixAllOff();
+      (void)mixAllOff();
       s_mix.lastPulseMs = mixElapsedMs(now);
+      s_mix.lastActMs = now;
     } else {
-      mixAllOff();
+      (void)mixAllOff();
     }
     s_mix.active = false;
     s_mix.manual = false;
@@ -620,32 +677,39 @@ namespace {
     s_mix.untilMs = 0;
     s_mix.requestedMs = 0;
     s_mix.forceEndPosition = false;
+    s_mix.autoCalibration = false;
+    s_mix.postTargetMove = false;
+    s_mix.feedbackAtStartValid = false;
+    s_mix.feedbackAtStartC = NAN;
   }
 
-  static bool mixStartPulse(int8_t dir, uint32_t now, bool manual = false, uint32_t pulseMsOverride = 0, bool ignoreMinInterval = false) {
-    if (dir == 0) return false;
+  static bool mixStartPulse(int8_t dir, uint32_t now, bool manual = false,
+                            uint32_t pulseMsOverride = 0, bool ignoreMinInterval = false) {
+    if (dir != kMixDirectionA && dir != kMixDirectionB) return false;
     if (!manual && !s_cfg.mixingEnabled) return false;
     if (!manual && mixHasTrustedLimit(dir)) return false;
     if (!manual && mixFeedbackMissingFaultActive(now)) return false;
     if (!manual && mixActuatorFaultActive(now)) return false;
+
     uint32_t pulseMs = pulseMsOverride ? pulseMsOverride : s_cfg.mixPulseMs;
     if (pulseMs < 50) pulseMs = 50;
     if (pulseMs > 60000) pulseMs = 60000;
-    if (s_mix.active) {
-      stopMixingNow(now, true);
-    }
-    s_mix.forceEndPosition = false;
-    if (!ignoreMinInterval && s_mix.lastActMs != 0 && (now - s_mix.lastActMs) < s_cfg.mixMinIntervalMs) return false;
+    if (s_mix.active) stopMixingNow(now, true);
 
-    // Interlock: never allow both directions on. Direction is intentionally fixed:
-    // +1 => R1 heats/opens the hot branch when feedback is below target,
-    // -1 => R2 cools/closes it when feedback is above target.
-    mixAllOff();
-    if (dir > 0) {
-      relaySet(rid(kMixHeatRelayIndex), true);
-    } else {
-      relaySet(rid(kMixCoolRelayIndex), true);
-    }
+    s_mix.forceEndPosition = false;
+    s_mix.autoCalibration = false;
+    s_mix.postTargetMove = false;
+    if (!ignoreMinInterval && s_mix.lastActMs != 0
+        && (now - s_mix.lastActMs) < s_cfg.mixMinIntervalMs) return false;
+
+    // Physical meaning is fixed and shared by UI/backend:
+    // A/+1/R1 = hot accumulator branch, raises AB, estimated position 100 %.
+    // B/-1/R2 = return/cool branch, lowers AB, estimated position 0 %.
+    uint8_t appliedMask = relayGetMask();
+    const bool relayApplied = relaySetMixingDirection(dir, &appliedMask);
+    s_mix.lastRelayApplyOk = relayApplied;
+    s_mix.lastRelayMask = appliedMask;
+    if (!relayApplied) return false;
 
     s_mix.active = true;
     s_mix.manual = manual;
@@ -657,40 +721,64 @@ namespace {
     s_mix.feedbackAtStartValid = mixFeedbackRecent(now);
     s_mix.feedbackAtStartC = s_mix.feedbackAtStartValid ? s_lastMixFeedbackC : NAN;
     if (manual) {
-      mixClearEffectEvaluation(false);
       s_mixActuatorRetryAfterMs = 0;
+      s_mixManualHoldUntilMs = now + pulseMs + 30000UL;
+      // A service action is authoritative for the current heating cycle. Never
+      // follow it with an unsolicited automatic homing move.
+      s_autoCalibrationAttemptedThisCycle = true;
+    } else {
+      s_regularRegulationStartedThisCycle = true;
     }
     return true;
   }
 
   static void mixUpdate(uint32_t now) {
     if (!s_cfg.mixingEnabled && !s_mix.manual) {
-      if (s_mix.active) {
-        stopMixingNow(now, true);
-      }
+      if (s_mix.active) stopMixingNow(now, true);
       return;
     }
-    if (s_mix.active && (int32_t)(now - s_mix.untilMs) >= 0) {
-      mixFinalizePulse(now);
-    }
+    if (s_mix.active && (int32_t)(now - s_mix.untilMs) >= 0) mixFinalizePulse(now);
   }
 
   static bool mixAutoRecalibrationDue(uint32_t now) {
+    if (s_cfg.mixAutoRecalibrationMs == 0) return false; // 0 h means really OFF
     if (!s_cfg.mixingEnabled) return false;
+    if (!s_heatingCycleActive || s_autoCalibrationAttemptedThisCycle
+        || s_regularRegulationStartedThisCycle) return false;
     if (s_mix.active || s_mix.manual) return false;
-    if (mixFeedbackMissingFaultActive(now)) return false;
-    if (mixActuatorFaultActive(now)) return false;
-    if (s_cfg.mixAutoRecalibrationMs == 0) return !s_mix.positionTrusted;
-    if (!s_mix.positionTrusted) return true;
-    if (s_mix.lastCalibrationMs == 0) return true;
+    if (mixFeedbackMissingFaultActive(now) || mixActuatorFaultActive(now)) return false;
+    if (!s_mix.positionTrusted || s_mix.lastCalibrationMs == 0) return true;
     return (uint32_t)(now - s_mix.lastCalibrationMs) >= s_cfg.mixAutoRecalibrationMs;
   }
 
   static bool mixStartAutoCalibration(uint32_t now) {
+    // One attempt per valid heating cycle. Mark the attempt before touching the
+    // relay so an I2C fault cannot cause rapid retry hammering from compute().
+    s_autoCalibrationAttemptedThisCycle = true;
+
+    // If the controller already has a trusted B limit, there is no reason to
+    // energize the actuator again. Refresh only the calibration timestamp.
+    if (mixHasTrustedLimit(kMixDirectionB)) {
+      mixMarkCalibrated(0.0f, kMixDirectionB);
+      return true;
+    }
+
     const uint32_t seatMs = s_cfg.mixTravelMs + s_cfg.mixCalibrationSeatMs;
-    if (!mixStartPulse(-1, now, false, seatMs, true)) return false;
+    if (!mixStartPulse(kMixDirectionB, now, false, seatMs, true)) return false;
+    s_regularRegulationStartedThisCycle = false; // this is pre-regulation homing
     s_mix.forceEndPosition = true;
+    s_mix.autoCalibration = true;
     s_mix.endPositionPct = 0.0f;
+    return true;
+  }
+
+  static bool mixStartAutomaticEndMove(int8_t dir, uint32_t now) {
+    if (dir != kMixDirectionA && dir != kMixDirectionB) return false;
+    const uint32_t seatMs = s_cfg.mixTravelMs + s_cfg.mixCalibrationSeatMs;
+    if (!mixStartPulse(dir, now, false, seatMs, false)) return false;
+    s_mix.forceEndPosition = true;
+    s_mix.postTargetMove = true;
+    s_mix.endPositionPct = (dir == kMixDirectionA) ? 100.0f : 0.0f;
     return true;
   }
 
@@ -720,6 +808,8 @@ namespace {
     static String lastErr;
     static bool lastOk = false;
     static String lastEffMode = "";
+    static bool lastSupportActive = false;
+    static bool lastSupportStateKnown = false;
 
     // Update runtime snapshot
     s_st = EquithermStatus{};
@@ -749,6 +839,30 @@ namespace {
     s_st.mixPositionTrusted = s_mix.positionTrusted;
     s_st.mixLastCalibrationMs = s_mix.lastCalibrationMs;
     s_st.mixCalibrationState = mixCalibrationStateText(millis());
+    s_st.mixRelayApplyOk = s_mix.lastRelayApplyOk;
+    s_st.mixRelayMask = s_mix.lastRelayMask;
+
+    // Read all three hydraulic ports even when automatic equitherm control is
+    // disabled, so the Thermometers and Mixing pages remain useful for service.
+    const TempValue mixATv = TemperatureManager::getBySourceKey(s_cfg.mixTempSourceA, s_cfg.tempMaxAgeMs);
+    const TempValue mixBTv = TemperatureManager::getBySourceKey(s_cfg.mixTempSourceB, s_cfg.tempMaxAgeMs);
+    const TempValue mixABTv = TemperatureManager::getBySourceKey(s_cfg.mixTempSourceAB, s_cfg.tempMaxAgeMs);
+    s_st.mixTempASelected = s_cfg.mixTempSourceA;
+    s_st.mixTempBSelected = s_cfg.mixTempSourceB;
+    s_st.mixTempABSelected = s_cfg.mixTempSourceAB;
+    s_st.mixTempAC = (mixATv.valid && isfinite(mixATv.c)) ? mixATv.c : NAN;
+    s_st.mixTempAAgeMs = mixATv.valid ? mixATv.ageMs : 0;
+    s_st.mixTempASrc = mixATv.valid ? srcName(mixATv.src) : "none";
+    s_st.mixTempBC = (mixBTv.valid && isfinite(mixBTv.c)) ? mixBTv.c : NAN;
+    s_st.mixTempBAgeMs = mixBTv.valid ? mixBTv.ageMs : 0;
+    s_st.mixTempBSrc = mixBTv.valid ? srcName(mixBTv.src) : "none";
+    s_st.mixTempABC = (mixABTv.valid && isfinite(mixABTv.c)) ? mixABTv.c : NAN;
+    s_st.mixTempABAgeMs = mixABTv.valid ? mixABTv.ageMs : 0;
+    s_st.mixTempABSrc = mixABTv.valid ? srcName(mixABTv.src) : "none";
+    // Backward-compatible feedback fields always mirror hydraulic port AB.
+    s_st.mixFeedbackC = s_st.mixTempABC;
+    s_st.mixFeedbackAgeMs = s_st.mixTempABAgeMs;
+    s_st.mixFeedbackSrc = s_st.mixTempABSrc;
 
     if (!s_cfg.enabled) {
       if (s_mix.active && s_mix.manual) {
@@ -756,6 +870,8 @@ namespace {
         return;
       }
       stopMixingNow(millis(), true);
+      resetAccumulatorSupportTracking();
+      resetHeatingCycleState();
       resetNightRelayToSafeDay();
       s_st.active = false;
       s_st.reason = "disabled";
@@ -764,6 +880,8 @@ namespace {
     }
     if (s_externalBlock || dhwIsPriorityActive()) {
       stopMixingNow(millis(), true);
+      resetAccumulatorSupportTracking();
+      resetHeatingCycleState();
       resetNightRelayToSafeDay();
       s_st.active = false;
       s_st.reason = "blocked_dhw";
@@ -781,6 +899,8 @@ namespace {
           return;
         }
         stopMixingNow(millis(), true);
+        resetAccumulatorSupportTracking();
+        resetHeatingCycleState();
         resetNightRelayToSafeDay();
         s_st.active = false;
         s_st.reason = "opentherm not ready";
@@ -806,29 +926,13 @@ namespace {
     }
 
     const uint32_t nowMs = millis();
-    if (mixAutoRecalibrationDue(nowMs)) {
-      if (mixStartAutoCalibration(nowMs)) {
-        s_st.active = false;
-        s_st.reason = s_mix.positionTrusted ? "mix_recalibrating" : "mix_calibrating";
-        s_st.mixState = "calibrating_b";
-        s_st.mixPulsing = true;
-        s_st.mixManual = false;
-        s_st.mixPulseReqMs = s_mix.requestedMs;
-        s_st.mixPulseElapsedMs = 0;
-        s_st.mixPulseRemainingMs = s_mix.requestedMs;
-        s_st.mixPositionPct = s_mix.positionPct;
-        s_st.mixPositionTrusted = s_mix.positionTrusted;
-        s_st.mixLastCalibrationMs = s_mix.lastCalibrationMs;
-        s_st.mixCalibrationState = mixCalibrationStateText(nowMs);
-        openthermClearEquithermRequest();
-        return;
-      }
-    }
 
     // Temperatures: use central TemperatureManager so all fallbacks are respected.
     const TempValue outsideTv = TemperatureManager::get(TempRole::Outside, s_cfg.tempMaxAgeMs);
     if (!outsideTv.valid || !isfinite(outsideTv.c)) {
       stopMixingNow(millis(), true);
+      resetAccumulatorSupportTracking();
+      resetHeatingCycleState();
       resetNightRelayToSafeDay();
       s_st.active = false;
       s_st.reason = "outside temp missing";
@@ -842,6 +946,8 @@ namespace {
     s_st.summerActive = isSummerActive(outsideC);
     if (s_st.summerActive) {
       stopMixingNow(nowMs, true);
+      resetAccumulatorSupportTracking();
+      resetHeatingCycleState();
       resetNightRelayToSafeDay();
       s_st.active = false;
       s_st.reason = "summer_mode";
@@ -850,23 +956,24 @@ namespace {
       return;
     }
 
+    if (!s_heatingCycleActive) {
+      s_heatingCycleActive = true;
+      s_autoCalibrationAttemptedThisCycle = false;
+      s_regularRegulationStartedThisCycle = false;
+    }
+
     const TempValue flowTv = TemperatureManager::get(TempRole::Flow, s_cfg.tempMaxAgeMs);
     const float flowC = (flowTv.valid && isfinite(flowTv.c)) ? flowTv.c : NAN;
     s_st.flowC = flowC;
     s_st.flowAgeMs = flowTv.valid ? flowTv.ageMs : 0;
     s_st.flowSrc = (flowTv.valid && isfinite(flowTv.c)) ? srcName(flowTv.src) : "none";
 
-    // Mixing valve regulation must not use boiler return temperature from OpenTherm.
-    // The mixer must regulate against the actual heating-water sensor behind the
-    // valve (GPIO2 / Dallas mapping in TemperatureManager::getMixFeedback()).
-    const TempValue mixTv = TemperatureManager::getMixFeedback(s_cfg.tempMaxAgeMs);
-    const bool mixTempValid = mixTv.valid && isfinite(mixTv.c);
-    const float mixFeedbackC = mixTempValid ? mixTv.c : NAN;
-    s_st.mixFeedbackC = mixFeedbackC;
-    s_st.mixFeedbackAgeMs = mixTempValid ? mixTv.ageMs : 0;
-    s_st.mixFeedbackSrc = mixTempValid ? srcName(mixTv.src) : "none";
+    // Port AB is the regulation feedback. In this hydraulic layout it is the
+    // boiler-measured CH temperature received over OpenTherm. Ports A and B are
+    // diagnostics; B deliberately uses the Dallas-only Return role.
+    const bool mixTempValid = mixABTv.valid && isfinite(mixABTv.c);
+    const float mixFeedbackC = mixTempValid ? mixABTv.c : NAN;
     const float mixTrendCps = updateMixFeedbackTrend(mixFeedbackC, mixTempValid, nowMs);
-    mixEvaluateActuatorEffect(mixFeedbackC, mixTempValid, nowMs);
     s_st.mixCalibrationState = mixCalibrationStateText(nowMs);
 
     // Smooth outside a bit to avoid oscillation. Keep the filter time constant
@@ -886,26 +993,234 @@ namespace {
     }
 
     const EquithermCurve& curve = (eff == "night") ? s_cfg.night : s_cfg.day;
-    float targetFlow = lerpCurve(curve, s_outsideFiltered);
+    float baseTargetFlow = lerpCurve(curve, s_outsideFiltered);
 
-    // Clamp desired flow temperature
-    clampFloat(targetFlow, s_cfg.minFlowC, s_cfg.maxFlowC);
-    s_st.targetBaseFlowC = targetFlow;
-    targetFlow += s_cfg.mixTargetOffsetC;
-    clampFloat(targetFlow, s_cfg.minFlowC, s_cfg.maxFlowC);
+    // The equitherm target is the value requested from the boiler over OT.
+    // The mixing offset is deliberately NOT applied to this value.
+    clampFloat(baseTargetFlow, s_cfg.minFlowC, s_cfg.maxFlowC);
+    s_st.targetBaseFlowC = baseTargetFlow;
+
+    float supportTargetFlow = baseTargetFlow + s_cfg.mixTargetOffsetC;
+    clampFloat(supportTargetFlow, s_cfg.minFlowC, s_cfg.maxFlowC);
+    s_st.supportTargetFlowC = supportTargetFlow;
+
+    const bool supportConfigured = s_cfg.boilerAssistEnabled
+        && s_cfg.mixingEnabled
+        && s_cfg.mixTargetOffsetC > 0.01f;
+    const bool tankHotValid = mixATv.valid && isfinite(mixATv.c);
+    const bool supportAvailableNow = supportConfigured
+        && tankHotValid
+        && mixATv.c >= supportTargetFlow;
+    const bool supportWasActive = s_accumulatorSupportActive;
+    const float supportDropThresholdC = supportTargetFlow - s_cfg.mixDeadbandC;
+
+    // Start support only when port A can actually supply the increased target.
+    // Keep it active down to target-deadband to avoid rapid on/off toggling.
+    if (s_accumulatorSupportActive) {
+      if (!supportConfigured || !tankHotValid || mixATv.c < supportDropThresholdC) {
+        s_accumulatorSupportActive = false;
+      }
+    } else if (supportAvailableNow) {
+      s_accumulatorSupportActive = true;
+    }
+
+    if (supportWasActive != s_accumulatorSupportActive) {
+      s_accumulatorSupportTargetReached = false;
+      s_accumulatorSupportTargetCandidateSinceMs = 0;
+      s_accumulatorSupportLatchedTargetC = supportTargetFlow;
+      resetAccumulatorSupportSettleTracking();
+      resetAccumulatorSupportResponseTracking(true);
+      if (!s_accumulatorSupportActive && s_mix.active && !s_mix.manual) {
+        stopMixingNow(nowMs, false);
+      }
+    }
+    if (s_accumulatorSupportActive
+        && (!isfinite(s_accumulatorSupportLatchedTargetC)
+            || fabsf(s_accumulatorSupportLatchedTargetC - supportTargetFlow) > 0.1f)) {
+      s_accumulatorSupportTargetReached = false;
+      s_accumulatorSupportTargetCandidateSinceMs = 0;
+      s_accumulatorSupportLatchedTargetC = supportTargetFlow;
+      resetAccumulatorSupportResponseTracking(true);
+      if (s_accumulatorSupportAwaitingSettle) {
+        s_accumulatorSupportStableRefC = mixTempValid ? mixFeedbackC : NAN;
+        s_accumulatorSupportStableSinceMs = nowMs;
+      }
+    }
+    if (!s_accumulatorSupportActive) {
+      s_accumulatorSupportTargetReached = false;
+      s_accumulatorSupportTargetCandidateSinceMs = 0;
+      s_accumulatorSupportLatchedTargetC = NAN;
+      resetAccumulatorSupportSettleTracking();
+      resetAccumulatorSupportResponseTracking(true);
+    }
+
+    const float targetFlow = s_accumulatorSupportActive ? supportTargetFlow : baseTargetFlow;
     s_st.targetFlowC = targetFlow;
+    s_st.accumulatorSupportConfigured = supportConfigured;
+    s_st.accumulatorSupportAvailable = supportAvailableNow;
+    s_st.accumulatorSupportActive = s_accumulatorSupportActive;
+    s_st.accumulatorSupportAction = s_cfg.mixTargetReachedAction;
 
-    // Mixing valve control: use dedicated heating-water / after-mix feedback,
-    // not boiler flow temperature and not OpenTherm boiler return temperature.
+    // Automatic recalibration is allowed only at the beginning of a real heating
+    // cycle, after summer/DHW/OT guards passed and before any regular valve pulse.
+    // A value of 0 h disables this path completely.
+    if (mixAutoRecalibrationDue(nowMs)) {
+      (void)mixStartAutoCalibration(nowMs);
+    }
+
+    const bool automaticMixPulseActive = s_mix.active && !s_mix.manual;
+    const bool supportTargetBandReached = s_accumulatorSupportActive
+        && mixTempValid
+        && fabsf(mixFeedbackC - targetFlow) <= s_cfg.mixDeadbandC;
+    const float targetExitBandC = fmaxf(s_cfg.mixDeadbandC + 0.2f,
+                                        s_cfg.mixDeadbandC * 1.5f);
+
+    // A completed target is not permanent. If AB later leaves the target band
+    // with hysteresis, resume regulation. A post-target end move that has already
+    // started is allowed to finish; otherwise its own temperature effect would
+    // cancel the requested mechanical return before reaching the limit.
+    if (s_accumulatorSupportTargetReached
+        && !(s_mix.active && s_mix.postTargetMove)
+        && (!mixTempValid || fabsf(mixFeedbackC - targetFlow) > targetExitBandC)) {
+      s_accumulatorSupportTargetReached = false;
+      s_accumulatorSupportTargetCandidateSinceMs = 0;
+      resetAccumulatorSupportSettleTracking();
+      // A future target confirmation must be backed by a new effective valve
+      // pulse; an old response must not remain valid after leaving the band.
+      resetAccumulatorSupportResponseTracking(true);
+    }
+
+    // Observe the response of the last automatic support pulse while using the
+    // same configured interval that gates the next pulse. No second fixed timer
+    // and no automatic recalibration is triggered by an ineffective pulse.
+    if (s_accumulatorSupportActive
+        && s_accumulatorSupportPulseResponseRequired
+        && !s_accumulatorSupportPulseResponseObserved
+        && !automaticMixPulseActive
+        && mixTempValid
+        && isfinite(s_accumulatorSupportPulseStartC)
+        && s_accumulatorSupportLastPulseDir != 0) {
+      const float responseDeltaC = mixFeedbackC - s_accumulatorSupportPulseStartC;
+      const bool movedAsRequested = (s_accumulatorSupportLastPulseDir == kMixDirectionA)
+        ? (responseDeltaC >= kMixExpectedTempDeltaC)
+        : (responseDeltaC <= -kMixExpectedTempDeltaC);
+      if (movedAsRequested) {
+        s_accumulatorSupportPulseResponseObserved = true;
+        // The directional response is proven immediately. The separate settle
+        // gate still blocks another pulse until AB stops changing for the full
+        // configured interval, while target confirmation can use the same
+        // interval instead of waiting twice.
+        s_accumulatorSupportHadEffectivePulse = true;
+        s_mixIneffectivePulseCount = 0;
+        s_mixActuatorRetryAfterMs = 0;
+      }
+    }
+
+    bool supportOutputSettled = false;
+    if (s_accumulatorSupportActive
+        && s_accumulatorSupportAwaitingSettle
+        && !automaticMixPulseActive
+        && mixTempValid) {
+      if (!isfinite(s_accumulatorSupportStableRefC)
+          || s_accumulatorSupportStableSinceMs == 0) {
+        s_accumulatorSupportStableRefC = mixFeedbackC;
+        s_accumulatorSupportStableSinceMs = nowMs;
+      } else if (fabsf(mixFeedbackC - s_accumulatorSupportStableRefC)
+                 >= kMixExpectedTempDeltaC) {
+        s_accumulatorSupportStableRefC = mixFeedbackC;
+        s_accumulatorSupportStableSinceMs = nowMs;
+      }
+      supportOutputSettled = (nowMs - s_accumulatorSupportStableSinceMs)
+          >= s_cfg.mixMinIntervalMs;
+
+      if (supportOutputSettled) {
+        if (s_accumulatorSupportPulseResponseRequired) {
+          if (s_accumulatorSupportPulseResponseObserved) {
+            s_accumulatorSupportHadEffectivePulse = true;
+            s_mixIneffectivePulseCount = 0;
+            s_mixActuatorRetryAfterMs = 0;
+          } else {
+            if (s_mixIneffectivePulseCount < 255) ++s_mixIneffectivePulseCount;
+            if (s_mixIneffectivePulseCount >= kMixIneffectivePulseThreshold) {
+              s_mixActuatorRetryAfterMs = nowMs + kMixActuatorRetryHoldMs;
+            }
+          }
+        }
+        s_accumulatorSupportAwaitingSettle = false;
+        s_accumulatorSupportPulseResponseRequired = false;
+        s_accumulatorSupportPulseResponseObserved = false;
+        s_accumulatorSupportLastPulseDir = 0;
+        s_accumulatorSupportPulseStartC = NAN;
+      }
+    }
+
+    const bool supportPulseResponseVerified = s_accumulatorSupportPulseResponseRequired
+        ? s_accumulatorSupportPulseResponseObserved
+        : s_accumulatorSupportHadEffectivePulse;
+
+    if (!s_accumulatorSupportTargetReached) {
+      if (!supportTargetBandReached || automaticMixPulseActive
+          || !supportPulseResponseVerified) {
+        s_accumulatorSupportTargetCandidateSinceMs = 0;
+      } else {
+        if (s_accumulatorSupportTargetCandidateSinceMs == 0) {
+          s_accumulatorSupportTargetCandidateSinceMs = nowMs;
+        }
+        if ((nowMs - s_accumulatorSupportTargetCandidateSinceMs)
+            >= s_cfg.mixMinIntervalMs) {
+          s_accumulatorSupportTargetReached = true;
+          s_accumulatorSupportTargetCandidateSinceMs = 0;
+          resetAccumulatorSupportSettleTracking();
+        }
+      }
+    }
+
+    const bool supportTargetConfirming = s_accumulatorSupportActive
+        && !s_accumulatorSupportTargetReached
+        && supportTargetBandReached
+        && supportPulseResponseVerified
+        && !automaticMixPulseActive;
+    const bool supportTargetUnverifiedHold = s_accumulatorSupportActive
+        && !s_accumulatorSupportTargetReached
+        && supportTargetBandReached
+        && !supportPulseResponseVerified
+        && !automaticMixPulseActive;
+    const bool supportWaitingForSettle = s_accumulatorSupportActive
+        && s_accumulatorSupportAwaitingSettle
+        && !s_accumulatorSupportTargetReached
+        && !automaticMixPulseActive;
+    s_st.accumulatorSupportTargetReached = s_accumulatorSupportTargetReached;
+
+    // Mixing valve control uses hydraulic port AB. A and B semantics are fixed:
+    // A/R1/hot accumulator branch = 100 %, B/R2/return branch = 0 %.
     s_st.mixState = "idle";
-    if (s_mix.active) {
-      s_st.mixState = s_mix.manual ? ((s_mix.dir > 0) ? "manual_open" : "manual_close")
-                                   : ((s_mix.dir > 0) ? "open" : "close");
+    if (s_mix.active && s_mix.autoCalibration) {
+      s_st.mixState = "calibrating_b";
+    } else if (s_accumulatorSupportActive && s_accumulatorSupportTargetReached) {
+      if (s_cfg.mixTargetReachedAction == "hold") {
+        if (s_mix.active && !s_mix.manual) stopMixingNow(nowMs, false);
+        s_st.mixState = "support_target_hold";
+      } else if (mixHasTrustedLimit(kMixDirectionA)) {
+        s_st.mixState = "support_target_at_a";
+      } else if (s_mix.active) {
+        s_st.mixState = "support_target_return_a";
+      } else if (mixStartAutomaticEndMove(kMixDirectionA, nowMs)) {
+        s_st.mixState = "support_target_return_a";
+      } else {
+        s_st.mixState = !s_mix.lastRelayApplyOk
+          ? "fault_relay_write"
+          : (mixActuatorFaultActive(nowMs)
+              ? "fault_actuator_suspect"
+              : "support_target_return_a_pending");
+      }
+    } else if (s_mix.active) {
+      s_st.mixState = s_mix.manual
+        ? ((s_mix.dir == kMixDirectionA) ? "manual_open" : "manual_close")
+        : ((s_mix.dir == kMixDirectionA) ? "open" : "close");
     } else if (s_cfg.mixingEnabled) {
       if (!mixTempValid) {
         const uint32_t missingForMs = (s_mixFeedbackMissingSinceMs != 0 && nowMs >= s_mixFeedbackMissingSinceMs)
-          ? (nowMs - s_mixFeedbackMissingSinceMs)
-          : 0;
+          ? (nowMs - s_mixFeedbackMissingSinceMs) : 0;
         if (missingForMs >= kMixFeedbackMissingFaultMs) {
           stopMixingNow(nowMs, true);
           mixInvalidateCalibration(false);
@@ -922,39 +1237,62 @@ namespace {
         const bool wantsClose = (mixFeedbackC - s_cfg.mixDeadbandC > targetFlow);
         const uint32_t minIntervalRemainingMs = mixMinIntervalRemainingMs(nowMs);
         const uint32_t adaptivePulseMs = mixAdaptivePulseMs(targetFlow, mixFeedbackC, mixTrendCps);
-        const bool holdForTrend = mixShouldHoldForTrend(errorC, mixTrendCps);
+        const bool holdForTrend = !s_accumulatorSupportActive
+            && mixShouldHoldForTrend(errorC, mixTrendCps);
         const bool actuatorFault = mixActuatorFaultActive(nowMs);
-        if (wantsOpen) {
+        const bool manualHold = s_mixManualHoldUntilMs != 0
+            && (int32_t)(s_mixManualHoldUntilMs - nowMs) > 0;
+
+        if (supportTargetConfirming) {
+          s_st.mixState = "support_target_confirming";
+        } else if (supportTargetUnverifiedHold) {
+          // Already inside the requested band: do not create a diagnostic/probe
+          // pulse. Hold safely and require a real future regulation response
+          // before the post-target action can ever be confirmed.
+          s_st.mixState = "support_target_unverified_hold";
+        } else if (manualHold) {
+          s_st.mixState = "manual_hold";
+        } else if (wantsOpen) {
           if (mixFeedbackMissingFaultActive(nowMs)) {
             s_st.mixState = "fault_no_feedback";
           } else if (actuatorFault) {
             s_st.mixState = "fault_actuator_suspect";
-          } else if (mixHasTrustedLimit(+1)) {
+          } else if (mixHasTrustedLimit(kMixDirectionA)) {
             s_st.mixState = "limit_a";
+          } else if (supportWaitingForSettle) {
+            s_st.mixState = "support_wait_settle_open";
           } else if (holdForTrend) {
             s_st.mixState = "settling_open";
           } else if (minIntervalRemainingMs > 0) {
             s_st.mixState = "hold_min_interval_open";
-          } else if (mixStartPulse(+1, nowMs, false, adaptivePulseMs)) {
+          } else if (mixStartPulse(kMixDirectionA, nowMs, false, adaptivePulseMs)) {
+            if (s_accumulatorSupportActive) resetAccumulatorSupportSettleTracking();
             s_st.mixState = "open";
           } else {
-            s_st.mixState = actuatorFault ? "fault_actuator_suspect" : "open_pending";
+            s_st.mixState = !s_mix.lastRelayApplyOk
+              ? "fault_relay_write"
+              : (actuatorFault ? "fault_actuator_suspect" : "open_pending");
           }
         } else if (wantsClose) {
           if (mixFeedbackMissingFaultActive(nowMs)) {
             s_st.mixState = "fault_no_feedback";
           } else if (actuatorFault) {
             s_st.mixState = "fault_actuator_suspect";
-          } else if (mixHasTrustedLimit(-1)) {
+          } else if (mixHasTrustedLimit(kMixDirectionB)) {
             s_st.mixState = "limit_b";
+          } else if (supportWaitingForSettle) {
+            s_st.mixState = "support_wait_settle_close";
           } else if (holdForTrend) {
             s_st.mixState = "settling_close";
           } else if (minIntervalRemainingMs > 0) {
             s_st.mixState = "hold_min_interval_close";
-          } else if (mixStartPulse(-1, nowMs, false, adaptivePulseMs)) {
+          } else if (mixStartPulse(kMixDirectionB, nowMs, false, adaptivePulseMs)) {
+            if (s_accumulatorSupportActive) resetAccumulatorSupportSettleTracking();
             s_st.mixState = "close";
           } else {
-            s_st.mixState = actuatorFault ? "fault_actuator_suspect" : "close_pending";
+            s_st.mixState = !s_mix.lastRelayApplyOk
+              ? "fault_relay_write"
+              : (actuatorFault ? "fault_actuator_suspect" : "close_pending");
           }
         } else {
           s_st.mixState = actuatorFault ? "fault_actuator_suspect" : "in_deadband";
@@ -962,10 +1300,27 @@ namespace {
       }
     }
 
-    // Boiler assist: use the same mixing-feedback temperature as the valve.
-    const bool heatNeeded = mixTempValid && (mixFeedbackC + s_cfg.mixDeadbandC < targetFlow);
-    float boilerSp = targetFlow;
-    if (s_cfg.boilerAssistEnabled && heatNeeded) boilerSp = targetFlow + s_cfg.boilerAssistDeltaC;
+    // Refresh runtime output telemetry after this control pass; a pulse may have
+    // started or stopped since the snapshot at the beginning of computeAndSend().
+    s_st.mixPulsing = s_mix.active;
+    s_st.mixManual = s_mix.manual;
+    s_st.mixManualDir = s_mix.manual ? String((s_mix.dir == kMixDirectionA) ? "A" : "B") : String("");
+    s_st.mixLastActMs = s_mix.lastActMs;
+    s_st.mixPulseReqMs = s_mix.requestedMs;
+    s_st.mixPulseElapsedMs = mixElapsedMs(nowMs);
+    s_st.mixPulseRemainingMs = (s_mix.active && s_mix.requestedMs > s_st.mixPulseElapsedMs)
+      ? (s_mix.requestedMs - s_st.mixPulseElapsedMs) : 0;
+    s_st.mixLastPulseMs = s_mix.lastPulseMs;
+    s_st.mixPositionPct = s_mix.positionPct;
+    s_st.mixPositionTrusted = s_mix.positionTrusted;
+    s_st.mixLastCalibrationMs = s_mix.lastCalibrationMs;
+    s_st.mixCalibrationState = mixCalibrationStateText(nowMs);
+    s_st.mixRelayApplyOk = s_mix.lastRelayApplyOk;
+    s_st.mixRelayMask = s_mix.lastRelayMask;
+
+    // The boiler always receives the base equitherm target. Accumulator support
+    // raises only the valve/support target, e.g. OT=22 °C and valve target=27 °C.
+    float boilerSp = baseTargetFlow;
     // Determine effective CH setpoint clamp (prefer OpenTherm limits when available)
     s_st.boilerMaxChC = ot.maxChSetpointC;
     s_st.boilerMaxBoundMinC = ot.maxChBoundMinC;
@@ -989,9 +1344,11 @@ namespace {
     const bool intervalOk = (now - lastSentMs) >= s_cfg.minSendIntervalMs;
     bool deltaOk = (!isfinite(lastSent)) || fabsf(boilerSp - lastSent) >= s_cfg.minSendDeltaC;
     const bool modeChanged = (eff.length() && eff != lastEffMode);
-    if (modeChanged) deltaOk = true;
+    const bool supportStateChanged = !lastSupportStateKnown
+        || (s_accumulatorSupportActive != lastSupportActive);
+    if (modeChanged || supportStateChanged) deltaOk = true;
 
-    if (!intervalOk && !modeChanged) {
+    if (!intervalOk && !modeChanged && !supportStateChanged) {
       s_st.reason = "hold_interval";
       return;
     }
@@ -1010,7 +1367,7 @@ namespace {
     }
 
     String err;
-    const bool forceCh = (s_cfg.boilerAssistForceChEnable && heatNeeded);
+    const bool forceCh = (s_cfg.boilerAssistForceChEnable && s_accumulatorSupportActive);
     const bool ok = sendChSetpoint(boilerSp, forceCh, err);
 
     lastOk = ok;
@@ -1019,6 +1376,8 @@ namespace {
       lastSent = boilerSp;
       lastSentMs = now;
       lastEffMode = eff;
+      lastSupportActive = s_accumulatorSupportActive;
+      lastSupportStateKnown = true;
     }
 
     s_st.lastSentChC = lastSent;
@@ -1098,11 +1457,15 @@ namespace {
     mix["coolRelay"] = (uint32_t)(kMixCoolRelayIndex + 1);
     mix["deadbandC"] = s_cfg.mixDeadbandC;
     mix["targetOffsetC"] = s_cfg.mixTargetOffsetC;
+    mix["targetReachedAction"] = s_cfg.mixTargetReachedAction;
     mix["pulseMs"] = (uint32_t)s_cfg.mixPulseMs;
     mix["minIntervalMs"] = (uint32_t)s_cfg.mixMinIntervalMs;
     mix["travelMs"] = (uint32_t)s_cfg.mixTravelMs;
     mix["calibrationSeatMs"] = (uint32_t)s_cfg.mixCalibrationSeatMs;
     mix["autoRecalibrationMs"] = (uint32_t)s_cfg.mixAutoRecalibrationMs;
+    mix["sourceA"] = s_cfg.mixTempSourceA;
+    mix["sourceB"] = s_cfg.mixTempSourceB;
+    mix["sourceAB"] = s_cfg.mixTempSourceAB;
 
     JsonObject ba = out.createNestedObject("boilerAssist");
     ba["enabled"] = s_cfg.boilerAssistEnabled;
@@ -1138,10 +1501,23 @@ namespace {
     if (isfinite(s_st.mixFeedbackC)) temps["mixFeedbackC"] = s_st.mixFeedbackC; else temps["mixFeedbackC"] = nullptr;
     temps["mixFeedbackAgeMs"] = (uint32_t)s_st.mixFeedbackAgeMs;
     temps["mixFeedbackSrc"] = s_st.mixFeedbackSrc.length() ? s_st.mixFeedbackSrc : "none";
+    if (isfinite(s_st.mixTempAC)) temps["mixAC"] = s_st.mixTempAC; else temps["mixAC"] = nullptr;
+    temps["mixAAgeMs"] = (uint32_t)s_st.mixTempAAgeMs;
+    temps["mixASrc"] = s_st.mixTempASrc.length() ? s_st.mixTempASrc : "none";
+    temps["mixASelected"] = s_st.mixTempASelected.length() ? s_st.mixTempASelected : "none";
+    if (isfinite(s_st.mixTempBC)) temps["mixBC"] = s_st.mixTempBC; else temps["mixBC"] = nullptr;
+    temps["mixBAgeMs"] = (uint32_t)s_st.mixTempBAgeMs;
+    temps["mixBSrc"] = s_st.mixTempBSrc.length() ? s_st.mixTempBSrc : "none";
+    temps["mixBSelected"] = s_st.mixTempBSelected.length() ? s_st.mixTempBSelected : "none";
+    if (isfinite(s_st.mixTempABC)) temps["mixABC"] = s_st.mixTempABC; else temps["mixABC"] = nullptr;
+    temps["mixABAgeMs"] = (uint32_t)s_st.mixTempABAgeMs;
+    temps["mixABSrc"] = s_st.mixTempABSrc.length() ? s_st.mixTempABSrc : "none";
+    temps["mixABSelected"] = s_st.mixTempABSelected.length() ? s_st.mixTempABSelected : "none";
 
     JsonObject outv = out.createNestedObject("out");
     if (isfinite(s_st.targetBaseFlowC)) outv["targetBaseFlowC"] = s_st.targetBaseFlowC; else outv["targetBaseFlowC"] = nullptr;
     if (isfinite(s_st.targetFlowC)) outv["targetFlowC"] = s_st.targetFlowC; else outv["targetFlowC"] = nullptr;
+    if (isfinite(s_st.supportTargetFlowC)) outv["supportTargetFlowC"] = s_st.supportTargetFlowC; else outv["supportTargetFlowC"] = nullptr;
     if (isfinite(s_st.boilerSetpointC)) outv["boilerSetpointC"] = s_st.boilerSetpointC; else outv["boilerSetpointC"] = nullptr;
     if (isfinite(s_st.lastSentChC)) outv["lastSentChC"] = s_st.lastSentChC; else outv["lastSentChC"] = nullptr;
     outv["lastSendOk"] = s_st.lastSendOk;
@@ -1162,8 +1538,16 @@ namespace {
     mix["lastPulseMs"] = (uint32_t)s_st.mixLastPulseMs;
     if (isfinite(s_st.mixPositionPct)) mix["pct"] = s_st.mixPositionPct; else mix["pct"] = nullptr;
     mix["positionTrusted"] = s_st.mixPositionTrusted;
+    mix["supportConfigured"] = s_st.accumulatorSupportConfigured;
+    mix["supportAvailable"] = s_st.accumulatorSupportAvailable;
+    mix["supportActive"] = s_st.accumulatorSupportActive;
+    mix["supportTargetReached"] = s_st.accumulatorSupportTargetReached;
+    mix["supportAction"] = s_st.accumulatorSupportAction.length() ? s_st.accumulatorSupportAction : s_cfg.mixTargetReachedAction;
     mix["lastCalibrationMs"] = (uint32_t)s_st.mixLastCalibrationMs;
     if (s_st.mixCalibrationState.length()) mix["calibration"] = s_st.mixCalibrationState; else mix["calibration"] = nullptr;
+    mix["relayApplied"] = s_st.mixRelayApplyOk;
+    mix["relayMask"] = (uint32_t)s_st.mixRelayMask;
+    mix["relayOk"] = relayIsOk();
 
     JsonObject b = out.createNestedObject("boiler");
     if (isfinite(s_st.boilerMaxChC)) b["maxChC"] = s_st.boilerMaxChC; else b["maxChC"] = nullptr;
@@ -1181,18 +1565,9 @@ void equithermInit() {
   s_lastComputeMs = 0;
   s_lastOutsideFilterMs = 0;
   s_outsideFiltered = NAN;
-  s_lastMixFeedbackC = NAN;
-  s_lastMixFeedbackMs = 0;
-  s_mixFeedbackTrendCps = 0.0f;
-  s_mixFeedbackMissingSinceMs = 0;
-  s_mixLastFeedbackOkMs = 0;
-  s_mixFeedbackFaultLatched = false;
-  s_mixEffectEvalPending = false;
-  s_mixEffectExpectedDir = 0;
-  s_mixEffectStartTempC = NAN;
-  s_mixEffectEvalDueMs = 0;
-  s_mixIneffectivePulseCount = 0;
-  s_mixActuatorRetryAfterMs = 0;
+  resetMixFeedbackTracking();
+  resetAccumulatorSupportTracking();
+  s_mixManualHoldUntilMs = 0;
   s_st = EquithermStatus{};
   s_mix = MixPulse{};
   s_mix.positionPct = 50.0f;
@@ -1235,9 +1610,15 @@ void equithermFillFastJson(JsonObject& out) {
   if (s_st.reason.length()) out["rs"] = s_st.reason; else out["rs"] = nullptr;
   if (isfinite(s_st.outsideC)) out["oc"] = s_st.outsideC; else out["oc"] = nullptr;
   if (isfinite(s_st.flowC)) out["fc"] = s_st.flowC; else out["fc"] = nullptr;
+  if (isfinite(s_st.mixTempAC)) out["ma"] = s_st.mixTempAC; else out["ma"] = nullptr;
+  if (isfinite(s_st.mixTempBC)) out["mb"] = s_st.mixTempBC; else out["mb"] = nullptr;
   if (isfinite(s_st.mixFeedbackC)) out["mf"] = s_st.mixFeedbackC; else out["mf"] = nullptr;
   if (isfinite(s_st.targetBaseFlowC)) out["tb"] = s_st.targetBaseFlowC; else out["tb"] = nullptr;
   if (isfinite(s_st.targetFlowC)) out["tf"] = s_st.targetFlowC; else out["tf"] = nullptr;
+  if (isfinite(s_st.supportTargetFlowC)) out["ts"] = s_st.supportTargetFlowC; else out["ts"] = nullptr;
+  out["sa"] = s_st.accumulatorSupportActive;
+  out["sv"] = s_st.accumulatorSupportAvailable;
+  out["sr"] = s_st.accumulatorSupportTargetReached;
   JsonObject mix = out.createNestedObject("mix");
   mix["hr"] = (uint32_t)(kMixHeatRelayIndex + 1);
   mix["cr"] = (uint32_t)(kMixCoolRelayIndex + 1);
@@ -1248,13 +1629,18 @@ void equithermFillFastJson(JsonObject& out) {
   mix["elp"] = (uint32_t)s_st.mixPulseElapsedMs;
   if (isfinite(s_st.mixPositionPct)) mix["pct"] = s_st.mixPositionPct; else mix["pct"] = nullptr;
   mix["pt"] = s_st.mixPositionTrusted;
+  mix["sa"] = s_st.accumulatorSupportActive;
+  mix["sr"] = s_st.accumulatorSupportTargetReached;
+  mix["act"] = s_st.accumulatorSupportAction.length() ? s_st.accumulatorSupportAction : s_cfg.mixTargetReachedAction;
+  mix["ra"] = s_st.mixRelayApplyOk;
+  mix["rm"] = (uint32_t)s_st.mixRelayMask;
   if (s_st.mixCalibrationState.length()) mix["cal"] = s_st.mixCalibrationState; else mix["cal"] = nullptr;
   out["ok"] = s_st.lastSendOk;
 }
 
 String equithermGetStatusJson() {
   equithermInit();
-  DynamicJsonDocument doc(6144);
+  DynamicJsonDocument doc(8192);
   doc["ok"] = true;
   JsonObject cfg = doc.createNestedObject("config");
   fillConfigJson(cfg);
@@ -1416,11 +1802,27 @@ static void applyConfigDoc(JsonObjectConst o) {
     }
     if (m.containsKey("deadbandC")) ConfigStore::setEqMixDeadbandC(m["deadbandC"].as<float>());
     if (m.containsKey("targetOffsetC")) ConfigStore::setEqMixTargetOffsetC(m["targetOffsetC"].as<float>());
+    if (m.containsKey("targetReachedAction")) {
+      const char* value = m["targetReachedAction"] | "return_a";
+      ConfigStore::setEqMixTargetReachedAction(String(value ? value : "return_a"));
+    }
     if (m.containsKey("pulseMs")) ConfigStore::setEqMixPulseMs((uint32_t)(m["pulseMs"] | ConfigStore::getEqMixPulseMs()));
     if (m.containsKey("minIntervalMs")) ConfigStore::setEqMixMinIntervalMs((uint32_t)(m["minIntervalMs"] | ConfigStore::getEqMixMinIntervalMs()));
     if (m.containsKey("travelMs")) ConfigStore::setEqMixTravelMs((uint32_t)(m["travelMs"] | ConfigStore::getEqMixTravelMs()));
     if (m.containsKey("calibrationSeatMs")) ConfigStore::setEqMixCalibrationSeatMs((uint32_t)(m["calibrationSeatMs"] | ConfigStore::getEqMixCalibrationSeatMs()));
     if (m.containsKey("autoRecalibrationMs")) ConfigStore::setEqMixAutoRecalibrationMs((uint32_t)(m["autoRecalibrationMs"] | ConfigStore::getEqMixAutoRecalibrationMs()));
+    if (m.containsKey("sourceA") || m.containsKey("tempSourceA")) {
+      const char* value = m.containsKey("sourceA") ? (m["sourceA"] | "tank_mid") : (m["tempSourceA"] | "tank_mid");
+      ConfigStore::setEqMixTempSourceA(String(value ? value : "tank_mid"));
+    }
+    if (m.containsKey("sourceB") || m.containsKey("tempSourceB")) {
+      const char* value = m.containsKey("sourceB") ? (m["sourceB"] | "return_dallas") : (m["tempSourceB"] | "return_dallas");
+      ConfigStore::setEqMixTempSourceB(String(value ? value : "return_dallas"));
+    }
+    if (m.containsKey("sourceAB") || m.containsKey("tempSourceAB")) {
+      const char* value = m.containsKey("sourceAB") ? (m["sourceAB"] | "opentherm_ch") : (m["tempSourceAB"] | "opentherm_ch");
+      ConfigStore::setEqMixTempSourceAB(String(value ? value : "opentherm_ch"));
+    }
   }
 
   if (o.containsKey("boilerAssist") && o["boilerAssist"].is<JsonObjectConst>()) {
@@ -1432,7 +1834,21 @@ static void applyConfigDoc(JsonObjectConst o) {
 }
 
 void equithermReloadFromStore() {
+  const String previousFeedbackSource = s_cfg.mixTempSourceAB;
+  const float previousSupportOffsetC = s_cfg.mixTargetOffsetC;
+  const String previousTargetAction = s_cfg.mixTargetReachedAction;
+  const bool previousSupportEnabled = s_cfg.boilerAssistEnabled;
   loadFromPrefs();
+  if (previousFeedbackSource.length() && previousFeedbackSource != s_cfg.mixTempSourceAB) {
+    if (s_mix.active) stopMixingNow(millis(), true);
+    resetMixFeedbackTracking();
+  }
+  if (fabsf(previousSupportOffsetC - s_cfg.mixTargetOffsetC) > 0.01f
+      || previousTargetAction != s_cfg.mixTargetReachedAction
+      || previousSupportEnabled != s_cfg.boilerAssistEnabled) {
+    if (s_mix.active && !s_mix.manual) stopMixingNow(millis(), true);
+    resetAccumulatorSupportTracking();
+  }
 }
 
 void equithermApplyConfig(const String& json) {
@@ -1501,8 +1917,8 @@ bool equithermHandleCmdJson(const String& json, String& outErr) {
     }
     int8_t dir = 0;
     float endPos = NAN;
-    if (cmd == "a_end" || cmd == "open_end") { dir = +1; endPos = 100.0f; }
-    else if (cmd == "b_end" || cmd == "close_end") { dir = -1; endPos = 0.0f; }
+    if (cmd == "a_end" || cmd == "open_end") { dir = kMixDirectionA; endPos = 100.0f; }
+    else if (cmd == "b_end" || cmd == "close_end") { dir = kMixDirectionB; endPos = 0.0f; }
     else { outErr = "bad mixMove"; return false; }
     const uint32_t seatMs = s_cfg.mixTravelMs + s_cfg.mixCalibrationSeatMs;
     if (!mixStartPulse(dir, now, true, seatMs, true)) {
@@ -1521,23 +1937,27 @@ bool equithermHandleCmdJson(const String& json, String& outErr) {
     cmd.toLowerCase();
     const uint32_t now = millis();
     if (cmd == "invalidate") {
-      stopMixingNow(now, true);
+      stopMixingNow(now, false);
+      s_mixManualHoldUntilMs = 0;
+      s_autoCalibrationAttemptedThisCycle = true;
       mixInvalidateCalibration(false);
       s_mixActuatorRetryAfterMs = 0;
+      s_mixIneffectivePulseCount = 0;
       s_mixFeedbackFaultLatched = false;
-      mixClearEffectEvaluation(true);
       s_lastComputeMs = 0;
       return true;
     }
     if (cmd == "sync_a") {
-      stopMixingNow(now, true);
-      mixMarkCalibrated(100.0f, +1);
+      stopMixingNow(now, false);
+      s_mixManualHoldUntilMs = 0;
+      mixMarkCalibrated(100.0f, kMixDirectionA);
       s_lastComputeMs = 0;
       return true;
     }
     if (cmd == "sync_b") {
-      stopMixingNow(now, true);
-      mixMarkCalibrated(0.0f, -1);
+      stopMixingNow(now, false);
+      s_mixManualHoldUntilMs = 0;
+      mixMarkCalibrated(0.0f, kMixDirectionB);
       s_lastComputeMs = 0;
       return true;
     }
@@ -1547,8 +1967,8 @@ bool equithermHandleCmdJson(const String& json, String& outErr) {
     }
     int8_t dir = 0;
     float endPos = NAN;
-    if (cmd == "a") { dir = +1; endPos = 100.0f; }
-    else if (cmd == "b") { dir = -1; endPos = 0.0f; }
+    if (cmd == "a") { dir = kMixDirectionA; endPos = 100.0f; }
+    else if (cmd == "b") { dir = kMixDirectionB; endPos = 0.0f; }
     else { outErr = "bad mixCalibrate"; return false; }
     const uint32_t seatMs = s_cfg.mixTravelMs + s_cfg.mixCalibrationSeatMs;
     if (!mixStartPulse(dir, now, true, seatMs, true)) {
@@ -1569,6 +1989,7 @@ bool equithermHandleCmdJson(const String& json, String& outErr) {
     const uint32_t now = millis();
     if (cmd == "stop") {
       stopMixingNow(now, true);
+      s_mixManualHoldUntilMs = 0;
       s_lastComputeMs = 0;
       return true;
     }
@@ -1577,8 +1998,8 @@ bool equithermHandleCmdJson(const String& json, String& outErr) {
       return false;
     }
     int8_t dir = 0;
-    if (cmd == "open" || cmd == "a") dir = +1;
-    else if (cmd == "close" || cmd == "b") dir = -1;
+    if (cmd == "open" || cmd == "a") dir = kMixDirectionA;
+    else if (cmd == "close" || cmd == "b") dir = kMixDirectionB;
     else {
       outErr = "bad mixPulse";
       return false;
@@ -1617,6 +2038,10 @@ bool equithermHandleCmdJson(const String& json, String& outErr) {
 void equithermBackgroundService() {
   equithermInit();
   mixUpdate(millis());
+  // OpenTherm transactions can block for several hundred milliseconds. Service
+  // the allow-listed WebSocket command channel during those waits so a manual
+  // valve action reaches R1/R2 immediately after the pointer press.
+  webPortalBackgroundService();
 }
 
 void equithermRequestRecompute() {

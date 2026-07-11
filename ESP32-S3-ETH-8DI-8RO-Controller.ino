@@ -309,6 +309,12 @@ void loop() {
 
   DallasController::loop();
 
+  // Network and operator commands are serviced before potentially longer
+  // OpenTherm transactions. The WebSocket loop is also called from the OT wait
+  // hook, so manual valve commands remain responsive throughout polling.
+  networkLoop();
+  webPortalLoop();
+
   // OpenTherm polling
   openthermLoop();
 
@@ -320,14 +326,11 @@ void loop() {
   // Central temperature registry (keeps roles consistent across program)
   TemperatureManager::loop();
 
-  // WiFi portal/process
-  networkLoop();
-
   // OTA handler must run often (active when any IP interface is connected)
   otaLoop();
 
-  // Web portal
-  webPortalLoop();
+  // MQTT runtime: reconnect, subscriptions, periodic state and HA discovery.
+  mqttLoop();
 
   buzzerLoop();
   pressureAlarmLoop();
