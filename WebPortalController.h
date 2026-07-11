@@ -6,10 +6,12 @@
 
 void webPortalInit();
 void webPortalLoop();
+void webPortalBackgroundService();
 
 #else
 
 inline void webPortalInit() {}
 inline void webPortalLoop() {}
+inline void webPortalBackgroundService() {}
 
 #endif

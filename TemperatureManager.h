@@ -50,11 +50,25 @@ namespace TemperatureManager {
   // Get the best available value for a role.
   TempValue get(TempRole role, uint32_t maxAgeMs = 600000);
 
-  // Dedicated feedback for the mixing valve / heating water after the mixer.
-  // This must prefer the Dallas sensor on GPIO2 and must not be overridden by
-  // OpenTherm boiler return temperature, otherwise the valve may regulate
-  // against the wrong hydraulic point.
+  // Dedicated Dallas-only return temperature on GPIO2. This value is used for
+  // hydraulic port B and is never overridden by the OpenTherm return value.
+  TempValue getDallasReturn(uint32_t maxAgeMs = 600000);
+
+  // Backward-compatible alias retained for existing API fields/older UI code.
   TempValue getMixFeedback(uint32_t maxAgeMs = 600000);
+
+  struct SelectableSourceInfo {
+    const char* key;
+    const char* label;
+  };
+
+  // Resolve a configured source key to a live temperature:
+  // tank_mid, return_dallas, opentherm_ch, or none.
+  // return_dallas always reads the dedicated DS18B20 Return role and is never
+  // overridden by the OpenTherm return value.
+  TempValue getBySourceKey(const String& key, uint32_t maxAgeMs = 600000);
+  String normalizeSourceKey(const String& key, const char* fallback = "none");
+  const SelectableSourceInfo* getSelectableSourcesForPort(const char* port, size_t& count);
 
   // Helpers for UI/API.
   const char* roleName(TempRole role);

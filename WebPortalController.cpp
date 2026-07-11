@@ -12,7 +12,6 @@
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 #include <algorithm>
-#include <functional>
 #include <stdio.h>
 #include <string.h>
 
@@ -45,6 +44,7 @@ namespace {
 
   bool g_fsMounted = false;
   unsigned long g_wsLastPushMs = 0;
+  unsigned long g_wsLastFullPushMs = 0;
   uint8_t g_wsClientCount = 0;
 
   static constexpr size_t kFsReadChunkDefault = 4096;
@@ -125,11 +125,11 @@ namespace {
     {"inputs", 1024, "cfg_inputs"},
     {"opentherm", 2048, "cfg_ot"},
     {"ble", 1024, "cfg_ble"},
-    {"dallas", 4096, "cfg_dallas"},
+    {"dallas", 6144, "cfg_dallas"},
     {"ota", 1024, "cfg_ota"},
     {"mqtt", 4096, "cfg_mqtt"},
     {"time", 1024, "cfg_time"},
-    {"equitherm", 4096, "cfg_eq"},
+    {"equitherm", 6144, "cfg_eq"},
     {"dhw", 8192, "cfg_dhw"},
     {"alerts", 1024, "cfg_alerts"},
   };
@@ -400,15 +400,6 @@ namespace {
     out["minFree"] = (uint32_t)ESP.getMinFreeHeap();
     out["maxAlloc"] = (uint32_t)ESP.getMaxAllocHeap();
     out["psramFree"] = (uint32_t)ESP.getFreePsram();
-  }
-
-  static String serializeJsonObject(const std::function<void(JsonObject&)>& filler, size_t cap = 512) {
-    DynamicJsonDocument doc(cap);
-    JsonObject obj = doc.to<JsonObject>();
-    filler(obj);
-    String out;
-    serializeJson(doc, out);
-    return out;
   }
 
   static void fillFastWsStateObject(JsonObject out) {
@@ -779,14 +770,93 @@ namespace {
   }
 
   static void handleWsEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length) {
-    (void)payload;
-    (void)length;
     if (type == WStype_CONNECTED) {
       if (g_wsClientCount < 255) ++g_wsClientCount;
       const String msg = buildFastWsFrame(true);
       if (msg.length()) g_ws.sendTXT(num, msg.c_str(), msg.length());
     } else if (type == WStype_DISCONNECTED) {
       if (g_wsClientCount > 0) --g_wsClientCount;
+    } else if (type == WStype_TEXT && payload && length) {
+      const String command(reinterpret_cast<const char*>(payload), length);
+      const bool wantsSync = command == "sync"
+        || (length < 192 && command.indexOf("\"type\":\"sync\"") >= 0);
+      if (wantsSync) {
+        const String msg = buildFastWsFrame(true);
+        if (msg.length()) g_ws.sendTXT(num, msg.c_str(), msg.length());
+        return;
+      }
+
+      // Priority mixing-valve channel. It accepts only a small allow-list and is
+      // also serviced from OpenTherm wait loops. This keeps R1/R2 response close
+      // to the physical pointer press without exposing generic commands there.
+      if (length <= 384 && command.indexOf("\"type\":\"mix_cmd\"") >= 0) {
+        StaticJsonDocument<384> req;
+        StaticJsonDocument<384> ack;
+        String err;
+        bool ok = false;
+        String action;
+        uint32_t requestId = 0;
+
+        const DeserializationError parseErr = deserializeJson(req, command);
+        if (parseErr || String((const char*)(req["type"] | "")) != "mix_cmd") {
+          err = "bad_mix_cmd";
+        } else {
+          requestId = (uint32_t)(req["id"] | 0);
+          action = String((const char*)(req["action"] | ""));
+          action.trim();
+          action.toLowerCase();
+
+          StaticJsonDocument<160> eqReq;
+          if (action == "pulse_a") {
+            eqReq["mixPulse"] = "a";
+            eqReq["pulseMs"] = (uint32_t)(req["pulseMs"] | 300);
+          } else if (action == "pulse_b") {
+            eqReq["mixPulse"] = "b";
+            eqReq["pulseMs"] = (uint32_t)(req["pulseMs"] | 300);
+          } else if (action == "end_a") {
+            eqReq["mixMove"] = "a_end";
+          } else if (action == "end_b") {
+            eqReq["mixMove"] = "b_end";
+          } else if (action == "stop") {
+            eqReq["mixPulse"] = "stop";
+          } else {
+            err = "unsupported_mix_action";
+          }
+
+          if (!err.length()) {
+            String eqJson;
+            serializeJson(eqReq, eqJson);
+            ok = equithermHandleCmdJson(eqJson, err);
+          }
+        }
+
+        const uint8_t relayMask = relayGetMask();
+        const uint8_t pairMask = (uint8_t)(kRelayMixOpenBit | kRelayMixCloseBit);
+        bool expectedApplied = false;
+        if (action == "pulse_a" || action == "end_a") {
+          expectedApplied = (relayMask & pairMask) == kRelayMixOpenBit;
+        } else if (action == "pulse_b" || action == "end_b") {
+          expectedApplied = (relayMask & pairMask) == kRelayMixCloseBit;
+        } else if (action == "stop") {
+          expectedApplied = (relayMask & pairMask) == 0;
+        }
+        const bool relayAppliedNow = ok && relayIsOk() && expectedApplied;
+
+        ack["type"] = "mix_ack";
+        ack["id"] = requestId;
+        ack["action"] = action;
+        ack["ok"] = ok;
+        ack["relayAppliedNow"] = relayAppliedNow;
+        ack["relayOk"] = relayIsOk();
+        ack["relayMask"] = (uint32_t)relayMask;
+        if (!ok || !relayAppliedNow) ack["err"] = err.length() ? err : "relay_not_verified";
+        String reply;
+        serializeJson(ack, reply);
+        g_ws.sendTXT(num, reply.c_str(), reply.length());
+        recordAdminAction("mix_ws", ok && relayAppliedNow,
+                          ok ? (relayAppliedNow ? "applied" : "relay_not_verified") : err.c_str());
+        return;
+      }
     }
   }
 
@@ -1114,6 +1184,24 @@ namespace {
       info["gpio"] = (int)binding.gpio;
       yield();
     }
+
+    JsonObject mixingValve = out.createNestedObject("mixingValve");
+    mixingValve["a"] = ConfigStore::getEqMixTempSourceA();
+    mixingValve["b"] = ConfigStore::getEqMixTempSourceB();
+    mixingValve["ab"] = ConfigStore::getEqMixTempSourceAB();
+    JsonObject availableSources = mixingValve.createNestedObject("availableSources");
+    const char* sourcePorts[] = {"A", "B", "AB"};
+    const char* sourceKeys[] = {"a", "b", "ab"};
+    for (size_t portIndex = 0; portIndex < 3; ++portIndex) {
+      JsonArray portSources = availableSources.createNestedArray(sourceKeys[portIndex]);
+      size_t sourceCount = 0;
+      const auto* sources = TemperatureManager::getSelectableSourcesForPort(sourcePorts[portIndex], sourceCount);
+      for (size_t i = 0; i < sourceCount; ++i) {
+        JsonObject info = portSources.createNestedObject();
+        info["key"] = sources[i].key;
+        info["label"] = sources[i].label;
+      }
+    }
   }
 
   static void fillOtaSectionJson(JsonObject out) {
@@ -1213,9 +1301,15 @@ namespace {
     mix["closeRelay"] = 2;
     mix["deadbandC"] = ec.mixDeadbandC;
     mix["targetOffsetC"] = ec.mixTargetOffsetC;
+    mix["targetReachedAction"] = ec.mixTargetReachedAction;
     mix["pulseMs"] = (uint32_t)ec.mixPulseMs;
     mix["minIntervalMs"] = (uint32_t)ec.mixMinIntervalMs;
     mix["travelMs"] = (uint32_t)ec.mixTravelMs;
+    mix["calibrationSeatMs"] = (uint32_t)ec.mixCalibrationSeatMs;
+    mix["autoRecalibrationMs"] = (uint32_t)ec.mixAutoRecalibrationMs;
+    mix["sourceA"] = ec.mixTempSourceA;
+    mix["sourceB"] = ec.mixTempSourceB;
+    mix["sourceAB"] = ec.mixTempSourceAB;
 
     JsonObject ba = eq.createNestedObject("boilerAssist");
     ba["enabled"] = ec.boilerAssistEnabled;
@@ -1331,7 +1425,7 @@ namespace {
   static bool saveConfigSnapshot() {
     if (!g_fsMounted) return false;
     ensureConfigDir();
-    DynamicJsonDocument doc(14336);
+    DynamicJsonDocument doc(16384);
     fillConfigDoc(doc);
     bool ok = writeJsonVariantToFile("/config.json", doc.as<JsonVariantConst>());
     for (const auto& def : kConfigSections) {
@@ -1551,7 +1645,7 @@ namespace {
   static void handleTimeConfigPost() { handleSectionPost("time"); }
 
   static void handleConfigGet() {
-    DynamicJsonDocument doc(14336);
+    DynamicJsonDocument doc(16384);
     fillConfigDoc(doc);
     sendJsonDoc(200, doc);
   }
@@ -1741,9 +1835,32 @@ namespace {
         }
       }
     }
+    bool mixingSourcesChanged = false;
+    if (d.containsKey("mixingValve") && d["mixingValve"].is<JsonObjectConst>()) {
+      JsonObjectConst mv = d["mixingValve"].as<JsonObjectConst>();
+      if (mv.containsKey("a")) {
+        const char* value = mv["a"] | "tank_mid";
+        ConfigStore::setEqMixTempSourceA(String(value ? value : "tank_mid"));
+        mixingSourcesChanged = true;
+      }
+      if (mv.containsKey("b")) {
+        const char* value = mv["b"] | "return_dallas";
+        ConfigStore::setEqMixTempSourceB(String(value ? value : "return_dallas"));
+        mixingSourcesChanged = true;
+      }
+      if (mv.containsKey("ab")) {
+        const char* value = mv["ab"] | "opentherm_ch";
+        ConfigStore::setEqMixTempSourceAB(String(value ? value : "opentherm_ch"));
+        mixingSourcesChanged = true;
+      }
+    }
     if (changed) {
       TemperatureManager::invalidateDallasBackedRoles();
       TemperatureManager::loop();
+    }
+    if (mixingSourcesChanged) {
+      equithermReloadFromStore();
+      equithermRequestRecompute();
     }
   }
 
@@ -1986,7 +2103,7 @@ namespace {
   }
 
   static void handleDallasStatus() {
-    DynamicJsonDocument doc(4096);
+    DynamicJsonDocument doc(8192);
     doc["ok"] = true;
     JsonObject d = doc.createNestedObject("dallas");
     TemperatureManager::fillDallasJson(d);
@@ -2524,9 +2641,20 @@ void webPortalLoop() {
   }
   if (g_wsClientCount > 0 && (now - g_wsLastPushMs) >= 1000UL) {
     g_wsLastPushMs = now;
-    const String msg = buildFastWsFrame(false);
-    if (msg.length()) g_ws.broadcastTXT(msg.c_str(), msg.length());
+    const bool forceFull = (now - g_wsLastFullPushMs) >= 60000UL;
+    const String msg = buildFastWsFrame(forceFull);
+    if (msg.length()) {
+      g_ws.broadcastTXT(msg.c_str(), msg.length());
+      if (forceFull) g_wsLastFullPushMs = now;
+    }
   }
+}
+
+void webPortalBackgroundService() {
+  if (!g_started) return;
+  // Intentionally service only WebSocket frames here. HTTP request handling may
+  // allocate larger documents and is left to the normal main loop.
+  g_ws.loop();
 }
 
 #endif // FEATURE_WEBPORTAL
