@@ -97,6 +97,37 @@ struct EquithermConfig {
   String mixTempSourceB = "return_dallas";
   String mixTempSourceAB = "opentherm_ch";
 
+  // TECH i-3 compatible single-circuit control. Defaults deliberately preserve
+  // the pre-existing controller behavior after a firmware update.
+  String mixControlMode = "adaptive";   // adaptive | tech_i3
+  String mixValveType = "ch";           // ch | floor | return_protection
+  uint32_t mixControlIntervalMs = 2000;
+  float mixMinOpeningPct = 0.0f;
+  float mixUnitStepPct = 5.0f;
+  float mixProportionalCoeff = 5.0f;
+  String mixCalibrationHome = "b";       // a | b
+
+  bool mixBoilerProtectionEnabled = false;
+  float mixBoilerProtectionMaxC = 80.0f;
+  bool mixReturnProtectionEnabled = false;
+  float mixReturnProtectionMinC = 40.0f;
+  bool mixFloorProtectionEnabled = false;
+  float mixFloorProtectionMaxC = 45.0f;
+  bool mixFloorSummerEnabled = false;
+
+  bool mixOutsideCloseEnabled = false;
+  float mixOutsideCloseDayC = 20.0f;
+  float mixOutsideCloseNightC = 15.0f;
+  float mixOutsideCloseHysteresisC = 2.0f;
+  bool mixWeeklyCloseEnabled = false;
+  float mixDhwPriorityPositionPct = 0.0f;
+
+  // Optional TECH i-3 style 4-point weather curve. The original two-point
+  // curve remains the default and is used when curveMode == "linear2".
+  String curveMode = "linear2";          // linear2 | tech_i3_4point
+  float day4FlowC[4] = {65.0f, 55.0f, 45.0f, 35.0f};
+  float night4FlowC[4] = {60.0f, 50.0f, 40.0f, 30.0f};
+
   // Accumulator support. boilerAssistDeltaC is retained only for compatibility
   // with older saved/API configurations and is no longer added to OT setpoint.
   bool boilerAssistEnabled = false;
@@ -181,6 +212,14 @@ struct EquithermStatus {
   String mixCalibrationState;
   bool mixRelayApplyOk = true;
   uint8_t mixRelayMask = 0;
+  String mixControlMode;
+  String mixValveType;
+  String mixProtection;
+  bool mixOutsideClosed = false;
+  bool mixWeeklyClosed = false;
+  float mixReturnProtectC = NAN;
+  float mixBoilerProtectC = NAN;
+  float mixFloorProtectC = NAN;
 
   // Boiler max CH
   float boilerMaxChC = NAN;

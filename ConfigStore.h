@@ -191,6 +191,12 @@ namespace ConfigStore {
   String getEqMixTempSourceAB();
   void setEqMixTempSourceAB(const String& v);
 
+  // Extended single-circuit mixing-valve settings. Stored as a compact JSON
+  // object so new TECH i-3 compatible options can be added without consuming
+  // a large set of individual NVS keys.
+  String getEqMixAdvancedJson();
+  void setEqMixAdvancedJson(const String& v);
+
   // Accumulator support for boiler heating. The legacy deltaC value is kept
   // for configuration compatibility but is no longer added to the OT setpoint.
   bool getEqBoilerAssistEnabled();

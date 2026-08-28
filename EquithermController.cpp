@@ -61,6 +61,8 @@ namespace {
   uint8_t s_mixIneffectivePulseCount = 0;
   uint32_t s_mixActuatorRetryAfterMs = 0;
   uint32_t s_mixManualHoldUntilMs = 0;
+  uint32_t s_lastMixDecisionMs = 0;
+  bool s_mixOutsideCloseActive = false;
 
   // Automatic recalibration is considered only once at the beginning of an
   // actual heating cycle and before the first normal regulation pulse. It is
@@ -128,6 +130,8 @@ namespace {
     s_mixFeedbackFaultLatched = false;
     s_mixIneffectivePulseCount = 0;
     s_mixActuatorRetryAfterMs = 0;
+    s_lastMixDecisionMs = 0;
+    s_mixOutsideCloseActive = false;
     resetHeatingCycleState();
   }
 
@@ -143,6 +147,25 @@ namespace {
     if (fabsf(dx) < 0.001f) return c.flowColdC;
     const float k = (c.flowColdC - c.flowWarmC) / dx;
     return c.flowWarmC + k * (outsideC - c.outWarmC);
+  }
+
+  static float techI3Curve4(const float flow[4], float outsideC) {
+    static constexpr float kOutside[4] = {-20.0f, -10.0f, 0.0f, 10.0f};
+    uint8_t lo = 0, hi = 1;
+    if (outsideC >= kOutside[3]) { lo = 2; hi = 3; }
+    else if (outsideC >= kOutside[2]) { lo = 2; hi = 3; }
+    else if (outsideC >= kOutside[1]) { lo = 1; hi = 2; }
+    const float dx = kOutside[hi] - kOutside[lo];
+    if (fabsf(dx) < 0.001f) return flow[lo];
+    const float t = (outsideC - kOutside[lo]) / dx;
+    return flow[lo] + (flow[hi] - flow[lo]) * t;
+  }
+
+  static float configuredCurveTarget(const String& mode, float outsideC) {
+    if (s_cfg.curveMode == "tech_i3_4point") {
+      return techI3Curve4(mode == "night" ? s_cfg.night4FlowC : s_cfg.day4FlowC, outsideC);
+    }
+    return lerpCurve(mode == "night" ? s_cfg.night : s_cfg.day, outsideC);
   }
 
   static inline String srcName(TempSource s) {
@@ -170,6 +193,62 @@ namespace {
     char buf[6];
     snprintf(buf, sizeof(buf), "%02u:%02u", (unsigned)(m / 60), (unsigned)(m % 60));
     return String(buf);
+  }
+
+  static void loadMixAdvancedFromStore() {
+    const String raw = ConfigStore::getEqMixAdvancedJson();
+    if (!raw.length() || raw == "{}") return;
+
+    DynamicJsonDocument doc(3072);
+    const DeserializationError err = deserializeJson(doc, raw);
+    if (err || !doc.is<JsonObject>()) return;
+    JsonObjectConst a = doc.as<JsonObjectConst>();
+
+    if (a.containsKey("controlMode")) s_cfg.mixControlMode = String((const char*)(a["controlMode"] | "adaptive"));
+    if (a.containsKey("valveType")) s_cfg.mixValveType = String((const char*)(a["valveType"] | "ch"));
+    if (a.containsKey("controlIntervalMs")) s_cfg.mixControlIntervalMs = (uint32_t)(a["controlIntervalMs"] | s_cfg.mixControlIntervalMs);
+    if (a.containsKey("minOpeningPct")) s_cfg.mixMinOpeningPct = a["minOpeningPct"].as<float>();
+    if (a.containsKey("unitStepPct")) s_cfg.mixUnitStepPct = a["unitStepPct"].as<float>();
+    if (a.containsKey("proportionalCoeff")) s_cfg.mixProportionalCoeff = a["proportionalCoeff"].as<float>();
+    if (a.containsKey("calibrationHome")) s_cfg.mixCalibrationHome = String((const char*)(a["calibrationHome"] | "b"));
+    if (a.containsKey("weeklyCloseEnabled")) s_cfg.mixWeeklyCloseEnabled = (bool)(a["weeklyCloseEnabled"] | false);
+    if (a.containsKey("dhwPriorityPositionPct")) s_cfg.mixDhwPriorityPositionPct = a["dhwPriorityPositionPct"].as<float>();
+    if (a.containsKey("curveMode")) s_cfg.curveMode = String((const char*)(a["curveMode"] | "linear2"));
+
+    if (a["boilerProtection"].is<JsonObjectConst>()) {
+      JsonObjectConst v = a["boilerProtection"].as<JsonObjectConst>();
+      s_cfg.mixBoilerProtectionEnabled = (bool)(v["enabled"] | s_cfg.mixBoilerProtectionEnabled);
+      if (v.containsKey("maxC")) s_cfg.mixBoilerProtectionMaxC = v["maxC"].as<float>();
+    }
+    if (a["returnProtection"].is<JsonObjectConst>()) {
+      JsonObjectConst v = a["returnProtection"].as<JsonObjectConst>();
+      s_cfg.mixReturnProtectionEnabled = (bool)(v["enabled"] | s_cfg.mixReturnProtectionEnabled);
+      if (v.containsKey("minC")) s_cfg.mixReturnProtectionMinC = v["minC"].as<float>();
+    }
+    if (a["floorProtection"].is<JsonObjectConst>()) {
+      JsonObjectConst v = a["floorProtection"].as<JsonObjectConst>();
+      s_cfg.mixFloorProtectionEnabled = (bool)(v["enabled"] | s_cfg.mixFloorProtectionEnabled);
+      if (v.containsKey("maxC")) s_cfg.mixFloorProtectionMaxC = v["maxC"].as<float>();
+      if (v.containsKey("summerEnabled")) s_cfg.mixFloorSummerEnabled = (bool)(v["summerEnabled"] | s_cfg.mixFloorSummerEnabled);
+    }
+    if (a["outsideClose"].is<JsonObjectConst>()) {
+      JsonObjectConst v = a["outsideClose"].as<JsonObjectConst>();
+      s_cfg.mixOutsideCloseEnabled = (bool)(v["enabled"] | s_cfg.mixOutsideCloseEnabled);
+      if (v.containsKey("dayC")) s_cfg.mixOutsideCloseDayC = v["dayC"].as<float>();
+      if (v.containsKey("nightC")) s_cfg.mixOutsideCloseNightC = v["nightC"].as<float>();
+      if (v.containsKey("hysteresisC")) s_cfg.mixOutsideCloseHysteresisC = v["hysteresisC"].as<float>();
+    }
+    if (a["weather4"].is<JsonObjectConst>()) {
+      JsonObjectConst w = a["weather4"].as<JsonObjectConst>();
+      if (w["day"].is<JsonArrayConst>()) {
+        JsonArrayConst arr = w["day"].as<JsonArrayConst>();
+        for (uint8_t i=0; i<4 && i<arr.size(); ++i) s_cfg.day4FlowC[i] = arr[i].as<float>();
+      }
+      if (w["night"].is<JsonArrayConst>()) {
+        JsonArrayConst arr = w["night"].as<JsonArrayConst>();
+        for (uint8_t i=0; i<4 && i<arr.size(); ++i) s_cfg.night4FlowC[i] = arr[i].as<float>();
+      }
+    }
   }
 
   static void loadFromPrefs() {
@@ -227,6 +306,7 @@ namespace {
     s_cfg.mixTempSourceA = TemperatureManager::normalizeSourceKey(ConfigStore::getEqMixTempSourceA(), "tank_mid");
     s_cfg.mixTempSourceB = TemperatureManager::normalizeSourceKey(ConfigStore::getEqMixTempSourceB(), "return_dallas");
     s_cfg.mixTempSourceAB = TemperatureManager::normalizeSourceKey(ConfigStore::getEqMixTempSourceAB(), "opentherm_ch");
+    loadMixAdvancedFromStore();
 
     // Boiler assist
     s_cfg.boilerAssistEnabled = ConfigStore::getEqBoilerAssistEnabled();
@@ -264,6 +344,33 @@ namespace {
     if (s_cfg.mixTravelMs > 900000) s_cfg.mixTravelMs = 900000;
     if (s_cfg.mixCalibrationSeatMs < 250) s_cfg.mixCalibrationSeatMs = 250;
     if (s_cfg.mixCalibrationSeatMs > 10000) s_cfg.mixCalibrationSeatMs = 10000;
+    s_cfg.mixControlMode.trim(); s_cfg.mixControlMode.toLowerCase();
+    if (s_cfg.mixControlMode != "adaptive" && s_cfg.mixControlMode != "tech_i3") s_cfg.mixControlMode = "adaptive";
+    s_cfg.mixValveType.trim(); s_cfg.mixValveType.toLowerCase();
+    if (s_cfg.mixValveType != "ch" && s_cfg.mixValveType != "floor" && s_cfg.mixValveType != "return_protection") s_cfg.mixValveType = "ch";
+    s_cfg.mixCalibrationHome.trim(); s_cfg.mixCalibrationHome.toLowerCase();
+    if (s_cfg.mixCalibrationHome != "a" && s_cfg.mixCalibrationHome != "b") s_cfg.mixCalibrationHome = "b";
+    if (s_cfg.mixControlIntervalMs < 200) s_cfg.mixControlIntervalMs = 200;
+    if (s_cfg.mixControlIntervalMs > 60000) s_cfg.mixControlIntervalMs = 60000;
+    clampFloat(s_cfg.mixMinOpeningPct, 0.0f, 95.0f);
+    clampFloat(s_cfg.mixUnitStepPct, 0.2f, 100.0f);
+    clampFloat(s_cfg.mixProportionalCoeff, 0.1f, 20.0f);
+    clampFloat(s_cfg.mixBoilerProtectionMaxC, 30.0f, 95.0f);
+    clampFloat(s_cfg.mixReturnProtectionMinC, 10.0f, 80.0f);
+    clampFloat(s_cfg.mixFloorProtectionMaxC, 20.0f, 70.0f);
+    clampFloat(s_cfg.mixOutsideCloseDayC, -20.0f, 40.0f);
+    clampFloat(s_cfg.mixOutsideCloseNightC, -20.0f, 40.0f);
+    clampFloat(s_cfg.mixOutsideCloseHysteresisC, 0.2f, 10.0f);
+    clampFloat(s_cfg.mixDhwPriorityPositionPct, 0.0f, 100.0f);
+    s_cfg.curveMode.trim(); s_cfg.curveMode.toLowerCase();
+    if (s_cfg.curveMode != "linear2" && s_cfg.curveMode != "tech_i3_4point") s_cfg.curveMode = "linear2";
+    for (uint8_t i=0; i<4; ++i) {
+      clampFloat(s_cfg.day4FlowC[i], 10.0f, 90.0f);
+      clampFloat(s_cfg.night4FlowC[i], 10.0f, 90.0f);
+    }
+    // Boiler protection is intentionally unavailable for a floor valve, matching
+    // the TECH i-3 safety model where floor over-temperature has priority.
+    if (s_cfg.mixValveType == "floor") s_cfg.mixBoilerProtectionEnabled = false;
     relaySetMixingInterlockRelays(s_cfg.mixOpenRelayIndex, s_cfg.mixCloseRelayIndex);
     clampFloat(s_cfg.boilerAssistDeltaC, 0.0f, 30.0f);
   }
@@ -569,6 +676,34 @@ namespace {
     return pulseMs;
   }
 
+  static uint32_t mixTechI3PulseMs(float errorC) {
+    // TECH i-3 documentation describes the correction as:
+    // (SET - SENSOR) * (proportional coefficient / 10), limited by unit step.
+    float stepPct = fabsf(errorC) * (s_cfg.mixProportionalCoeff / 10.0f);
+    if (stepPct > s_cfg.mixUnitStepPct) stepPct = s_cfg.mixUnitStepPct;
+    if (stepPct < 0.2f) stepPct = 0.2f;
+    uint32_t pulseMs = (uint32_t)lroundf((float)s_cfg.mixTravelMs * (stepPct / 100.0f));
+    if (pulseMs < 50) pulseMs = 50;
+    if (pulseMs > 60000) pulseMs = 60000;
+    return pulseMs;
+  }
+
+  static uint32_t mixControlIntervalRemainingMs(uint32_t now) {
+    if (s_cfg.mixControlMode != "tech_i3" || s_lastMixDecisionMs == 0) return 0;
+    const uint32_t elapsed = now - s_lastMixDecisionMs;
+    if (elapsed >= s_cfg.mixControlIntervalMs) return 0;
+    return s_cfg.mixControlIntervalMs - elapsed;
+  }
+
+  static uint32_t mixLimitClosePulseToMinOpening(uint32_t pulseMs) {
+    if (!s_mix.positionTrusted || s_cfg.mixMinOpeningPct <= 0.0f) return pulseMs;
+    const float availablePct = s_mix.positionPct - s_cfg.mixMinOpeningPct;
+    if (availablePct <= 0.05f) return 0;
+    uint32_t maxMs = (uint32_t)lroundf((float)s_cfg.mixTravelMs * (availablePct / 100.0f));
+    if (maxMs < 50) maxMs = 50;
+    return pulseMs < maxMs ? pulseMs : maxMs;
+  }
+
   static bool mixShouldHoldForTrend(float errorC, float trendCps) {
     const float absErrC = fabsf(errorC);
     float holdWindowC = s_cfg.mixDeadbandC * 4.0f;
@@ -688,7 +823,9 @@ namespace {
     if (dir != kMixDirectionA && dir != kMixDirectionB) return false;
     if (!manual && !s_cfg.mixingEnabled) return false;
     if (!manual && mixHasTrustedLimit(dir)) return false;
-    if (!manual && mixFeedbackMissingFaultActive(now)) return false;
+    const bool returnProtectionProfile = s_cfg.mixControlMode == "tech_i3"
+        && s_cfg.mixValveType == "return_protection";
+    if (!manual && !returnProtectionProfile && mixFeedbackMissingFaultActive(now)) return false;
     if (!manual && mixActuatorFaultActive(now)) return false;
 
     uint32_t pulseMs = pulseMsOverride ? pulseMsOverride : s_cfg.mixPulseMs;
@@ -728,6 +865,7 @@ namespace {
       s_autoCalibrationAttemptedThisCycle = true;
     } else {
       s_regularRegulationStartedThisCycle = true;
+      if (s_cfg.mixControlMode == "tech_i3") s_lastMixDecisionMs = now;
     }
     return true;
   }
@@ -746,7 +884,9 @@ namespace {
     if (!s_heatingCycleActive || s_autoCalibrationAttemptedThisCycle
         || s_regularRegulationStartedThisCycle) return false;
     if (s_mix.active || s_mix.manual) return false;
-    if (mixFeedbackMissingFaultActive(now) || mixActuatorFaultActive(now)) return false;
+    const bool returnProtectionProfile = s_cfg.mixControlMode == "tech_i3"
+        && s_cfg.mixValveType == "return_protection";
+    if ((!returnProtectionProfile && mixFeedbackMissingFaultActive(now)) || mixActuatorFaultActive(now)) return false;
     if (!s_mix.positionTrusted || s_mix.lastCalibrationMs == 0) return true;
     return (uint32_t)(now - s_mix.lastCalibrationMs) >= s_cfg.mixAutoRecalibrationMs;
   }
@@ -756,19 +896,22 @@ namespace {
     // relay so an I2C fault cannot cause rapid retry hammering from compute().
     s_autoCalibrationAttemptedThisCycle = true;
 
-    // If the controller already has a trusted B limit, there is no reason to
-    // energize the actuator again. Refresh only the calibration timestamp.
-    if (mixHasTrustedLimit(kMixDirectionB)) {
-      mixMarkCalibrated(0.0f, kMixDirectionB);
+    const int8_t homeDir = (s_cfg.mixControlMode == "tech_i3" && s_cfg.mixCalibrationHome == "a")
+      ? kMixDirectionA : kMixDirectionB;
+    const float homePct = homeDir == kMixDirectionA ? 100.0f : 0.0f;
+
+    // If the selected home limit is already trusted, only refresh timestamp.
+    if (mixHasTrustedLimit(homeDir)) {
+      mixMarkCalibrated(homePct, homeDir);
       return true;
     }
 
     const uint32_t seatMs = s_cfg.mixTravelMs + s_cfg.mixCalibrationSeatMs;
-    if (!mixStartPulse(kMixDirectionB, now, false, seatMs, true)) return false;
+    if (!mixStartPulse(homeDir, now, false, seatMs, true)) return false;
     s_regularRegulationStartedThisCycle = false; // this is pre-regulation homing
     s_mix.forceEndPosition = true;
     s_mix.autoCalibration = true;
-    s_mix.endPositionPct = 0.0f;
+    s_mix.endPositionPct = homePct;
     return true;
   }
 
@@ -780,6 +923,41 @@ namespace {
     s_mix.postTargetMove = true;
     s_mix.endPositionPct = (dir == kMixDirectionA) ? 100.0f : 0.0f;
     return true;
+  }
+
+  static bool mixMoveToPosition(float targetPct, uint32_t now, bool ignoreMinInterval) {
+    clampFloat(targetPct, 0.0f, 100.0f);
+    int8_t dir = 0;
+    float deltaPct = 0.0f;
+
+    if (!s_mix.positionTrusted) {
+      // Without a trusted position an intermediate percentage is unsafe. Home
+      // to the nearest mechanical end; end positions become trusted on finish.
+      dir = targetPct >= 50.0f ? kMixDirectionA : kMixDirectionB;
+      if (s_mix.active && !s_mix.manual && s_mix.dir == dir && s_mix.forceEndPosition) return true;
+      if (s_mix.active) stopMixingNow(now, true);
+      const uint32_t seatMs = s_cfg.mixTravelMs + s_cfg.mixCalibrationSeatMs;
+      if (!mixStartPulse(dir, now, false, seatMs, true)) return false;
+      s_mix.forceEndPosition = true;
+      s_mix.postTargetMove = true;
+      s_mix.endPositionPct = dir == kMixDirectionA ? 100.0f : 0.0f;
+      return true;
+    }
+
+    deltaPct = targetPct - s_mix.positionPct;
+    if (fabsf(deltaPct) <= 0.5f) {
+      if (s_mix.active && !s_mix.manual) stopMixingNow(now, true);
+      return true;
+    }
+    dir = deltaPct > 0.0f ? kMixDirectionA : kMixDirectionB;
+    if (s_mix.active) {
+      if (!s_mix.manual && s_mix.dir == dir) return true;
+      stopMixingNow(now, true);
+    }
+    uint32_t pulseMs = (uint32_t)lroundf((float)s_cfg.mixTravelMs * (fabsf(deltaPct) / 100.0f));
+    if (pulseMs < 50) pulseMs = 50;
+    if (pulseMs > 60000) pulseMs = 60000;
+    return mixStartPulse(dir, now, false, pulseMs, ignoreMinInterval);
   }
 
   static void fillManualMixStatus(uint32_t now, const char* reason) {
@@ -841,6 +1019,8 @@ namespace {
     s_st.mixCalibrationState = mixCalibrationStateText(millis());
     s_st.mixRelayApplyOk = s_mix.lastRelayApplyOk;
     s_st.mixRelayMask = s_mix.lastRelayMask;
+    s_st.mixControlMode = s_cfg.mixControlMode;
+    s_st.mixValveType = s_cfg.mixValveType;
 
     // Read all three hydraulic ports even when automatic equitherm control is
     // disabled, so the Thermometers and Mixing pages remain useful for service.
@@ -878,8 +1058,38 @@ namespace {
       openthermClearEquithermRequest();
       return;
     }
+    const bool techI3Control = s_cfg.mixControlMode == "tech_i3";
+    // Return-protection is a local hydraulic safety profile. It must never
+    // depend on an OpenTherm CH target and therefore remains usable with only
+    // the selected return sensor (normally DS18B20 on GPIO2) and R1/R2.
+    const bool localReturnProfile = techI3Control && s_cfg.mixValveType == "return_protection";
+
     if (s_externalBlock || dhwIsPriorityActive()) {
-      stopMixingNow(millis(), true);
+      const uint32_t blockNow = millis();
+      if (techI3Control && s_cfg.mixingEnabled) {
+        // TECH i-3 keeps boiler over-temperature protection above DHW priority.
+        // If the source is not overheated, DHW normally closes the circuit. With
+        // return protection enabled, keep at least the documented 5 % opening.
+        const TempValue blockFlowTv = TemperatureManager::get(TempRole::Flow, s_cfg.tempMaxAgeMs);
+        const bool boilerProtectionDuringDhw = s_cfg.mixValveType != "floor"
+            && s_cfg.mixBoilerProtectionEnabled
+            && blockFlowTv.valid && isfinite(blockFlowTv.c)
+            && blockFlowTv.c > s_cfg.mixBoilerProtectionMaxC;
+        if (boilerProtectionDuringDhw) {
+          (void)mixMoveToPosition(100.0f, blockNow, true);
+          s_st.mixState = "protect_boiler_dhw";
+          s_st.mixProtection = "boiler";
+        } else {
+          float priorityPct = s_cfg.mixDhwPriorityPositionPct;
+          if (localReturnProfile || s_cfg.mixReturnProtectionEnabled) {
+            priorityPct = fmaxf(priorityPct, 5.0f);
+          }
+          (void)mixMoveToPosition(priorityPct, blockNow, true);
+          s_st.mixState = "blocked_dhw_positioning";
+        }
+      } else {
+        stopMixingNow(blockNow, true);
+      }
       resetAccumulatorSupportTracking();
       resetHeatingCycleState();
       resetNightRelayToSafeDay();
@@ -889,24 +1099,11 @@ namespace {
       return;
     }
 
-    // Need OpenTherm present if we want to control via OT.
     OpenThermStatusSnapshot ot{};
+    bool openThermReadyForControl = !s_cfg.useOpenTherm;
     if (s_cfg.useOpenTherm) {
       ot = openthermGetStatus();
-      if (!ot.present || !ot.ready) {
-        if (s_mix.active && s_mix.manual) {
-          fillManualMixStatus(millis(), "manual_pulse");
-          return;
-        }
-        stopMixingNow(millis(), true);
-        resetAccumulatorSupportTracking();
-        resetHeatingCycleState();
-        resetNightRelayToSafeDay();
-        s_st.active = false;
-        s_st.reason = "opentherm not ready";
-        openthermClearEquithermRequest();
-        return;
-      }
+      openThermReadyForControl = ot.present && ot.ready;
     }
     bool schedUsed=false, in1=false, timeValid=false;
     String iso;
@@ -929,7 +1126,8 @@ namespace {
 
     // Temperatures: use central TemperatureManager so all fallbacks are respected.
     const TempValue outsideTv = TemperatureManager::get(TempRole::Outside, s_cfg.tempMaxAgeMs);
-    if (!outsideTv.valid || !isfinite(outsideTv.c)) {
+    const bool outsideValid = outsideTv.valid && isfinite(outsideTv.c);
+    if (!outsideValid && !localReturnProfile) {
       stopMixingNow(millis(), true);
       resetAccumulatorSupportTracking();
       resetHeatingCycleState();
@@ -939,27 +1137,51 @@ namespace {
       openthermClearEquithermRequest();
       return;
     }
-    const float outsideC = outsideTv.c;
+    const float outsideC = outsideValid ? outsideTv.c : NAN;
     s_st.outsideC = outsideC;
-    s_st.outsideAgeMs = outsideTv.ageMs;
-    s_st.outsideSrc = srcName(outsideTv.src);
-    s_st.summerActive = isSummerActive(outsideC);
-    if (s_st.summerActive) {
+    s_st.outsideAgeMs = outsideValid ? outsideTv.ageMs : 0;
+    s_st.outsideSrc = outsideValid ? srcName(outsideTv.src) : "none";
+    s_st.summerActive = outsideValid ? isSummerActive(outsideC) : false;
+    const bool summerHydraulicOnly = s_st.summerActive && techI3Control;
+    if (s_st.summerActive && !techI3Control) {
       stopMixingNow(nowMs, true);
+      s_st.mixState = "blocked_summer";
       resetAccumulatorSupportTracking();
       resetHeatingCycleState();
       resetNightRelayToSafeDay();
       s_st.active = false;
       s_st.reason = "summer_mode";
-      s_st.mixState = "blocked_summer";
       openthermClearEquithermRequest();
       return;
     }
 
-    if (!s_heatingCycleActive) {
+    // In TECH i-3 summer mode we still evaluate local hydraulic protections:
+    // boiler over-temperature may open a CH valve and a floor circuit may be
+    // explicitly allowed to operate. No equitherm CH request is sent to boiler.
+    if (summerHydraulicOnly) {
+      resetAccumulatorSupportTracking();
+      resetHeatingCycleState();
+      resetNightRelayToSafeDay();
+      openthermClearEquithermRequest();
+    } else if (!s_heatingCycleActive) {
       s_heatingCycleActive = true;
       s_autoCalibrationAttemptedThisCycle = false;
       s_regularRegulationStartedThisCycle = false;
+    }
+
+    if (!openThermReadyForControl && !localReturnProfile && !summerHydraulicOnly) {
+      if (s_mix.active && s_mix.manual) {
+        fillManualMixStatus(nowMs, "manual_pulse");
+        return;
+      }
+      stopMixingNow(nowMs, true);
+      resetAccumulatorSupportTracking();
+      resetHeatingCycleState();
+      resetNightRelayToSafeDay();
+      s_st.active = false;
+      s_st.reason = "opentherm not ready";
+      openthermClearEquithermRequest();
+      return;
     }
 
     const TempValue flowTv = TemperatureManager::get(TempRole::Flow, s_cfg.tempMaxAgeMs);
@@ -979,21 +1201,27 @@ namespace {
     // Smooth outside a bit to avoid oscillation. Keep the filter time constant
     // stable even when control loop cadence changes, otherwise valve timing would
     // silently depend on the 2 s compute loop.
-    if (!isfinite(s_outsideFiltered)) {
-      s_outsideFiltered = outsideC;
-      s_lastOutsideFilterMs = millis();
-    } else {
-      const uint32_t nowMs = millis();
-      const uint32_t dtMs = (s_lastOutsideFilterMs == 0 || nowMs < s_lastOutsideFilterMs)
-        ? kEqControlIntervalMs
-        : (nowMs - s_lastOutsideFilterMs);
-      s_lastOutsideFilterMs = nowMs;
-      const float alpha = 1.0f - expf(-(float)dtMs / kOutsideFilterTauMs);
-      s_outsideFiltered = (1.0f - alpha) * s_outsideFiltered + alpha * outsideC;
+    if (outsideValid) {
+      if (!isfinite(s_outsideFiltered)) {
+        s_outsideFiltered = outsideC;
+        s_lastOutsideFilterMs = millis();
+      } else {
+        const uint32_t outsideNowMs = millis();
+        const uint32_t dtMs = (s_lastOutsideFilterMs == 0 || outsideNowMs < s_lastOutsideFilterMs)
+          ? kEqControlIntervalMs
+          : (outsideNowMs - s_lastOutsideFilterMs);
+        s_lastOutsideFilterMs = outsideNowMs;
+        const float alpha = 1.0f - expf(-(float)dtMs / kOutsideFilterTauMs);
+        s_outsideFiltered = (1.0f - alpha) * s_outsideFiltered + alpha * outsideC;
+      }
     }
 
-    const EquithermCurve& curve = (eff == "night") ? s_cfg.night : s_cfg.day;
-    float baseTargetFlow = lerpCurve(curve, s_outsideFiltered);
+    // Return-protection can operate without an outside sensor. In that degraded
+    // local-safety mode the synthetic target is never sent to the boiler; it is
+    // only a finite placeholder for shared diagnostics/control calculations.
+    float baseTargetFlow = outsideValid
+        ? configuredCurveTarget(eff, s_outsideFiltered)
+        : s_cfg.minFlowC;
 
     // The equitherm target is the value requested from the boiler over OT.
     // The mixing offset is deliberately NOT applied to this value.
@@ -1004,7 +1232,9 @@ namespace {
     clampFloat(supportTargetFlow, s_cfg.minFlowC, s_cfg.maxFlowC);
     s_st.supportTargetFlowC = supportTargetFlow;
 
-    const bool supportConfigured = s_cfg.boilerAssistEnabled
+    const bool supportConfigured = outsideValid
+        && !summerHydraulicOnly
+        && s_cfg.boilerAssistEnabled
         && s_cfg.mixingEnabled
         && s_cfg.mixTargetOffsetC > 0.01f;
     const bool tankHotValid = mixATv.valid && isfinite(mixATv.c);
@@ -1054,17 +1284,125 @@ namespace {
       resetAccumulatorSupportResponseTracking(true);
     }
 
-    const float targetFlow = s_accumulatorSupportActive ? supportTargetFlow : baseTargetFlow;
+    float targetFlow = s_accumulatorSupportActive ? supportTargetFlow : baseTargetFlow;
     s_st.targetFlowC = targetFlow;
     s_st.accumulatorSupportConfigured = supportConfigured;
     s_st.accumulatorSupportAvailable = supportAvailableNow;
     s_st.accumulatorSupportActive = s_accumulatorSupportActive;
     s_st.accumulatorSupportAction = s_cfg.mixTargetReachedAction;
 
+    // TECH i-3 protection hierarchy for the one physical mixing circuit.
+    // Priority: boiler protection > floor/return protection > weekly/outside
+    // closing > normal temperature regulation. The return-protection profile
+    // regulates from port B and does not require an AB feedback sensor.
+    const bool techI3 = s_cfg.mixControlMode == "tech_i3";
+    const bool returnProfile = techI3 && s_cfg.mixValveType == "return_protection";
+    const bool returnValid = mixBTv.valid && isfinite(mixBTv.c);
+    const bool boilerValid = flowTv.valid && isfinite(flowTv.c);
+    const bool floorValid = mixTempValid;
+    s_st.mixReturnProtectC = returnValid ? mixBTv.c : NAN;
+    s_st.mixBoilerProtectC = boilerValid ? flowC : NAN;
+    s_st.mixFloorProtectC = floorValid ? mixFeedbackC : NAN;
+
+    const bool boilerProtectionActive = techI3
+        && s_cfg.mixValveType != "floor"
+        && s_cfg.mixBoilerProtectionEnabled
+        && boilerValid
+        && flowC > s_cfg.mixBoilerProtectionMaxC;
+    const bool floorProtectionActive = techI3
+        && s_cfg.mixValveType == "floor"
+        && s_cfg.mixFloorProtectionEnabled
+        && floorValid
+        && mixFeedbackC > s_cfg.mixFloorProtectionMaxC;
+    const bool returnProtectionActive = techI3
+        && (s_cfg.mixReturnProtectionEnabled || returnProfile)
+        && returnValid
+        && mixBTv.c < s_cfg.mixReturnProtectionMinC;
+
+    const bool weeklyCloseActive = techI3
+        && !returnProfile
+        && s_cfg.mixWeeklyCloseEnabled
+        && s_cfg.scheduleEnabled
+        && schedUsed
+        && eff == "night";
+
+    if (techI3 && !returnProfile && s_cfg.mixOutsideCloseEnabled) {
+      const float closeAtC = eff == "night" ? s_cfg.mixOutsideCloseNightC : s_cfg.mixOutsideCloseDayC;
+      if (s_mixOutsideCloseActive) {
+        if (outsideC <= closeAtC - s_cfg.mixOutsideCloseHysteresisC) s_mixOutsideCloseActive = false;
+      } else if (outsideC >= closeAtC) {
+        s_mixOutsideCloseActive = true;
+      }
+    } else {
+      s_mixOutsideCloseActive = false;
+    }
+    const bool outsideCloseActive = s_mixOutsideCloseActive;
+    s_st.mixOutsideClosed = outsideCloseActive;
+    s_st.mixWeeklyClosed = weeklyCloseActive;
+
+    int8_t techForcedDir = 0;
+    bool techForcedEnd = false;
+    float techForcedErrorC = 0.0f;
+    String techForcedState;
+    if (boilerProtectionActive) {
+      techForcedDir = kMixDirectionA;
+      techForcedErrorC = flowC - s_cfg.mixBoilerProtectionMaxC;
+      techForcedState = "protect_boiler";
+      s_st.mixProtection = "boiler";
+    } else if (floorProtectionActive) {
+      techForcedDir = kMixDirectionB;
+      techForcedErrorC = mixFeedbackC - s_cfg.mixFloorProtectionMaxC;
+      techForcedState = "protect_floor_max";
+      s_st.mixProtection = "floor_max";
+    } else if (returnProtectionActive) {
+      techForcedDir = kMixDirectionB;
+      techForcedErrorC = s_cfg.mixReturnProtectionMinC - mixBTv.c;
+      techForcedState = "protect_return_min";
+      s_st.mixProtection = "return_min";
+    } else if (summerHydraulicOnly && !returnProfile
+               && (s_cfg.mixValveType == "ch"
+                   || (s_cfg.mixValveType == "floor" && !s_cfg.mixFloorSummerEnabled))) {
+      techForcedDir = kMixDirectionB;
+      techForcedEnd = true;
+      techForcedErrorC = 10.0f;
+      techForcedState = "blocked_summer_closing";
+      s_st.mixProtection = "summer_close";
+    } else if (weeklyCloseActive) {
+      techForcedDir = kMixDirectionB;
+      techForcedEnd = true;
+      techForcedErrorC = 10.0f;
+      techForcedState = "closed_weekly";
+      s_st.mixProtection = "weekly_close";
+    } else if (outsideCloseActive) {
+      techForcedDir = kMixDirectionB;
+      techForcedEnd = true;
+      techForcedErrorC = 10.0f;
+      techForcedState = "closed_outside";
+      s_st.mixProtection = "outside_close";
+    } else if (returnProfile) {
+      if (!returnValid) {
+        techForcedState = "return_feedback_missing";
+        s_st.mixProtection = "return_feedback_missing";
+      } else if (mixBTv.c < s_cfg.mixReturnProtectionMinC) {
+        techForcedDir = kMixDirectionB;
+        techForcedErrorC = s_cfg.mixReturnProtectionMinC - mixBTv.c;
+        techForcedState = "return_protect_close";
+        s_st.mixProtection = "return_control";
+      } else if (mixBTv.c > s_cfg.mixReturnProtectionMinC + s_cfg.mixDeadbandC) {
+        techForcedDir = kMixDirectionA;
+        techForcedErrorC = mixBTv.c - s_cfg.mixReturnProtectionMinC;
+        techForcedState = "return_protect_open";
+        s_st.mixProtection = "return_control";
+      } else {
+        techForcedState = "return_protect_band";
+        s_st.mixProtection = "return_control";
+      }
+    }
+
     // Automatic recalibration is allowed only at the beginning of a real heating
     // cycle, after summer/DHW/OT guards passed and before any regular valve pulse.
     // A value of 0 h disables this path completely.
-    if (mixAutoRecalibrationDue(nowMs)) {
+    if (!summerHydraulicOnly && !techForcedState.length() && mixAutoRecalibrationDue(nowMs)) {
       (void)mixStartAutoCalibration(nowMs);
     }
 
@@ -1195,7 +1533,45 @@ namespace {
     // A/R1/hot accumulator branch = 100 %, B/R2/return branch = 0 %.
     s_st.mixState = "idle";
     if (s_mix.active && s_mix.autoCalibration) {
-      s_st.mixState = "calibrating_b";
+      s_st.mixState = s_mix.dir == kMixDirectionA ? "calibrating_a" : "calibrating_b";
+    } else if (techI3 && techForcedState.length()) {
+      const bool safetyOverride = boilerProtectionActive || floorProtectionActive || returnProtectionActive;
+
+      if (techForcedDir == 0) {
+        if (s_mix.active && !s_mix.manual) stopMixingNow(nowMs, true);
+        s_st.mixState = techForcedState;
+      } else {
+        // A higher-priority protection may reverse an already running normal
+        // correction immediately. Weekly/outside closing is non-emergency and
+        // may finish a pulse already travelling in the requested direction.
+        if (s_mix.active && !s_mix.manual && s_mix.dir != techForcedDir) {
+          stopMixingNow(nowMs, true);
+        }
+
+        if (s_mix.active) {
+          s_st.mixState = techForcedState;
+        } else if (mixHasTrustedLimit(techForcedDir)) {
+          s_st.mixState = techForcedState + "_limit";
+        } else if (techForcedEnd) {
+          if (mixStartAutomaticEndMove(techForcedDir, nowMs)) s_st.mixState = techForcedState;
+          else s_st.mixState = techForcedState + "_pending";
+        } else {
+          const uint32_t controlRemaining = safetyOverride ? 0 : mixControlIntervalRemainingMs(nowMs);
+          const uint32_t minRemaining = safetyOverride ? 0 : mixMinIntervalRemainingMs(nowMs);
+          if (controlRemaining > 0) {
+            s_st.mixState = techForcedState + "_control_wait";
+          } else if (minRemaining > 0) {
+            s_st.mixState = techForcedState + "_interval_wait";
+          } else {
+            const uint32_t pulseMs = mixTechI3PulseMs(techForcedErrorC);
+            if (mixStartPulse(techForcedDir, nowMs, false, pulseMs, safetyOverride)) {
+              s_st.mixState = techForcedState;
+            } else {
+              s_st.mixState = !s_mix.lastRelayApplyOk ? "fault_relay_write" : (techForcedState + "_pending");
+            }
+          }
+        }
+      }
     } else if (s_accumulatorSupportActive && s_accumulatorSupportTargetReached) {
       if (s_cfg.mixTargetReachedAction == "hold") {
         if (s_mix.active && !s_mix.manual) stopMixingNow(nowMs, false);
@@ -1218,7 +1594,7 @@ namespace {
         ? ((s_mix.dir == kMixDirectionA) ? "manual_open" : "manual_close")
         : ((s_mix.dir == kMixDirectionA) ? "open" : "close");
     } else if (s_cfg.mixingEnabled) {
-      if (!mixTempValid) {
+      if (!mixTempValid && !returnProfile) {
         const uint32_t missingForMs = (s_mixFeedbackMissingSinceMs != 0 && nowMs >= s_mixFeedbackMissingSinceMs)
           ? (nowMs - s_mixFeedbackMissingSinceMs) : 0;
         if (missingForMs >= kMixFeedbackMissingFaultMs) {
@@ -1236,8 +1612,11 @@ namespace {
         const bool wantsOpen = (mixFeedbackC + s_cfg.mixDeadbandC < targetFlow);
         const bool wantsClose = (mixFeedbackC - s_cfg.mixDeadbandC > targetFlow);
         const uint32_t minIntervalRemainingMs = mixMinIntervalRemainingMs(nowMs);
-        const uint32_t adaptivePulseMs = mixAdaptivePulseMs(targetFlow, mixFeedbackC, mixTrendCps);
-        const bool holdForTrend = !s_accumulatorSupportActive
+        const uint32_t controlIntervalRemainingMs = mixControlIntervalRemainingMs(nowMs);
+        const uint32_t adaptivePulseMs = techI3
+            ? mixTechI3PulseMs(errorC)
+            : mixAdaptivePulseMs(targetFlow, mixFeedbackC, mixTrendCps);
+        const bool holdForTrend = !techI3 && !s_accumulatorSupportActive
             && mixShouldHoldForTrend(errorC, mixTrendCps);
         const bool actuatorFault = mixActuatorFaultActive(nowMs);
         const bool manualHold = s_mixManualHoldUntilMs != 0
@@ -1263,6 +1642,8 @@ namespace {
             s_st.mixState = "support_wait_settle_open";
           } else if (holdForTrend) {
             s_st.mixState = "settling_open";
+          } else if (controlIntervalRemainingMs > 0) {
+            s_st.mixState = "hold_control_interval_open";
           } else if (minIntervalRemainingMs > 0) {
             s_st.mixState = "hold_min_interval_open";
           } else if (mixStartPulse(kMixDirectionA, nowMs, false, adaptivePulseMs)) {
@@ -1278,21 +1659,31 @@ namespace {
             s_st.mixState = "fault_no_feedback";
           } else if (actuatorFault) {
             s_st.mixState = "fault_actuator_suspect";
+          } else if (techI3 && s_mix.positionTrusted
+                     && s_mix.positionPct <= s_cfg.mixMinOpeningPct + 0.05f) {
+            s_st.mixState = "limit_min_opening";
           } else if (mixHasTrustedLimit(kMixDirectionB)) {
             s_st.mixState = "limit_b";
           } else if (supportWaitingForSettle) {
             s_st.mixState = "support_wait_settle_close";
           } else if (holdForTrend) {
             s_st.mixState = "settling_close";
+          } else if (controlIntervalRemainingMs > 0) {
+            s_st.mixState = "hold_control_interval_close";
           } else if (minIntervalRemainingMs > 0) {
             s_st.mixState = "hold_min_interval_close";
-          } else if (mixStartPulse(kMixDirectionB, nowMs, false, adaptivePulseMs)) {
-            if (s_accumulatorSupportActive) resetAccumulatorSupportSettleTracking();
-            s_st.mixState = "close";
           } else {
-            s_st.mixState = !s_mix.lastRelayApplyOk
-              ? "fault_relay_write"
-              : (actuatorFault ? "fault_actuator_suspect" : "close_pending");
+            const uint32_t closePulseMs = techI3 ? mixLimitClosePulseToMinOpening(adaptivePulseMs) : adaptivePulseMs;
+            if (closePulseMs == 0) {
+              s_st.mixState = "limit_min_opening";
+            } else if (mixStartPulse(kMixDirectionB, nowMs, false, closePulseMs)) {
+              if (s_accumulatorSupportActive) resetAccumulatorSupportSettleTracking();
+              s_st.mixState = "close";
+            } else {
+              s_st.mixState = !s_mix.lastRelayApplyOk
+                ? "fault_relay_write"
+                : (actuatorFault ? "fault_actuator_suspect" : "close_pending");
+            }
           }
         } else {
           s_st.mixState = actuatorFault ? "fault_actuator_suspect" : "in_deadband";
@@ -1317,6 +1708,19 @@ namespace {
     s_st.mixCalibrationState = mixCalibrationStateText(nowMs);
     s_st.mixRelayApplyOk = s_mix.lastRelayApplyOk;
     s_st.mixRelayMask = s_mix.lastRelayMask;
+
+    // A local-only mixing loop (explicitly configured without OpenTherm, or the
+    // return-protection safety profile during an OT/outside-sensor outage) must
+    // not convert the local safety action into a failed/invalid boiler write.
+    if (localReturnProfile || summerHydraulicOnly || !s_cfg.useOpenTherm || !openThermReadyForControl || !outsideValid) {
+      if (localReturnProfile || summerHydraulicOnly) openthermClearEquithermRequest();
+      s_st.active = true;
+      s_st.lastSendOk = openThermReadyForControl || !s_cfg.useOpenTherm || localReturnProfile || summerHydraulicOnly;
+      if (localReturnProfile) s_st.reason = "return_protection_local";
+      else if (summerHydraulicOnly) s_st.reason = "summer_hydraulic";
+      else s_st.reason = "mixing_local";
+      return;
+    }
 
     // The boiler always receives the base equitherm target. Accumulator support
     // raises only the valve/support target, e.g. OT=22 °C and valve target=27 °C.
@@ -1466,6 +1870,29 @@ namespace {
     mix["sourceA"] = s_cfg.mixTempSourceA;
     mix["sourceB"] = s_cfg.mixTempSourceB;
     mix["sourceAB"] = s_cfg.mixTempSourceAB;
+    mix["controlMode"] = s_cfg.mixControlMode;
+    mix["valveType"] = s_cfg.mixValveType;
+    mix["controlIntervalMs"] = (uint32_t)s_cfg.mixControlIntervalMs;
+    mix["minOpeningPct"] = s_cfg.mixMinOpeningPct;
+    mix["unitStepPct"] = s_cfg.mixUnitStepPct;
+    mix["proportionalCoeff"] = s_cfg.mixProportionalCoeff;
+    mix["calibrationHome"] = s_cfg.mixCalibrationHome;
+    mix["weeklyCloseEnabled"] = s_cfg.mixWeeklyCloseEnabled;
+    mix["dhwPriorityPositionPct"] = s_cfg.mixDhwPriorityPositionPct;
+    mix["curveMode"] = s_cfg.curveMode;
+    JsonObject bp = mix.createNestedObject("boilerProtection");
+    bp["enabled"] = s_cfg.mixBoilerProtectionEnabled; bp["maxC"] = s_cfg.mixBoilerProtectionMaxC;
+    JsonObject rp = mix.createNestedObject("returnProtection");
+    rp["enabled"] = s_cfg.mixReturnProtectionEnabled; rp["minC"] = s_cfg.mixReturnProtectionMinC;
+    JsonObject fp = mix.createNestedObject("floorProtection");
+    fp["enabled"] = s_cfg.mixFloorProtectionEnabled; fp["maxC"] = s_cfg.mixFloorProtectionMaxC; fp["summerEnabled"] = s_cfg.mixFloorSummerEnabled;
+    JsonObject oc = mix.createNestedObject("outsideClose");
+    oc["enabled"] = s_cfg.mixOutsideCloseEnabled; oc["dayC"] = s_cfg.mixOutsideCloseDayC;
+    oc["nightC"] = s_cfg.mixOutsideCloseNightC; oc["hysteresisC"] = s_cfg.mixOutsideCloseHysteresisC;
+    JsonObject w4 = mix.createNestedObject("weather4");
+    JsonArray w4d = w4.createNestedArray("day");
+    JsonArray w4n = w4.createNestedArray("night");
+    for (uint8_t i=0; i<4; ++i) { w4d.add(s_cfg.day4FlowC[i]); w4n.add(s_cfg.night4FlowC[i]); }
 
     JsonObject ba = out.createNestedObject("boilerAssist");
     ba["enabled"] = s_cfg.boilerAssistEnabled;
@@ -1548,6 +1975,14 @@ namespace {
     mix["relayApplied"] = s_st.mixRelayApplyOk;
     mix["relayMask"] = (uint32_t)s_st.mixRelayMask;
     mix["relayOk"] = relayIsOk();
+    mix["controlMode"] = s_st.mixControlMode.length() ? s_st.mixControlMode : s_cfg.mixControlMode;
+    mix["valveType"] = s_st.mixValveType.length() ? s_st.mixValveType : s_cfg.mixValveType;
+    if (s_st.mixProtection.length()) mix["protection"] = s_st.mixProtection; else mix["protection"] = nullptr;
+    mix["outsideClosed"] = s_st.mixOutsideClosed;
+    mix["weeklyClosed"] = s_st.mixWeeklyClosed;
+    if (isfinite(s_st.mixReturnProtectC)) mix["returnProtectC"] = s_st.mixReturnProtectC; else mix["returnProtectC"] = nullptr;
+    if (isfinite(s_st.mixBoilerProtectC)) mix["boilerProtectC"] = s_st.mixBoilerProtectC; else mix["boilerProtectC"] = nullptr;
+    if (isfinite(s_st.mixFloorProtectC)) mix["floorProtectC"] = s_st.mixFloorProtectC; else mix["floorProtectC"] = nullptr;
 
     JsonObject b = out.createNestedObject("boiler");
     if (isfinite(s_st.boilerMaxChC)) b["maxChC"] = s_st.boilerMaxChC; else b["maxChC"] = nullptr;
@@ -1635,12 +2070,17 @@ void equithermFillFastJson(JsonObject& out) {
   mix["ra"] = s_st.mixRelayApplyOk;
   mix["rm"] = (uint32_t)s_st.mixRelayMask;
   if (s_st.mixCalibrationState.length()) mix["cal"] = s_st.mixCalibrationState; else mix["cal"] = nullptr;
+  mix["cm"] = s_cfg.mixControlMode;
+  mix["vt"] = s_cfg.mixValveType;
+  if (s_st.mixProtection.length()) mix["prot"] = s_st.mixProtection; else mix["prot"] = nullptr;
+  mix["oc"] = s_st.mixOutsideClosed;
+  mix["wc"] = s_st.mixWeeklyClosed;
   out["ok"] = s_st.lastSendOk;
 }
 
 String equithermGetStatusJson() {
   equithermInit();
-  DynamicJsonDocument doc(8192);
+  DynamicJsonDocument doc(12288);
   doc["ok"] = true;
   JsonObject cfg = doc.createNestedObject("config");
   fillConfigJson(cfg);
@@ -1823,6 +2263,24 @@ static void applyConfigDoc(JsonObjectConst o) {
       const char* value = m.containsKey("sourceAB") ? (m["sourceAB"] | "opentherm_ch") : (m["tempSourceAB"] | "opentherm_ch");
       ConfigStore::setEqMixTempSourceAB(String(value ? value : "opentherm_ch"));
     }
+
+    // Persist the extended TECH i-3 settings as one compact JSON object. Merge
+    // with the previous object so partial API updates do not reset unrelated
+    // advanced settings.
+    DynamicJsonDocument adv(3072);
+    const String previous = ConfigStore::getEqMixAdvancedJson();
+    if (deserializeJson(adv, previous) || !adv.is<JsonObject>()) adv.to<JsonObject>();
+    JsonObject a = adv.as<JsonObject>();
+    const char* scalarKeys[] = {
+      "controlMode", "valveType", "controlIntervalMs", "minOpeningPct",
+      "unitStepPct", "proportionalCoeff", "calibrationHome",
+      "weeklyCloseEnabled", "dhwPriorityPositionPct", "curveMode"
+    };
+    for (const char* key : scalarKeys) if (m.containsKey(key)) a[key].set(m[key]);
+    const char* objectKeys[] = {"boilerProtection", "returnProtection", "floorProtection", "outsideClose", "weather4"};
+    for (const char* key : objectKeys) if (m.containsKey(key)) a[key].set(m[key]);
+    String advJson; serializeJson(adv, advJson);
+    ConfigStore::setEqMixAdvancedJson(advJson);
   }
 
   if (o.containsKey("boilerAssist") && o["boilerAssist"].is<JsonObjectConst>()) {
@@ -2056,7 +2514,12 @@ void equithermSetExternalBlock(bool blocked) {
   const bool changed = (s_externalBlock != blocked);
   s_externalBlock = blocked;
   if (blocked) {
-    stopMixingNow();
+    const uint32_t now = millis();
+    if (s_cfg.mixControlMode == "tech_i3" && s_cfg.mixingEnabled) {
+      (void)mixMoveToPosition(s_cfg.mixDhwPriorityPositionPct, now, true);
+    } else {
+      stopMixingNow(now, true);
+    }
     // During DHW priority keep the boiler on its default/day curve, not on night setback.
     // This prevents R6 from unintentionally limiting boiler behavior while CH is blocked.
     resetNightRelayToSafeDay();
