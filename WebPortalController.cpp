@@ -49,7 +49,7 @@ namespace {
 
   static constexpr size_t kFsReadChunkDefault = 4096;
   static constexpr size_t kFsReadChunkMax = 32768;
-  static constexpr bool kServePrecompressedAssets = false;
+  static constexpr bool kServePrecompressedAssets = true;
   static constexpr size_t kActionLogCapacity = 16;
   static constexpr unsigned long kActionLogRetentionMs = 15UL * 60UL * 1000UL;
   static constexpr uint8_t kRelayMixOpenIdx = 0;       // R1
@@ -129,7 +129,7 @@ namespace {
     {"ota", 1024, "cfg_ota"},
     {"mqtt", 4096, "cfg_mqtt"},
     {"time", 1024, "cfg_time"},
-    {"equitherm", 6144, "cfg_eq"},
+    {"equitherm", 12288, "cfg_eq"},
     {"dhw", 8192, "cfg_dhw"},
     {"alerts", 1024, "cfg_alerts"},
   };
@@ -867,13 +867,18 @@ namespace {
   }
 
   static void handleBootstrap() {
-    DynamicJsonDocument doc(24576);
+    // The equitherm section now contains the optional TECH i-3 settings and two
+    // four-point curves. Size each temporary section from its own config schema
+    // and leave enough room in the combined bootstrap response.
+    DynamicJsonDocument doc(40960);
     JsonObject fast = doc.createNestedObject("fast");
     fillFastStateObject(fast);
 
     const char* sections[] = {"time", "dallas", "equitherm", "opentherm", "dhw", "alerts"};
     for (size_t i = 0; i < sizeof(sections)/sizeof(sections[0]); ++i) {
-      DynamicJsonDocument secDoc(6144);
+      const ConfigSectionDef* def = findConfigSection(sections[i]);
+      const size_t cap = (def && def->postDocCap > 6144) ? def->postDocCap : 6144;
+      DynamicJsonDocument secDoc(cap);
       const bool ok = loadConfigSectionLiveOrSnapshot(sections[i], secDoc);
       if (ok) doc[sections[i]] = secDoc.as<JsonVariantConst>();
       else doc[sections[i]] = JsonVariant();
@@ -1311,6 +1316,49 @@ namespace {
     mix["sourceB"] = ec.mixTempSourceB;
     mix["sourceAB"] = ec.mixTempSourceAB;
 
+    // TECH i-3 compatible single-circuit mixing extensions. These fields are
+    // intentionally additive, so existing clients/configurations keep the
+    // original adaptive behavior until controlMode is changed explicitly.
+    mix["controlMode"] = ec.mixControlMode;
+    mix["valveType"] = ec.mixValveType;
+    mix["controlIntervalMs"] = (uint32_t)ec.mixControlIntervalMs;
+    mix["minOpeningPct"] = ec.mixMinOpeningPct;
+    mix["unitStepPct"] = ec.mixUnitStepPct;
+    mix["proportionalCoeff"] = ec.mixProportionalCoeff;
+    mix["calibrationHome"] = ec.mixCalibrationHome;
+    mix["weeklyCloseEnabled"] = ec.mixWeeklyCloseEnabled;
+    mix["dhwPriorityPositionPct"] = ec.mixDhwPriorityPositionPct;
+    mix["curveMode"] = ec.curveMode;
+
+    JsonObject boilerProtection = mix.createNestedObject("boilerProtection");
+    boilerProtection["enabled"] = ec.mixBoilerProtectionEnabled;
+    boilerProtection["maxC"] = ec.mixBoilerProtectionMaxC;
+
+    JsonObject returnProtection = mix.createNestedObject("returnProtection");
+    returnProtection["enabled"] = ec.mixReturnProtectionEnabled;
+    returnProtection["minC"] = ec.mixReturnProtectionMinC;
+
+    JsonObject floorProtection = mix.createNestedObject("floorProtection");
+    floorProtection["enabled"] = ec.mixFloorProtectionEnabled;
+    floorProtection["maxC"] = ec.mixFloorProtectionMaxC;
+    floorProtection["summerEnabled"] = ec.mixFloorSummerEnabled;
+
+    JsonObject outsideClose = mix.createNestedObject("outsideClose");
+    outsideClose["enabled"] = ec.mixOutsideCloseEnabled;
+    outsideClose["dayC"] = ec.mixOutsideCloseDayC;
+    outsideClose["nightC"] = ec.mixOutsideCloseNightC;
+    outsideClose["hysteresisC"] = ec.mixOutsideCloseHysteresisC;
+
+    JsonObject weather4 = mix.createNestedObject("weather4");
+    JsonArray weatherPoints = weather4.createNestedArray("outsideC");
+    weatherPoints.add(-20); weatherPoints.add(-10); weatherPoints.add(0); weatherPoints.add(10);
+    JsonArray weatherDay = weather4.createNestedArray("day");
+    JsonArray weatherNight = weather4.createNestedArray("night");
+    for (uint8_t i = 0; i < 4; i++) {
+      weatherDay.add(ec.day4FlowC[i]);
+      weatherNight.add(ec.night4FlowC[i]);
+    }
+
     JsonObject ba = eq.createNestedObject("boilerAssist");
     ba["enabled"] = ec.boilerAssistEnabled;
     ba["deltaC"] = ec.boilerAssistDeltaC;
@@ -1425,7 +1473,7 @@ namespace {
   static bool saveConfigSnapshot() {
     if (!g_fsMounted) return false;
     ensureConfigDir();
-    DynamicJsonDocument doc(16384);
+    DynamicJsonDocument doc(32768);
     fillConfigDoc(doc);
     bool ok = writeJsonVariantToFile("/config.json", doc.as<JsonVariantConst>());
     for (const auto& def : kConfigSections) {
