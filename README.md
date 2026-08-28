@@ -372,6 +372,47 @@ Web používá:
 - běžné provozní relé není v hlavním UI používáno jako náhrada funkčních příkazů,
 - servisní reléový puls je neblokující.
 
+### Ukázka webového UI - simulovaný zimní provoz
+
+> [!NOTE]
+> Následující screenshoty jsou pořízené přímo z webového rozhraní verze 3.4.0 s lokálně simulovaným API. Nejde o záznam z konkrétní instalace; hodnoty představují běžný modelový zimní stav a slouží k demonstraci UI a návazností regulace.
+
+Modelový stav použitý pro screenshoty:
+
+| Veličina | Simulovaná hodnota |
+|---|---:|
+| venkovní teplota | -6,8 °C |
+| režim vytápění | AUTO / komfort podle plánu |
+| požadovaná teplota topné vody | 51,0 °C |
+| měřená teplota CH / AB | 50,6 °C |
+| zpátečka B | 43,6 °C |
+| tlak systému | 1,62 bar |
+| modulace kotle | 38 % |
+| AKU nahoře / uprostřed / dole | 67,4 / 59,8 / 43,2 °C |
+| směšovací ventil | 47 % |
+| profil směšovače | TECH i-3 / ÚT |
+| ochrana kotle | zapnuta, limit 80 °C |
+| ochrana zpátečky | zapnuta, minimum 40 °C |
+| stav regulace ventilu | v regulačním pásmu, bez varování |
+
+#### Hlavní přehled
+
+Přehled ukazuje současně venkovní teplotu, CH, TUV, tlak, výkon kotle, požadovaný OpenTherm setpoint, ekvitermní křivku, stav AKU a odhad polohy směšovacího ventilu.
+
+![Web UI - simulovaný zimní provoz, hlavní přehled](docs/screenshots/web-winter-overview.webp)
+
+#### Směšovací ventil
+
+Detail ventilu zobrazuje aktuální polohu, teplotu větve A, zpátečky B, smíšeného výstupu AB, cílovou teplotu a konfigurační parametry pohonu. V tomto modelovém stavu je ventil na 47 % a AB je pouze 0,4 °C pod cílem, proto regulace zůstává v regulačním pásmu (mrtvé zóně) bez dalšího pohybu.
+
+![Web UI - směšovací ventil v běžném zimním provozu](docs/screenshots/web-winter-mixing.webp)
+
+#### TECH i-3 ochrany a ekvitermní parametry
+
+V režimu `tech_i3` web zpřístupní proporcionální krokování, minimální otevření, ochranu kotle a zpátečky, venkovní uzavření a čtyřbodovou ekvitermní křivku. Níže je výřez stejného simulovaného zimního scénáře.
+
+<img src="docs/screenshots/web-winter-tech-i3-settings.webp" alt="TECH i-3 - ochrany a ekvitermní nastavení ve webovém UI" width="540">
+
 Aktuální statické soubory:
 
 ```text
