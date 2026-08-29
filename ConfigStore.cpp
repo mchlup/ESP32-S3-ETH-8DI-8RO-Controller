@@ -724,6 +724,9 @@ static constexpr const char* K_EQ_BA_CH = "eq_ba_ch";
   String normalizeMixTempSourceA(String value) {
     value = normalizeMixTempSourceToken(value);
     if (value == "none" || value == "disabled" || value == "off") return "none";
+    if (value == "opentherm_ch" || value == "ot_ch" || value == "ch_measured" ||
+        value == "boiler_temp" || value == "boiler_temperature" ||
+        value == "opentherm_flow") return "opentherm_ch";
     if (value == "tank_mid" || value == "tankmid" || value == "tank_middle" ||
         value == "aku_mid" || value == "aku_uprostred" || value == "accu_mid" ||
         value == "flow") { // migrate the interim generic-source build safely
@@ -735,6 +738,8 @@ static constexpr const char* K_EQ_BA_CH = "eq_ba_ch";
   String normalizeMixTempSourceB(String value) {
     value = normalizeMixTempSourceToken(value);
     if (value == "none" || value == "disabled" || value == "off") return "none";
+    if (value == "opentherm_return" || value == "ot_return" || value == "opentherm_ret" ||
+        value == "return_ot" || value == "boiler_return") return "opentherm_return";
     if (value == "return_dallas" || value == "dallas_return" || value == "return_ds" ||
         value == "return" || value == "mix_feedback" || value == "after_mix" ||
         value == "aftermix" || value == "feedback") {
@@ -746,6 +751,9 @@ static constexpr const char* K_EQ_BA_CH = "eq_ba_ch";
   String normalizeMixTempSourceAB(String value) {
     value = normalizeMixTempSourceToken(value);
     if (value == "none" || value == "disabled" || value == "off") return "none";
+    if (value == "return_dallas" || value == "dallas_return" || value == "return_ds") {
+      return "return_dallas";
+    }
     if (value == "opentherm_ch" || value == "ot_ch" || value == "ch_measured" ||
         value == "boiler_temp" || value == "boiler_temperature" || value == "flow" ||
         value == "opentherm_flow") {

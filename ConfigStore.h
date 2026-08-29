@@ -188,7 +188,9 @@ namespace ConfigStore {
 
   // Temperature sources assigned to the hydraulic ports of the mixing valve.
   // Valid persisted values are port-specific:
-  // A=tank_mid, B=return_dallas, AB=opentherm_ch (or none).
+  // Hydraulic temperature sources are selectable per port (OT/DS18B20):
+  // A=tank_mid|opentherm_ch, B=return_dallas|opentherm_return,
+  // AB=opentherm_ch|return_dallas (or none).
   String getEqMixTempSourceA();
   void setEqMixTempSourceA(const String& v);
   String getEqMixTempSourceB();

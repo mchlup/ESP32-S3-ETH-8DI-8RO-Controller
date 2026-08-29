@@ -1250,7 +1250,10 @@ namespace {
     bool openThermReadyForControl = !s_cfg.useOpenTherm;
     if (s_cfg.useOpenTherm) {
       ot = openthermGetStatus();
-      openThermReadyForControl = ot.present && ot.ready;
+      // OpenTherm::isReady() only means the local state machine is idle.
+      // Require a completed boiler exchange as well before the heating loop
+      // treats OpenTherm as a usable control path.
+      openThermReadyForControl = ot.present && ot.ready && ot.lastUpdateMs != 0;
     }
     bool schedUsed=false, in1=false, timeValid=false;
     String iso;
