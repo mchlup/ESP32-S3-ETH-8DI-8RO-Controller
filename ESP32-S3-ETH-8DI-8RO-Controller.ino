@@ -1,14 +1,11 @@
 #include <Arduino.h>
-
 #include "config_pins.h"
 #include "Log.h"
-
 #include "RelayController.h"
 #include "InputController.h"
 #include "DallasController.h"
 #include "ConfigStore.h"
 #include "TemperatureManager.h"
-
 #include "Features.h"          // Network + OpenTherm + BLE
 #include "NetworkController.h"
 #include "OtaController.h"
@@ -237,7 +234,6 @@ void setup() {
   Serial.begin(115200);
   Serial.println();
   Serial.println(F("=== ESP Heat & Domestic Controller (MINIMAL) ==="));
-
   relayInit();
   inputInit();
 
@@ -253,39 +249,20 @@ void setup() {
   // DS18B20 runtime konfiguraci hydratuje centrálně ConfigRuntime přes webPortalInit().
   // Tady pouze připravíme TemperatureManager; DallasController se nakonfiguruje až po načtení NVS.
   TemperatureManager::begin();
-
-  // Network (WiFiManager). If IN8 is ACTIVE at boot -> portal.
-  networkInit();
-
-  // Arduino IDE OTA (network upload)
-  otaInit();
-
-  // OpenTherm
-  openthermInit();
-
-  // BLE driver
-  bleInit();
-
-  // Web portal (UI + API)
-  webPortalInit();
-
-  // Buzzer + pressure alarm + diagnostics
-  buzzerInit();
+  networkInit();// Network (WiFiManager). If IN8 is ACTIVE at boot -> portal.
+  otaInit();// Arduino IDE OTA (network upload)
+  openthermInit();// OpenTherm
+  bleInit();// BLE driver
+  webPortalInit();// Web portal (UI + API)
+  buzzerInit();// Buzzer + pressure alarm + diagnostics
   pressureAlarmInit();
   EventLog::begin();
   HistoryBuffer::begin();
   EventLog::record("system", "boot", "startup");
   buzzerPlayStartup();
-
-  // MQTT / Home Assistant
-  mqttInit();
-
-  // Ekviterm
-  equithermInit();
-
-  // DHW / circulation
-  dhwInit();
-
+  mqttInit();// MQTT / Home Assistant
+  equithermInit();// Ekviterm
+  dhwInit();// DHW / circulation
   printHelp();
 }
 
@@ -306,38 +283,20 @@ void loop() {
 
   inputUpdate();
   relayUpdate();
-
   DallasController::loop();
-
   // Network and operator commands are serviced before potentially longer
   // OpenTherm transactions. The WebSocket loop is also called from the OT wait
   // hook, so manual valve commands remain responsive throughout polling.
   networkLoop();
   webPortalLoop();
-
-  // OpenTherm polling
-  openthermLoop();
-
-  // BLE client
-  bleLoop();
-
+  openthermLoop();// OpenTherm polling
+  bleLoop();// BLE client
   HistoryBuffer::loop();
-
-  // Central temperature registry (keeps roles consistent across program)
-  TemperatureManager::loop();
-
-  // OTA handler must run often (active when any IP interface is connected)
-  otaLoop();
-
-  // MQTT runtime: reconnect, subscriptions, periodic state and HA discovery.
-  mqttLoop();
-
+  TemperatureManager::loop();// Central temperature registry (keeps roles consistent across program)
+  otaLoop();// OTA handler must run often (active when any IP interface is connected)
+  mqttLoop();// MQTT runtime: reconnect, subscriptions, periodic state and HA discovery.
   buzzerLoop();
   pressureAlarmLoop();
-
-  // DHW / circulation priority control
-  dhwLoop();
-
-  // Ekviterm (uses temps + OT)
-  equithermLoop();
+  dhwLoop();// DHW / circulation priority control
+  equithermLoop();// Ekviterm (uses temps + OT)
 }
