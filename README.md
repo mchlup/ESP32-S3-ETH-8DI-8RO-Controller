@@ -2,7 +2,7 @@
 
 Firmware pro řízení topné soustavy na desce **Waveshare ESP32-S3-ETH-8DI-8RO** s podporou **OpenTherm**, **DS18B20**, ekvitermní regulace a řízení trojcestného směšovacího ventilu.
 
-**Aktuální dokumentovaná verze: 3.5.0**  
+**Aktuální dokumentovaná verze: 3.5.1**  
 **Nově:** volitelný regulační režim směšovacího ventilu podle principů **TECH EU-i-3 / i-3**.
 
 > [!WARNING]
@@ -10,7 +10,7 @@ Firmware pro řízení topné soustavy na desce **Waveshare ESP32-S3-ETH-8DI-8RO
 
 ## Obsah
 
-- [Co umí verze 3.5.0](#co-umí-verze-350)
+- [Co umí verze 3.5.1](#co-umí-verze-351)
 - [Hardware](#hardware)
 - [Pevné GPIO mapování](#pevné-gpio-mapování)
 - [Relé a směšovací ventil](#relé-a-směšovací-ventil)
@@ -29,7 +29,7 @@ Firmware pro řízení topné soustavy na desce **Waveshare ESP32-S3-ETH-8DI-8RO
 - [Diagnostika](#diagnostika)
 - [Omezení](#omezení)
 
-## Co umí verze 3.5.0
+## Co umí verze 3.5.1
 
 Projekt kombinuje:
 
@@ -162,13 +162,13 @@ Základní role:
 | `tank_bottom` | DS18B20 GPIO3 |
 | `dhw_return` | DS18B20 GPIO1 |
 
-Výchozí hydraulické zdroje směšovače:
+Výchozí hydraulické zdroje směšovače zůstávají stejné, ale od 3.5.1 lze zdroj na jednotlivých portech volit mezi podporovanými OpenTherm a DS18B20 vstupy:
 
-| Port | Zdroj |
-|---|---|
-| A | `tank_mid` |
-| B | `return_dallas` |
-| AB | `opentherm_ch` |
+| Port | Výchozí zdroj | Další podporovaný zdroj |
+|---|---|---|
+| A | `tank_mid` (DS18B20) | `opentherm_ch` (OT ID25) |
+| B | `return_dallas` (DS18B20 GPIO2) | `opentherm_return` (OT ID28) |
+| AB | `opentherm_ch` (OT ID25) | `return_dallas` (DS18B20 GPIO2) |
 
 ## Režimy směšovacího ventilu
 
@@ -608,7 +608,7 @@ ESP32-S3-ETH-8DI-8RO-Controller/
 
 - Implementace TECH i-3 emuluje funkční principy použitelné na **jednom** směšovacím okruhu. Není elektrickou ani protokolovou náhradou kompletní jednotky TECH EU-i-3.
 - Poloha ventilu je časový odhad podle doby pohybu; není měřena skutečným snímačem polohy.
-- Výchozí AB z `opentherm_ch` není nezávislé čidlo přímo za směšovačem.
+- Výchozí AB z `opentherm_ch` není nezávislé čidlo přímo za směšovačem; pro skutečnou zpětnou vazbu lze od 3.5.1 zvolit i DS18B20 `return_dallas`, pokud je čidlo fyzicky umístěno na požadovaném místě.
 - Pro kompletní tříventilové řešení TECH i-3 současné pevné mapování R1/R2 nestačí.
 - Samostatné čerpadlo každého směšovacího okruhu není v této konfiguraci vyhrazeno, protože R3 až R8 mají jiné role.
 - TECH RS pokojové regulátory nejsou implementovány; IN1 zůstává dostupný pro DEN / NOC override.

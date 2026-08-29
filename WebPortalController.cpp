@@ -1172,6 +1172,12 @@ namespace {
     out["mode"] = oc.mode;
     out["boilerControl"] = oc.boilerControl;
     out["allowRawWrite"] = oc.allowRawWrite;
+    out["rxPin"] = oc.rxPin;
+    out["txPin"] = oc.txPin;
+    out["invertRx"] = oc.invertRx;
+    out["invertTx"] = oc.invertTx;
+    out["autoDetectLogic"] = oc.autoDetectLogic;
+    out["transportProfile"] = "legacy-3.3.14";
   }
 
   static void fillBleSectionJson(JsonObject out) {
@@ -2199,8 +2205,11 @@ namespace {
   }
 
   static void handleOpenThermScanStatus() {
-    // includeAll=true so UI sees everything it has in cache
-    sendJson(200, openthermScanGetStatusJson(true));
+    // Default response contains only supported IDs; full 0..127 data is sent
+    // only when the UI explicitly asks for it. This keeps the diagnostic API
+    // small and responsive on ESP32 while a scan is running.
+    const bool includeAll = g_srv.hasArg("all") && g_srv.arg("all") == "1";
+    sendJson(200, openthermScanGetStatusJson(includeAll));
   }
 
   static void handleOpenThermScanProfile() {

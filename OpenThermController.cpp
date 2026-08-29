@@ -30,6 +30,25 @@ namespace {
   String g_activeSource = "manual";
 
   uint32_t g_lastPollMs = 0;
+  uint8_t g_pollStep = 0;
+  uint8_t g_extPollIndex = 0;
+  uint8_t g_remotePollIndex = 0;
+  uint32_t g_lastRemotePollMs = 0;
+  uint32_t g_lastLinkRxMs = 0;
+  bool g_cycleStatusSeen = false;
+  bool g_cycleCoreData = false;
+
+  // Control requests are queued and applied from openthermLoop() one OT
+  // transaction at a time. HTTP/DHW handlers never execute a multi-second
+  // OpenTherm transaction bundle synchronously.
+  bool g_controlDirty = false;
+  bool g_controlRetryNeeded = false;
+  uint8_t g_controlStep = 0;
+  uint32_t g_controlNextAttemptMs = 0;
+  float g_appliedChSetpointC = NAN;
+  float g_appliedDhwSetpointC = NAN;
+  float g_appliedMaxModPct = NAN;
+  bool g_appliedStatusValid = false;
 
   // Boot time reference for safe delayed init
   uint32_t g_bootMs = 0;
@@ -47,29 +66,56 @@ namespace {
     uint32_t startedMs = 0;
     uint32_t finishedMs = 0;
     uint16_t supportedCount = 0;
-    // Per-ID cached results (0..127)
-    uint8_t respStatus[128] = {0}; // OpenThermResponseStatus
-    uint8_t msgType[128] = {0};    // otbus::MessageType
+    uint8_t respStatus[128] = {0};
+    uint8_t msgType[128] = {0};
     uint16_t value[128] = {0};
     bool supported[128] = {false};
   };
 
   ScanState g_scan;
 
-  // Natvrdo piny (stejné jako sketch_feb19a.ino)
-  static constexpr int kOT_RX = 48; // adapter OUT -> MCU (interrupt)
-  static constexpr int kOT_TX = 47; // MCU -> adapter IN
+  // Default wiring for ESP32-S3-ETH-8DI-8RO.
+  static constexpr int kOT_RX = OT_RX_PIN; // adapter OUT -> MCU (interrupt)
+  static constexpr int kOT_TX = OT_TX_PIN; // MCU -> adapter IN
 
   // Forward declarations
   static bool cfgIsReadOnly();
   static bool clampMaybe(float& v, float lo, float hi);
   static void otInitIfNeeded();
-  static void otPollOnce();
+  static bool otPollStep();
+  static bool processPendingControlStep();
+
+  // Transport profile: keep the electrical layer byte-for-byte compatible with
+  // the older, proven 3.3.14 build. Logic inversion fields remain in the public
+  // configuration only for backward JSON compatibility; the legacy transport
+  // itself uses the fixed polarity implemented by OpenTherm.cpp.
+  static constexpr const char* kTransportProfile = "legacy-3.3.14";
+
+  // Old Ihor Melnyk transport reports DATA_INVALID/UNKNOWN_DATA_ID as INVALID
+  // because isValidResponse() accepts only READ_ACK/WRITE_ACK. Inspect the raw
+  // frame only to distinguish a syntactically valid semantic NACK from a real
+  // framing/parity error. This does not change the proven low-level driver.
+  static bool lastRawSemanticResponse(uint8_t expectedId, otbus::MessageType* outType = nullptr) {
+    if (!g_bus) return false;
+    const uint32_t raw = g_bus->lastResponseRaw();
+    if (OpenTherm::parity(raw)) return false; // valid OpenTherm frame has even parity
+    if ((uint8_t)OpenTherm::getDataID(raw) != expectedId) return false;
+    const otbus::MessageType mt = (otbus::MessageType)OpenTherm::getMessageType(raw);
+    if (outType) *outType = mt;
+    return mt == otbus::MessageType::DATA_INVALID || mt == otbus::MessageType::UNKNOWN_DATA_ID;
+  }
 
   static bool isSupportedByFrame(OpenThermResponseStatus st, const otbus::Frame& f) {
-    if (st != OpenThermResponseStatus::SUCCESS) return false;
     const otbus::MessageType mt = f.type();
-    return (mt == otbus::MessageType::READ_ACK || mt == otbus::MessageType::WRITE_ACK || mt == otbus::MessageType::DATA_INVALID);
+    if (st == OpenThermResponseStatus::SUCCESS) {
+      return mt == otbus::MessageType::READ_ACK || mt == otbus::MessageType::WRITE_ACK;
+    }
+    // Legacy OpenTherm.cpp classifies DATA_INVALID as INVALID at transport level.
+    // It still proves that this Data-ID is implemented when parity and ID match.
+    if (st == OpenThermResponseStatus::INVALID && mt == otbus::MessageType::DATA_INVALID && !OpenTherm::parity(f.raw)) {
+      return true;
+    }
+    return false;
   }
   static void otDestroy() {
     if (g_bus) {
@@ -77,12 +123,56 @@ namespace {
       g_bus = nullptr;
     }
     g_inited = false;
+    g_pollStep = 0;
+    g_extPollIndex = 0;
+    g_remotePollIndex = 0;
+    g_lastRemotePollMs = 0;
+    g_cycleStatusSeen = false;
+    g_cycleCoreData = false;
+    g_appliedChSetpointC = NAN;
+    g_appliedDhwSetpointC = NAN;
+    g_appliedMaxModPct = NAN;
+    g_appliedStatusValid = false;
+    g_controlDirty = true;
+    g_controlStep = 0;
+    g_controlNextAttemptMs = 0;
   }
 
   static void stNoteResponse(OpenThermResponseStatus rs) {
     if (rs == OpenThermResponseStatus::SUCCESS) g_st.okCount++;
     else if (rs == OpenThermResponseStatus::TIMEOUT) g_st.timeoutCount++;
     else if (rs == OpenThermResponseStatus::INVALID) g_st.invalidCount++;
+  }
+
+  static bool sameFloat(float a, float b, float eps = 0.01f) {
+    if (!isfinite(a) && !isfinite(b)) return true;
+    if (!isfinite(a) || !isfinite(b)) return false;
+    return fabsf(a - b) <= eps;
+  }
+
+  static void markLinkAlive() { g_lastLinkRxMs = millis(); }
+
+  static void markTelemetryAlive() {
+    const uint32_t now = millis();
+    g_lastLinkRxMs = now;
+    g_st.lastUpdateMs = now;
+  }
+
+  static uint32_t linkFreshWindowMs() {
+    uint32_t w = g_cfg.pollMs * 4UL;
+    if (w < 6000UL) w = 6000UL;
+    if (w > 30000UL) w = 30000UL;
+    return w;
+  }
+
+  static bool linkIsFresh() {
+    return g_lastLinkRxMs != 0 && (uint32_t)(millis() - g_lastLinkRxMs) <= linkFreshWindowMs();
+  }
+
+  static bool responseProvesLink(uint8_t expectedId, OpenThermResponseStatus rs) {
+    if (rs == OpenThermResponseStatus::SUCCESS) return true;
+    if (rs == OpenThermResponseStatus::INVALID) return lastRawSemanticResponse(expectedId, nullptr);
+    return false;
   }
 
   static void clearCoreTelemetry() {
@@ -130,6 +220,8 @@ namespace {
     g_st.dhwSetpointC = NAN;
     g_st.dhwBoundMinC = NAN;
     g_st.dhwBoundMaxC = NAN;
+    g_st.maxCapacityKw = NAN;
+    g_st.minModulationPct = NAN;
 
     g_st.reqChSetpointC = NAN;
     g_st.reqDhwSetpointC = NAN;
@@ -258,85 +350,54 @@ namespace {
 
   static bool applyEffectiveRequestToBus(String& outErr) {
     outErr = "";
-    rebuildEffectiveRequest();
-    if (!validateReadyForControl(outErr)) return false;
 
-    bool did = false;
-    String cmdSummary;
+    const bool oldChEnable = g_reqChEnable;
+    const bool oldDhwEnable = g_reqDhwEnable;
+    const float oldChSetpoint = g_reqChSetpointC;
+    const float oldDhwSetpoint = g_reqDhwSetpointC;
+    const float oldMaxMod = g_reqMaxModPct;
+    const String oldSource = g_activeSource;
+
+    rebuildEffectiveRequest();
+
+    if (!g_cfg.enabled) { outErr = "disabled"; return false; }
+    if (!g_cfg.autoStart) { outErr = "paused"; return false; }
+    if (cfgIsReadOnly()) { outErr = "readOnly"; return false; }
 
     if (isfinite(g_reqChSetpointC)) {
-      float v = g_reqChSetpointC;
-
-      // EquithermController has already applied its configured minFlowC/maxFlowC
-      // and its CH safety limits. Do not raise an equitherm request again using
-      // the independent OpenTherm UI default (historically fixed at 25 C).
-      // Keep the OpenTherm lower clamp for manual and DHW-originated requests.
-      const float effectiveMinCh =
-          g_activeSource.equalsIgnoreCase("equitherm") ? 10.0f : g_cfg.minChSetpointC;
-      clampMaybe(v, effectiveMinCh, g_cfg.maxChSetpointC);
-      if (!g_bus->setCHWaterSetpoint(v)) {
-        stNoteResponse(g_bus->lastStatus());
-        if (!outErr.length()) outErr = "setCHWaterSetpoint failed";
-      } else {
-        stNoteResponse(g_bus->lastStatus());
-        g_reqChSetpointC = v;
-        g_st.reqChSetpointC = v;
-        did = true;
-        cmdSummary += String("CH=") + String(v, 1) + "C ";
-      }
-    } else {
-      g_st.reqChSetpointC = NAN;
+      const float effectiveMinCh = g_activeSource.equalsIgnoreCase("equitherm") ? 10.0f : g_cfg.minChSetpointC;
+      clampMaybe(g_reqChSetpointC, effectiveMinCh, g_cfg.maxChSetpointC);
     }
-
-    if (isfinite(g_reqDhwSetpointC)) {
-      float v = g_reqDhwSetpointC;
-      otbus::Frame f;
-      const bool ok = g_bus->write(otbus::DataID::DHWSetpoint, otbus::F88::encode(v), f);
-      stNoteResponse(g_bus->lastStatus());
-      if (!ok) {
-        if (!outErr.length()) outErr = "setDHWSetpoint failed";
-      } else {
-        g_st.reqDhwSetpointC = v;
-        did = true;
-        cmdSummary += String("DHW=") + String(v, 1) + "C ";
-      }
-    } else {
-      g_st.reqDhwSetpointC = NAN;
-    }
-
     if (isfinite(g_reqMaxModPct)) {
-      float v = g_reqMaxModPct;
-      if (v < 0) v = 0;
-      if (v > 100) v = 100;
-      const bool ok = g_bus->setMaxRelModulationLevel(v);
-      stNoteResponse(g_bus->lastStatus());
-      if (!ok) {
-        if (!outErr.length()) outErr = "max modulation write failed";
-      } else {
-        g_st.reqMaxModulationPct = v;
-        did = true;
-        cmdSummary += String("MAXMOD=") + String(v, 0) + "% ";
-      }
-    } else {
-      g_st.reqMaxModulationPct = NAN;
+      if (g_reqMaxModPct < 0.0f) g_reqMaxModPct = 0.0f;
+      if (g_reqMaxModPct > 100.0f) g_reqMaxModPct = 100.0f;
     }
 
-    {
-      otbus::Frame f;
-      const bool ro = cfgIsReadOnly();
-      const uint16_t req = otbus::StatusFlags::encodeMaster(ro ? false : g_reqChEnable, ro ? false : g_reqDhwEnable, false, false, false);
-      const bool ok = g_bus->read(otbus::DataID::Status, f, req);
-      stNoteResponse(g_bus->lastStatus());
-      if (!ok && !outErr.length()) outErr = "setMasterStatus failed";
-      did = true;
-      cmdSummary += String("FLAGS=") + (g_reqChEnable ? "CH" : "") + (g_reqDhwEnable ? "+DHW" : "") + " SRC=" + g_activeSource + " ";
-    }
+    g_st.reqChSetpointC = g_reqChSetpointC;
+    g_st.reqDhwSetpointC = g_reqDhwSetpointC;
+    g_st.reqMaxModulationPct = g_reqMaxModPct;
+    g_st.activeSource = g_activeSource;
 
-    g_st.lastCmdMs = millis();
-    g_st.lastCmd = cmdSummary;
-    g_lastPollMs = 0;
-    otPollOnce();
-    return did && !outErr.length();
+    const bool changed =
+        oldChEnable != g_reqChEnable || oldDhwEnable != g_reqDhwEnable ||
+        !sameFloat(oldChSetpoint, g_reqChSetpointC) ||
+        !sameFloat(oldDhwSetpoint, g_reqDhwSetpointC) ||
+        !sameFloat(oldMaxMod, g_reqMaxModPct) || oldSource != g_activeSource;
+
+    if (changed || (!g_appliedStatusValid && !g_controlDirty)) {
+      g_controlDirty = true;
+      g_controlRetryNeeded = false;
+      g_controlStep = 0;
+      g_controlNextAttemptMs = 0;
+      String cmdSummary("QUEUED ");
+      if (isfinite(g_reqChSetpointC)) cmdSummary += String("CH=") + String(g_reqChSetpointC, 1) + "C ";
+      if (isfinite(g_reqDhwSetpointC)) cmdSummary += String("DHW=") + String(g_reqDhwSetpointC, 1) + "C ";
+      if (isfinite(g_reqMaxModPct)) cmdSummary += String("MAXMOD=") + String(g_reqMaxModPct, 0) + "% ";
+      cmdSummary += String("FLAGS=") + (g_reqChEnable ? "CH" : "") + (g_reqDhwEnable ? "+DHW" : "") + " SRC=" + g_activeSource;
+      g_st.lastCmdMs = millis();
+      g_st.lastCmd = cmdSummary;
+    }
+    return true;
   }
 
   static bool clampMaybe(float& v, float lo, float hi) {
@@ -390,16 +451,13 @@ namespace {
       return;
     }
 
-    // Prefer runtime config pins; fallback to hardcoded defaults.
-    const int rx = (g_cfg.rxPin >= 0) ? g_cfg.rxPin : kOT_RX;
-    const int tx = (g_cfg.txPin >= 0) ? g_cfg.txPin : kOT_TX;
-
-    if (rx < 0 || tx < 0) {
-      delete g_bus;
-      g_bus = nullptr;
-      g_st.reason = "bad pins";
-      return;
-    }
+    // The attached functional 3.3.14 build and the Waveshare wiring use fixed
+    // OpenTherm pins. Do not let an imported/stale LittleFS snapshot silently
+    // move the transport to another GPIO.
+    const int rx = kOT_RX;
+    const int tx = kOT_TX;
+    g_cfg.rxPin = rx;
+    g_cfg.txPin = tx;
 
     pinMode(tx, OUTPUT);
     pinMode(rx, INPUT);
@@ -431,194 +489,196 @@ namespace {
     g_st.reason = "";
     g_lastPollMs = 0;
 
-    Serial.printf("[OT] Initialized (RX=%d TX=%d, master)\n", rx, tx);
+    Serial.printf("[OT] Initialized (%s, RX=%d TX=%d, master)\n", kTransportProfile, rx, tx);
   }
 
   static bool otReadF88(otbus::DataID id, float& outVal) {
-    otbus::Frame f;
-    if (!g_bus->read(id, f)) { stNoteResponse(g_bus->lastStatus()); return false; }
-    stNoteResponse(g_bus->lastStatus());
+    otbus::Frame f; f.raw = 0;
+    const bool ok = g_bus->read(id, f);
+    const OpenThermResponseStatus rs = g_bus->lastStatus();
+    stNoteResponse(rs);
+    if (responseProvesLink((uint8_t)id, rs)) markLinkAlive();
+    if (!ok) return false;
     outVal = otbus::F88::decode(f.value());
     return true;
   }
 
   static bool otReadU16(otbus::DataID id, uint16_t& outVal, uint16_t requestValue = 0) {
-    otbus::Frame f;
-    if (!g_bus->read(id, f, requestValue)) { stNoteResponse(g_bus->lastStatus()); return false; }
-    stNoteResponse(g_bus->lastStatus());
+    otbus::Frame f; f.raw = 0;
+    const bool ok = g_bus->read(id, f, requestValue);
+    const OpenThermResponseStatus rs = g_bus->lastStatus();
+    stNoteResponse(rs);
+    if (responseProvesLink((uint8_t)id, rs)) markLinkAlive();
+    if (!ok) return false;
     outVal = f.value();
     return true;
   }
 
-  static void otPollOnce() {
-    otInitIfNeeded();
-    if (!g_bus) {
-      g_st.present = false;
-      g_st.ready = false;
-      clearAllTelemetry();
-      if (!g_st.reason.length()) g_st.reason = "no instance";
-      return;
+  static void decodeStatusFrame(const otbus::Frame& f) {
+    const uint16_t statusRaw = f.value();
+    const otbus::StatusFlags flags = otbus::StatusFlags::decode(statusRaw);
+    g_st.statusRaw = statusRaw;
+    g_st.masterStatusRaw = (uint8_t)((statusRaw >> 8) & 0xFF);
+    g_st.slaveStatusRaw = (uint8_t)(statusRaw & 0xFF);
+    g_st.otcActive = flags.otcActive;
+    g_st.ch2Enable = flags.ch2Enable;
+    g_st.fault = flags.fault;
+    g_st.chActive = flags.chActive;
+    g_st.dhwActive = flags.dhwActive;
+    g_st.flameOn = flags.flameOn;
+    g_st.coolingActive = flags.coolingActive;
+    g_st.ch2Active = flags.ch2Active;
+    g_st.diagnostic = flags.diagnostic;
+    g_st.chEnable = g_reqChEnable;
+    g_st.dhwEnable = g_reqDhwEnable;
+    g_st.activeSource = g_activeSource;
+  }
+
+  static void finishControlSequence() {
+    if (g_controlRetryNeeded) {
+      g_controlDirty = true;
+      g_controlStep = 0;
+      g_controlNextAttemptMs = millis() + 1500UL;
+      g_st.lastCmd += " RETRY";
+    } else {
+      g_controlDirty = false;
+      g_controlStep = 0;
+      g_controlNextAttemptMs = 0;
+      g_st.lastCmd = String("APPLIED FLAGS=") + (g_reqChEnable ? "CH" : "") +
+                     (g_reqDhwEnable ? "+DHW" : "") + " SRC=" + g_activeSource;
     }
+    g_controlRetryNeeded = false;
+  }
 
-    // Keep internal state machine moving (interrupt + timing)
+  static bool processPendingControlStep() {
+    if (!g_controlDirty) return false;
+    const uint32_t now = millis();
+    if (g_controlNextAttemptMs && (int32_t)(now - g_controlNextAttemptMs) < 0) return false;
+    if (!g_cfg.enabled || !g_cfg.autoStart || cfgIsReadOnly()) return false;
+    otInitIfNeeded();
+    if (!g_bus) return false;
     g_bus->loop();
+    if (!g_bus->isReady()) return false;
 
+    for (uint8_t guard = 0; guard < 5; ++guard) {
+      if (g_controlStep == 0) {
+        if (!isfinite(g_reqChSetpointC) || sameFloat(g_reqChSetpointC, g_appliedChSetpointC, 0.05f)) { g_controlStep++; continue; }
+        const bool ok = g_bus->setCHWaterSetpoint(g_reqChSetpointC);
+        const OpenThermResponseStatus rs = g_bus->lastStatus(); stNoteResponse(rs);
+        if (responseProvesLink((uint8_t)otbus::DataID::ControlSetpoint_TSet, rs)) markLinkAlive();
+        if (ok) g_appliedChSetpointC = g_reqChSetpointC; else g_controlRetryNeeded = true;
+        g_controlStep++; g_st.lastCmdMs = millis(); return true;
+      }
+      if (g_controlStep == 1) {
+        if (!isfinite(g_reqDhwSetpointC) || sameFloat(g_reqDhwSetpointC, g_appliedDhwSetpointC, 0.05f)) { g_controlStep++; continue; }
+        otbus::Frame f; f.raw = 0;
+        const bool ok = g_bus->write(otbus::DataID::DHWSetpoint, otbus::F88::encode(g_reqDhwSetpointC), f);
+        const OpenThermResponseStatus rs = g_bus->lastStatus(); stNoteResponse(rs);
+        if (responseProvesLink((uint8_t)otbus::DataID::DHWSetpoint, rs)) markLinkAlive();
+        if (ok) g_appliedDhwSetpointC = g_reqDhwSetpointC; else g_controlRetryNeeded = true;
+        g_controlStep++; g_st.lastCmdMs = millis(); return true;
+      }
+      if (g_controlStep == 2) {
+        if (!isfinite(g_reqMaxModPct) || sameFloat(g_reqMaxModPct, g_appliedMaxModPct, 0.1f)) { g_controlStep++; continue; }
+        const bool ok = g_bus->setMaxRelModulationLevel(g_reqMaxModPct);
+        const OpenThermResponseStatus rs = g_bus->lastStatus(); stNoteResponse(rs);
+        if (responseProvesLink((uint8_t)otbus::DataID::MaxRelModLevelSetting, rs)) markLinkAlive();
+        if (ok) g_appliedMaxModPct = g_reqMaxModPct; else g_controlRetryNeeded = true;
+        g_controlStep++; g_st.lastCmdMs = millis(); return true;
+      }
+      if (g_controlStep == 3) {
+        otbus::Frame f; f.raw = 0;
+        const uint16_t req = otbus::StatusFlags::encodeMaster(g_reqChEnable, g_reqDhwEnable, false, false, false);
+        const bool ok = g_bus->read(otbus::DataID::Status, f, req);
+        const OpenThermResponseStatus rs = g_bus->lastStatus(); stNoteResponse(rs);
+        if (responseProvesLink((uint8_t)otbus::DataID::Status, rs)) markLinkAlive();
+        if (ok) { decodeStatusFrame(f); g_appliedStatusValid = true; }
+        else { g_appliedStatusValid = false; g_controlRetryNeeded = true; }
+        g_controlStep++; g_st.lastCmdMs = millis(); finishControlSequence(); return true;
+      }
+      finishControlSequence(); return false;
+    }
+    return false;
+  }
+
+  static bool otPollStep() {
+    otInitIfNeeded();
+    if (!g_bus) { g_st.present = false; g_st.ready = false; if (!g_st.reason.length()) g_st.reason = "no instance"; return false; }
+    g_bus->loop();
     g_st.present = true;
     g_st.ready = g_bus->isReady();
-    if (!g_st.ready) {
-      clearAllTelemetry();
-      g_st.reason = "not ready";
-      return;
-    }
+    if (!g_st.ready) { g_st.reason = "not ready"; return false; }
 
-    g_st.reason = "";
-    clearCoreTelemetry();
-
-    // 1) Status exchange (ID0) with current master enable flags
-    {
-      const bool ro = cfgIsReadOnly();
-      const uint16_t req = otbus::StatusFlags::encodeMaster(
-        ro ? false : g_reqChEnable,
-        ro ? false : g_reqDhwEnable,
-        false, false, false
-      );
-
-      otbus::Frame f;
-      const bool ok = g_bus->read(otbus::DataID::Status, f, req);
-      stNoteResponse(g_bus->lastStatus());
-      if (!ok) {
-        clearAllTelemetry();
-        g_st.reason = (g_bus->lastStatus() == OpenThermResponseStatus::TIMEOUT) ? "timeout" : "invalid";
-        return;
-      }
-      const uint16_t statusRaw = f.value();
-      const otbus::StatusFlags flags = otbus::StatusFlags::decode(statusRaw);
-      g_st.statusRaw = statusRaw;
-      g_st.masterStatusRaw = (uint8_t)((statusRaw >> 8) & 0xFF);
-      g_st.slaveStatusRaw = (uint8_t)(statusRaw & 0xFF);
-      g_st.otcActive = flags.otcActive;
-      g_st.ch2Enable = flags.ch2Enable;
-      g_st.fault = flags.fault;
-      g_st.chActive = flags.chActive;
-      g_st.dhwActive = flags.dhwActive;
-      g_st.flameOn = flags.flameOn;
-      g_st.coolingActive = flags.coolingActive;
-      g_st.ch2Active = flags.ch2Active;
-      g_st.diagnostic = flags.diagnostic;
-      g_st.chEnable = g_reqChEnable;
-      g_st.dhwEnable = g_reqDhwEnable;
-      g_st.activeSource = g_activeSource;
-    }
-
-    // 2) Read core telemetry
-    float v = NAN;
-
-    if (otReadF88(otbus::DataID::BoilerWaterTemperature_Tboiler, v)) g_st.boilerTempC = v;
-    if (otReadF88(otbus::DataID::ReturnWaterTemperature_Tret, v)) g_st.returnTempC = v;
-    if (otReadF88(otbus::DataID::DHWTemperature_Tdhw, v)) g_st.dhwTempC = v;
-    if (otReadF88(otbus::DataID::RelativeModulationLevel, v)) g_st.modulationPct = v;
-    if (otReadF88(otbus::DataID::CHWaterPressure, v)) g_st.pressureBar = v;
-
-    // 3) Extended temperatures (round-robin, low bus load)
-    // Some boilers expose additional sensors via optional Data-IDs.
-    // We try a small subset in a round-robin fashion so polling remains light.
-    {
-      static const uint8_t extTempIds[] = { 24, 27, 29, 30, 31, 32, 33, 34 };
-      static uint8_t rr = 0;
-
-      // Most temperature IDs are f8.8, but some (e.g. Texhaust=33) are s16.
-      auto readTempByIdNum = [&](uint8_t idNum, float& outVal) -> bool {
-        otbus::Frame f;
-        const bool ok = g_bus->read((otbus::DataID)idNum, f);
-        stNoteResponse(g_bus->lastStatus());
-        if (!ok) return false;
-        if (idNum == 33) {
-          // Texhaust is s16 (°C)
-          outVal = (float)((int16_t)f.value());
-        } else {
-          outVal = otbus::F88::decode(f.value());
+    switch (g_pollStep) {
+      case 0: {
+        g_cycleStatusSeen = false; g_cycleCoreData = false;
+        const uint16_t req = otbus::StatusFlags::encodeMaster(cfgIsReadOnly() ? false : g_reqChEnable, cfgIsReadOnly() ? false : g_reqDhwEnable, false, false, false);
+        otbus::Frame f; f.raw = 0;
+        const bool ok = g_bus->read(otbus::DataID::Status, f, req);
+        const OpenThermResponseStatus rs = g_bus->lastStatus(); stNoteResponse(rs);
+        if (ok) { decodeStatusFrame(f); g_cycleStatusSeen = true; markLinkAlive(); g_st.reason = ""; }
+        else {
+          otbus::MessageType semanticType = otbus::MessageType::RESERVED_M2S;
+          if (lastRawSemanticResponse((uint8_t)otbus::DataID::Status, &semanticType)) {
+            g_cycleStatusSeen = true; markLinkAlive();
+            g_st.reason = semanticType == otbus::MessageType::DATA_INVALID ? "ID0 DATA_INVALID; probing temperatures" : "ID0 UNKNOWN_DATA_ID; probing temperatures";
+          } else g_st.reason = rs == OpenThermResponseStatus::TIMEOUT ? "ID0 timeout; probing ID25" : "ID0 invalid; probing ID25";
         }
-        return true;
-      };
-
-      auto store = [&](uint8_t idNum, float val) {
-        switch (idNum) {
-          case 24: g_st.roomTempC = val; break;
-          case 27: g_st.outsideTempC = val; break;
-          case 29: g_st.solarStorageTempC = val; break;
-          case 30: g_st.solarCollectorTempC = val; break;
-          case 31: g_st.ch2FlowTempC = val; break;
-          case 32: g_st.dhw2TempC = val; break;
-          case 33: g_st.exhaustTempC = val; break;
-          case 34: g_st.heatExchangerTempC = val; break;
-          default: break;
-        }
-      };
-
-      // Try at most 2 extra reads per poll cycle
-      for (int i = 0; i < 2; i++) {
-        const uint8_t idNum = extTempIds[rr++ % (uint8_t)(sizeof(extTempIds) / sizeof(extTempIds[0]))];
-        float tv = NAN;
-        if (readTempByIdNum(idNum, tv) && isfinite(tv)) store(idNum, tv);
+        g_pollStep = 1; return true;
       }
-    }
-
-    // ASF flags + OEM fault code (ID5): high byte flags, low byte OEM fault code
-    {
-      uint16_t raw = 0;
-      if (otReadU16(otbus::DataID::ASFflags_OEMfaultCode, raw)) {
-        g_st.faultFlags = (uint8_t)(raw >> 8);
-        g_st.oemFaultCode = (uint8_t)(raw & 0xFF);
+      case 1: {
+        float v=NAN; if (otReadF88(otbus::DataID::BoilerWaterTemperature_Tboiler, v) && isfinite(v)) { g_st.boilerTempC=v; g_cycleCoreData=true; markTelemetryAlive(); if(!g_cycleStatusSeen) g_st.reason="ID0 unavailable; ID25 OK"; } else g_st.boilerTempC=NAN;
+        g_pollStep=2; return true;
       }
-    }
-
-    // 5) Remote parameters (very low frequency)
-    // Useful for Ekviterm (limits) and UI display. Keep bus load minimal.
-    {
-      static const uint8_t rpIds[] = { 48, 49, 56, 57 };
-      static uint8_t rr = 0;
-      static uint32_t lastRpMs = 0;
-      const uint32_t now = millis();
-      if (now - lastRpMs >= 5000) {
-        lastRpMs = now;
-        const uint8_t idNum = rpIds[rr++ % (uint8_t)(sizeof(rpIds) / sizeof(rpIds[0]))];
-        if (idNum == 48) {
-          uint16_t raw = 0;
-          if (otReadU16((otbus::DataID)48, raw)) {
-            int8_t hi = (int8_t)(raw >> 8);
-            int8_t lo = (int8_t)(raw & 0xFF);
-            // Convention: HB=upper bound, LB=lower bound
-            g_st.dhwBoundMaxC = (float)hi;
-            g_st.dhwBoundMinC = (float)lo;
-          }
-        } else if (idNum == 49) {
-          uint16_t raw = 0;
-          if (otReadU16((otbus::DataID)49, raw)) {
-            int8_t hi = (int8_t)(raw >> 8);
-            int8_t lo = (int8_t)(raw & 0xFF);
-            // Convention: HB=upper bound, LB=lower bound
-            g_st.maxChBoundMaxC = (float)hi;
-            g_st.maxChBoundMinC = (float)lo;
-          }
-        } else if (idNum == 56) {
-          float v = NAN;
-          if (otReadF88((otbus::DataID)56, v)) {
-            g_st.dhwSetpointC = v;
-          }
-        } else if (idNum == 57) {
-          float v = NAN;
-          if (otReadF88((otbus::DataID)57, v)) {
-            g_st.maxChSetpointC = v;
-          }
-        }
+      case 2: {
+        float v=NAN; if (otReadF88(otbus::DataID::ReturnWaterTemperature_Tret, v) && isfinite(v)) { g_st.returnTempC=v; g_cycleCoreData=true; markTelemetryAlive(); } else g_st.returnTempC=NAN;
+        g_pollStep=3; return true;
       }
+      case 3: {
+        float v=NAN; if (otReadF88(otbus::DataID::DHWTemperature_Tdhw, v) && isfinite(v)) { g_st.dhwTempC=v; g_cycleCoreData=true; markTelemetryAlive(); } else g_st.dhwTempC=NAN;
+        g_pollStep=4; return true;
+      }
+      case 4: {
+        float v=NAN; if (otReadF88(otbus::DataID::RelativeModulationLevel, v) && isfinite(v)) { g_st.modulationPct=v; g_cycleCoreData=true; markTelemetryAlive(); } else g_st.modulationPct=NAN;
+        g_pollStep=5; return true;
+      }
+      case 5: {
+        float v=NAN; if (otReadF88(otbus::DataID::CHWaterPressure, v) && isfinite(v)) { g_st.pressureBar=v; g_cycleCoreData=true; markTelemetryAlive(); } else g_st.pressureBar=NAN;
+        if (!g_cycleStatusSeen && !g_cycleCoreData && !linkIsFresh()) { g_st.reason="no valid OpenTherm frame"; g_st.fault=false; g_st.chActive=false; g_st.dhwActive=false; g_st.flameOn=false; }
+        g_pollStep=6; return true;
+      }
+      case 6: {
+        static const uint8_t ids[]={24,27,29,30,31,32,33,34}; const uint8_t id=ids[g_extPollIndex++ % 8];
+        otbus::Frame f; f.raw=0; const bool ok=g_bus->read((otbus::DataID)id,f); const OpenThermResponseStatus rs=g_bus->lastStatus(); stNoteResponse(rs); if(responseProvesLink(id,rs)) markLinkAlive();
+        float v=ok ? (id==33 ? (float)((int16_t)f.value()) : otbus::F88::decode(f.value())) : NAN;
+        switch(id){case 24:g_st.roomTempC=v;break;case 27:g_st.outsideTempC=v;break;case 29:g_st.solarStorageTempC=v;break;case 30:g_st.solarCollectorTempC=v;break;case 31:g_st.ch2FlowTempC=v;break;case 32:g_st.dhw2TempC=v;break;case 33:g_st.exhaustTempC=v;break;case 34:g_st.heatExchangerTempC=v;break;}
+        if(ok && isfinite(v)) markTelemetryAlive(); g_pollStep=7; return true;
+      }
+      case 7: {
+        uint16_t raw=0; if(otReadU16(otbus::DataID::ASFflags_OEMfaultCode,raw)){g_st.faultFlags=(uint8_t)(raw>>8);g_st.oemFaultCode=(uint8_t)(raw&0xff);} g_pollStep=8; return true;
+      }
+      case 8: {
+        const uint32_t now=millis(); if((uint32_t)(now-g_lastRemotePollMs)<5000UL){g_pollStep=0;return false;} g_lastRemotePollMs=now;
+        static const uint8_t ids[]={15,48,49,56,57}; const uint8_t id=ids[g_remotePollIndex++ % 5];
+        if(id==15){uint16_t raw=0;if(otReadU16((otbus::DataID)15,raw)){g_st.maxCapacityKw=(float)((uint8_t)(raw>>8));g_st.minModulationPct=(float)((uint8_t)(raw&0xff));}}
+        else if(id==48){uint16_t raw=0;if(otReadU16((otbus::DataID)48,raw)){g_st.dhwBoundMaxC=(float)((int8_t)(raw>>8));g_st.dhwBoundMinC=(float)((int8_t)(raw&0xff));}}
+        else if(id==49){uint16_t raw=0;if(otReadU16((otbus::DataID)49,raw)){g_st.maxChBoundMaxC=(float)((int8_t)(raw>>8));g_st.maxChBoundMinC=(float)((int8_t)(raw&0xff));}}
+        else if(id==56){float v=NAN;if(otReadF88((otbus::DataID)56,v))g_st.dhwSetpointC=v;}
+        else if(id==57){float v=NAN;if(otReadF88((otbus::DataID)57,v))g_st.maxChSetpointC=v;}
+        g_pollStep=0; return true;
+      }
+      default: g_pollStep=0; return false;
     }
-
-    g_st.lastUpdateMs = millis();
   }
 
   // ---- config parsing helpers (pins are fixed; enabled can be controlled) ----
   static void applyConfigDoc(JsonObject ot) {
+    const bool oldEnabled = g_cfg.enabled;
+    const bool oldAutoStart = g_cfg.autoStart;
+    const String oldMode = g_cfg.mode;
+    const uint32_t oldWatchdogTimeoutMs = g_cfg.watchdogTimeoutMs;
+    const uint8_t oldMaxConsecutiveFailures = g_cfg.maxConsecutiveFailures;
+
     // enabled is configurable; autoStart/bootDelay protect against boot-loops
     g_cfg.enabled = ot["enabled"] | g_cfg.enabled;
     g_cfg.autoStart = ot["autoStart"] | ot["startOnBoot"] | g_cfg.autoStart;
@@ -641,11 +701,16 @@ namespace {
       g_cfg.allowRawWrite = (bool)(ot["allowRawWrite"] | false);
     }
 
-    // Optional pin overrides (defaults are still kOT_TX/kOT_RX)
-    g_cfg.txPin = (int)(ot["txPin"] | g_cfg.txPin);
-    g_cfg.rxPin = (int)(ot["rxPin"] | g_cfg.rxPin);
-    g_cfg.invertTx = (bool)(ot["invertTx"] | g_cfg.invertTx);
-    g_cfg.invertRx = (bool)(ot["invertRx"] | g_cfg.invertRx);
+    // The attached functional 3.3.14 build used the board wiring
+    // TX=GPIO47 / RX=GPIO48. Keep those pins fixed even when an older
+    // LittleFS snapshot contains experimental pin overrides.
+    g_cfg.txPin = kOT_TX;
+    g_cfg.rxPin = kOT_RX;
+    // The attached older working build used fixed normal MCU-side polarity.
+    // Do not let stale 3.5.1 inversion settings alter the proven transport.
+    g_cfg.invertTx = false;
+    g_cfg.invertRx = false;
+    g_cfg.autoDetectLogic = false;
 
     // watchdog
     {
@@ -671,9 +736,12 @@ namespace {
     g_cfg.dhwBoostChSetpointC = ot["dhwBoostChSetpointC"] | g_cfg.dhwBoostChSetpointC;
     g_cfg.assumedMaxBoilerKw = ot["assumedMaxBoilerKw"] | g_cfg.assumedMaxBoilerKw;
 
-    // If watchdog/mode changed -> re-init to apply configs
-    if (g_inited) {
-      otDestroy();
+    const bool needReinit = oldEnabled != g_cfg.enabled || oldAutoStart != g_cfg.autoStart ||
+                            oldMode != g_cfg.mode || oldWatchdogTimeoutMs != g_cfg.watchdogTimeoutMs ||
+                            oldMaxConsecutiveFailures != g_cfg.maxConsecutiveFailures;
+    if (g_inited && needReinit) otDestroy();
+    if (g_cfg.enabled && g_cfg.autoStart && !cfgIsReadOnly()) {
+      g_controlDirty = true; g_controlStep = 0; g_controlNextAttemptMs = 0;
     }
   }
 
@@ -702,6 +770,7 @@ namespace {
     out["invertTx"] = g_cfg.invertTx;
     out["invertRx"] = g_cfg.invertRx;
     out["autoDetectLogic"] = g_cfg.autoDetectLogic;
+    out["transportProfile"] = kTransportProfile;
   }
 
   static void fillSourceRequestJson(JsonObject out, const OpenThermSourceRequest& req) {
@@ -733,6 +802,9 @@ namespace {
     out["enabled"] = g_cfg.enabled;
     out["present"] = g_st.present;
     out["ready"] = g_st.ready;
+    // Link health is intentionally separate from the boiler fault flag.
+    // "ready" only means the local OpenTherm state machine is idle/usable.
+    out["linkOk"] = linkIsFresh();
     out["fault"] = g_st.fault;
     out["chEnable"] = g_st.chEnable;
     out["dhwEnable"] = g_st.dhwEnable;
@@ -761,6 +833,8 @@ namespace {
     if (isfinite(g_st.exhaustTempC)) out["exhaustTempC"] = g_st.exhaustTempC; else out["exhaustTempC"] = nullptr;
     if (isfinite(g_st.heatExchangerTempC)) out["heatExchangerTempC"] = g_st.heatExchangerTempC; else out["heatExchangerTempC"] = nullptr;
     if (isfinite(g_st.modulationPct)) out["modulationPct"] = g_st.modulationPct; else out["modulationPct"] = nullptr;
+    if (isfinite(g_st.maxCapacityKw)) out["maxCapacityKw"] = g_st.maxCapacityKw; else out["maxCapacityKw"] = nullptr;
+    if (isfinite(g_st.minModulationPct)) out["minModulationPct"] = g_st.minModulationPct; else out["minModulationPct"] = nullptr;
     if (isfinite(g_st.maxChSetpointC)) out["maxChSetpointC"] = g_st.maxChSetpointC; else out["maxChSetpointC"] = nullptr;
     if (isfinite(g_st.maxChBoundMinC)) out["maxChBoundMinC"] = g_st.maxChBoundMinC; else out["maxChBoundMinC"] = nullptr;
     if (isfinite(g_st.maxChBoundMaxC)) out["maxChBoundMaxC"] = g_st.maxChBoundMaxC; else out["maxChBoundMaxC"] = nullptr;
@@ -783,6 +857,7 @@ namespace {
     out["reason"] = g_st.reason;
     out["lastCmd"] = g_st.lastCmd;
     out["activeSource"] = g_st.activeSource;
+    out["transportProfile"] = kTransportProfile;
   }
 } // namespace
 
@@ -811,7 +886,7 @@ void openthermInit() {
   g_cfg.rxPin = kOT_RX;
   g_cfg.invertTx = false;
   g_cfg.invertRx = false;
-  g_cfg.autoDetectLogic = true;
+  g_cfg.autoDetectLogic = false;
   g_cfg.pollIdsCount = 0;
   g_cfg.watchdogTimeoutMs = 3000;
   g_cfg.maxConsecutiveFailures = 3;
@@ -850,12 +925,10 @@ void openthermApplyConfig(const String& configJson) {
   if (ot.isNull()) return;
 
   applyConfigDoc(ot);
-
-  // reflect into status
-  g_st.present = false;
-  g_st.ready = false;
-  clearAllTelemetry();
-  g_st.reason = "";
+  if (!g_cfg.enabled || !g_cfg.autoStart) {
+    g_st.present = false; g_st.ready = false; clearAllTelemetry();
+    g_st.reason = g_cfg.enabled ? "paused" : "disabled";
+  }
 }
 
 
@@ -920,9 +993,11 @@ void openthermLoop() {
     const uint8_t id = g_scan.curId;
     if (id > 127) { g_scan.active = false; g_scan.done = true; g_scan.finishedMs = now; return; }
 
-    otbus::Frame f;
+    otbus::Frame f; f.raw = 0;
     const bool ok = g_bus->read((otbus::DataID)id, f, 0x0000);
     const OpenThermResponseStatus rs = g_bus->lastStatus();
+    stNoteResponse(rs);
+    if (responseProvesLink(id, rs)) markLinkAlive();
     (void)ok;
 
     g_scan.respStatus[id] = (uint8_t)rs;
@@ -943,13 +1018,15 @@ void openthermLoop() {
     return;
   }
 
-  if ((uint32_t)(now - g_lastPollMs) >= g_cfg.pollMs) {
+  if (g_controlDirty && processPendingControlStep()) return;
+
+  g_bus->loop();
+  if (!g_bus->isReady()) return;
+  if (g_pollStep == 0) {
+    if ((uint32_t)(now - g_lastPollMs) < g_cfg.pollMs) return;
     g_lastPollMs = now;
-    otPollOnce();
-  } else {
-    // keep state machine moving
-    g_bus->loop();
   }
+  (void)otPollStep();
 }
 
 OpenThermConfig openthermGetConfig() {
@@ -965,6 +1042,7 @@ void openthermFillFastJson(JsonObject& out) {
   const bool en = g_cfg.enabled;
   out["en"] = en;
   out["rd"] = en ? g_st.ready : false;
+  out["lk"] = en ? linkIsFresh() : false;
   out["fl"] = en ? g_st.fault : false;
   out["ce"] = en ? g_st.chEnable : false;
   out["de"] = en ? g_st.dhwEnable : false;
@@ -988,6 +1066,7 @@ void openthermFillFastJson(JsonObject& out) {
   if (en && isfinite(g_st.heatExchangerTempC)) out["hx"] = g_st.heatExchangerTempC; else out["hx"] = nullptr;
 
   if (en && isfinite(g_st.modulationPct)) out["mt"] = g_st.modulationPct; else out["mt"] = nullptr;
+  if (en && isfinite(g_st.maxCapacityKw)) out["cp"] = g_st.maxCapacityKw; else out["cp"] = nullptr;
   if (en && isfinite(g_st.pressureBar)) out["pr"] = g_st.pressureBar; else out["pr"] = nullptr;
 
   // Remote params

@@ -32,17 +32,20 @@ namespace {
 
   constexpr TemperatureManager::SelectableSourceInfo kMixSourcesA[] = {
     {"none", "Nevybráno"},
-    {"tank_mid", "Akumulační nádrž – Uprostřed (DS18B20)"},
+    {"tank_mid", "DS18B20 – AKU uprostřed"},
+    {"opentherm_ch", "OpenTherm – výstup kotle / CH (ID25)"},
   };
 
   constexpr TemperatureManager::SelectableSourceInfo kMixSourcesB[] = {
     {"none", "Nevybráno"},
-    {"return_dallas", "Zpátečka B – DS18B20 (role Zpátečka / Return.flow)"},
+    {"return_dallas", "DS18B20 – role Zpátečka / Return.flow (GPIO2)"},
+    {"opentherm_return", "OpenTherm – zpátečka kotle (ID28)"},
   };
 
   constexpr TemperatureManager::SelectableSourceInfo kMixSourcesAB[] = {
     {"none", "Nevybráno"},
-    {"opentherm_ch", "OpenTherm – CH teplota (měřená)"},
+    {"opentherm_ch", "OpenTherm – výstup kotle / CH (ID25)"},
+    {"return_dallas", "DS18B20 – role Zpátečka / Return.flow (GPIO2)"},
   };
 
   static const RoleBindingDef* findRoleBinding(TempRole role) {
@@ -336,30 +339,41 @@ namespace {
   }
 
   static inline void updateOpenTherm(uint32_t now) {
-    OpenThermStatusSnapshot ot = openthermGetStatus();
+    // Use the age-checked OpenTherm getters instead of only present/ready.
+    // This prevents a formerly valid OT value from masking a live DS18B20
+    // fallback after the OT link disappears.
+    const OpenThermConfig cfg = openthermGetConfig();
+    uint32_t maxAgeMs = cfg.pollMs * 3U;
+    if (maxAgeMs < 15000U) maxAgeMs = 15000U;
+    if (maxAgeMs > 60000U) maxAgeMs = 60000U;
 
-    // Flow + DHW
-    if (ot.present && ot.ready && isfinite(ot.boilerTempC)) {
-      setCache(TempRole::Flow, ot.boilerTempC, true, TempSource::OpenTherm, ot.lastUpdateMs);
+    float t = NAN;
+    uint32_t ageMs = 0;
+
+    // Flow has no Dallas fallback in the role registry. Invalidate it as soon
+    // as OpenTherm is not fresh enough.
+    if (openthermGetBoilerTemp(t, maxAgeMs, &ageMs) && isfinite(t)) {
+      setCache(TempRole::Flow, t, true, TempSource::OpenTherm, now - ageMs);
     } else {
       setCache(TempRole::Flow, NAN, false, TempSource::None, 0);
     }
 
-    // DHW tank: OpenTherm has priority. If OT value is not valid, keep Dallas fallback from updateDallasRoles().
-    if (ot.present && ot.ready && isfinite(ot.dhwTempC)) {
-      setCache(TempRole::DhwTank, ot.dhwTempC, true, TempSource::OpenTherm, ot.lastUpdateMs);
+    // DHW tank: OT overrides Dallas only while the OT value is fresh.
+    t = NAN; ageMs = 0;
+    if (openthermGetDhwTemp(t, maxAgeMs, &ageMs) && isfinite(t)) {
+      setCache(TempRole::DhwTank, t, true, TempSource::OpenTherm, now - ageMs);
     }
 
-    // Outside (OT preferred)
-    if (ot.present && ot.ready && isfinite(ot.outsideTempC)) {
-      setCache(TempRole::Outside, ot.outsideTempC, true, TempSource::OpenTherm, ot.lastUpdateMs);
-    } else {
-      // keep for BLE update
+    // Outside: priority OT > DS18B20 > BLE.
+    t = NAN; ageMs = 0;
+    if (openthermGetOutsideTemp(t, maxAgeMs, &ageMs) && isfinite(t)) {
+      setCache(TempRole::Outside, t, true, TempSource::OpenTherm, now - ageMs);
     }
 
-    // Return (OT preferred). If OT return unavailable, keep Dallas (already set by updateDallasRoles).
-    if (ot.present && ot.ready && isfinite(ot.returnTempC)) {
-      setCache(TempRole::Return, ot.returnTempC, true, TempSource::OpenTherm, ot.lastUpdateMs);
+    // Return: OT overrides the dedicated Dallas role only while fresh.
+    t = NAN; ageMs = 0;
+    if (openthermGetReturnTemp(t, maxAgeMs, &ageMs) && isfinite(t)) {
+      setCache(TempRole::Return, t, true, TempSource::OpenTherm, now - ageMs);
     }
   }
 
@@ -479,9 +493,13 @@ namespace TemperatureManager {
         value == "boiler_temperature" || value == "flow" || value == "opentherm_flow") {
       value = "opentherm_ch";
     }
+    if (value == "ot_return" || value == "opentherm_ret" || value == "return_ot" ||
+        value == "boiler_return" || value == "opentherm_return_temperature") {
+      value = "opentherm_return";
+    }
 
     if (value == "none" || value == "tank_mid" || value == "return_dallas" ||
-        value == "opentherm_ch") return value;
+        value == "opentherm_ch" || value == "opentherm_return") return value;
     return String(fallback ? fallback : "none");
   }
 
@@ -492,6 +510,10 @@ namespace TemperatureManager {
     if (normalized == "return_dallas") return getDallasReturn(maxAgeMs);
     if (normalized == "opentherm_ch") {
       const TempValue value = get(TempRole::Flow, maxAgeMs);
+      return value.src == TempSource::OpenTherm ? value : TempValue{};
+    }
+    if (normalized == "opentherm_return") {
+      const TempValue value = get(TempRole::Return, maxAgeMs);
       return value.src == TempSource::OpenTherm ? value : TempValue{};
     }
     return TempValue{};

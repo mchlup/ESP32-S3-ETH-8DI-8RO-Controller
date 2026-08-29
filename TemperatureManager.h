@@ -63,9 +63,9 @@ namespace TemperatureManager {
   };
 
   // Resolve a configured source key to a live temperature:
-  // tank_mid, return_dallas, opentherm_ch, or none.
-  // return_dallas always reads the dedicated DS18B20 Return role and is never
-  // overridden by the OpenTherm return value.
+  // Supported explicit hydraulic sources include tank_mid, return_dallas,
+  // opentherm_ch, opentherm_return, or none. return_dallas always reads the
+  // dedicated DS18B20 Return role and is never overridden by OpenTherm.
   TempValue getBySourceKey(const String& key, uint32_t maxAgeMs = 600000);
   String normalizeSourceKey(const String& key, const char* fallback = "none");
   const SelectableSourceInfo* getSelectableSourcesForPort(const char* port, size_t& count);

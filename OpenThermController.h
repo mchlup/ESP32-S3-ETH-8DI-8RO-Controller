@@ -54,7 +54,7 @@ struct OpenThermConfig {
   int rxPin = -1; // adapter OUT -> controller (interrupt)
   bool invertTx = false;
   bool invertRx = false;
-  bool autoDetectLogic = true;
+  bool autoDetectLogic = false;
 
   // Optional additional poll list (Data-IDs) for future extension.
   uint8_t pollIds[32] = {0};
@@ -109,6 +109,8 @@ struct OpenThermStatusSnapshot {
   float heatExchangerTempC = NAN;
   float modulationPct = NAN;
   float pressureBar = NAN;
+  float maxCapacityKw = NAN;
+  float minModulationPct = NAN;
 
   // Remote parameter: Max CH setpoint (ID57) and its bounds (ID49)
   float maxChSetpointC = NAN;
