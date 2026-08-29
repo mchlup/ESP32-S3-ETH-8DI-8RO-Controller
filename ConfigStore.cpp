@@ -166,6 +166,7 @@ namespace {
   String g_eqMixTempSourceA = "tank_mid";
   String g_eqMixTempSourceB = "return_dallas";
   String g_eqMixTempSourceAB = "opentherm_ch";
+  String g_eqMixAdvancedJson = "{}";
 
   // Boiler assist headroom
   bool   g_eqBoilerAssistEnabled = true;
@@ -212,6 +213,7 @@ namespace {
   static constexpr const char* K_TIME_N1 = "t_n1";
   static constexpr const char* K_TIME_N2 = "t_n2";
   static constexpr const char* K_TIME_N3 = "t_n3";
+  static constexpr const char* K_SETUP_WIZ_VER = "wiz_ver";
 
   // Ekviterm
   static constexpr const char* K_EQ_EN = "eq_en";
@@ -263,6 +265,7 @@ static constexpr const char* K_EQ_MIX_RECAL = "eq_mx_rc";
 static constexpr const char* K_EQ_MIX_SRC_A = "eq_mx_sa";
 static constexpr const char* K_EQ_MIX_SRC_B = "eq_mx_sb";
 static constexpr const char* K_EQ_MIX_SRC_AB = "eq_mx_sab";
+static constexpr const char* K_EQ_MIX_ADV = "eq_mx_adv";
 
 static constexpr const char* K_EQ_BA_EN = "eq_ba_en";
 static constexpr const char* K_EQ_BA_D = "eq_ba_d";
@@ -472,6 +475,8 @@ static constexpr const char* K_EQ_BA_CH = "eq_ba_ch";
     g_eqMixTempSourceA = normalizeMixTempSourceA(g_prefs.getString(K_EQ_MIX_SRC_A, g_eqMixTempSourceA));
     g_eqMixTempSourceB = normalizeMixTempSourceB(g_prefs.getString(K_EQ_MIX_SRC_B, g_eqMixTempSourceB));
     g_eqMixTempSourceAB = normalizeMixTempSourceAB(g_prefs.getString(K_EQ_MIX_SRC_AB, g_eqMixTempSourceAB));
+    g_eqMixAdvancedJson = g_prefs.getString(K_EQ_MIX_ADV, g_eqMixAdvancedJson);
+    if (g_eqMixAdvancedJson.length() < 2 || g_eqMixAdvancedJson.length() > 3072) g_eqMixAdvancedJson = "{}";
 
       g_eqBoilerAssistEnabled = g_prefs.getBool(K_EQ_BA_EN, g_eqBoilerAssistEnabled);
       g_eqBoilerAssistDeltaC = g_prefs.getFloat(K_EQ_BA_D, g_eqBoilerAssistDeltaC);
@@ -867,6 +872,16 @@ namespace ConfigStore {
   void setTimeNtp2(const String& v) { begin(); g_timeNtp2 = v; saveString(K_TIME_N2, g_timeNtp2); }
   void setTimeNtp3(const String& v) { begin(); g_timeNtp3 = v; saveString(K_TIME_N3, g_timeNtp3); }
 
+  uint32_t getSetupWizardCompletedVersion() {
+    begin();
+    return g_prefs.getUInt(K_SETUP_WIZ_VER, 0);
+  }
+
+  void setSetupWizardCompletedVersion(uint32_t version) {
+    begin();
+    saveUInt(K_SETUP_WIZ_VER, version);
+  }
+
   // Ekviterm
   bool getEqEnabled() { begin(); return g_eqEnabled; }
   void setEqEnabled(bool v) { begin(); g_eqEnabled = v; saveBool(K_EQ_EN, v); }
@@ -1152,6 +1167,16 @@ namespace ConfigStore {
     begin();
     g_eqMixTempSourceAB = normalizeMixTempSourceAB(v);
     saveString(K_EQ_MIX_SRC_AB, g_eqMixTempSourceAB);
+  }
+
+  String getEqMixAdvancedJson() { begin(); return g_eqMixAdvancedJson; }
+  void setEqMixAdvancedJson(const String& v) {
+    begin();
+    String normalized = v;
+    normalized.trim();
+    if (normalized.length() < 2 || normalized.length() > 3072) normalized = "{}";
+    g_eqMixAdvancedJson = normalized;
+    saveString(K_EQ_MIX_ADV, g_eqMixAdvancedJson);
   }
 
   // Boiler assist headroom

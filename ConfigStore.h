@@ -86,6 +86,11 @@ namespace ConfigStore {
   void setTimeNtp2(const String& v);
   void setTimeNtp3(const String& v);
 
+  // Device setup wizard. Stores the last wizard schema version that the user
+  // explicitly completed. 0 means not completed for the current firmware.
+  uint32_t getSetupWizardCompletedVersion();
+  void setSetupWizardCompletedVersion(uint32_t version);
+
   // Ekviterm (equitherm)
   bool getEqEnabled();
   void setEqEnabled(bool v);
@@ -190,6 +195,12 @@ namespace ConfigStore {
   void setEqMixTempSourceB(const String& v);
   String getEqMixTempSourceAB();
   void setEqMixTempSourceAB(const String& v);
+
+  // Extended single-circuit mixing-valve settings. Stored as a compact JSON
+  // object so new TECH i-3 compatible options can be added without consuming
+  // a large set of individual NVS keys.
+  String getEqMixAdvancedJson();
+  void setEqMixAdvancedJson(const String& v);
 
   // Accumulator support for boiler heating. The legacy deltaC value is kept
   // for configuration compatibility but is no longer added to the OT setpoint.

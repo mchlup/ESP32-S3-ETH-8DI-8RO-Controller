@@ -49,7 +49,7 @@ namespace {
 
   static constexpr size_t kFsReadChunkDefault = 4096;
   static constexpr size_t kFsReadChunkMax = 32768;
-  static constexpr bool kServePrecompressedAssets = false;
+  static constexpr bool kServePrecompressedAssets = true;
   static constexpr size_t kActionLogCapacity = 16;
   static constexpr unsigned long kActionLogRetentionMs = 15UL * 60UL * 1000UL;
   static constexpr uint8_t kRelayMixOpenIdx = 0;       // R1
@@ -61,6 +61,7 @@ namespace {
   static constexpr uint8_t kRelayMixOpenBit = (uint8_t)(1u << kRelayMixOpenIdx);
   static constexpr uint8_t kRelayMixCloseBit = (uint8_t)(1u << kRelayMixCloseIdx);
   static constexpr uint8_t kRelayAccuHeaterBit = (uint8_t)(1u << kRelayAccuHeaterIdx);
+  static constexpr uint32_t kSetupWizardSchemaVersion = 1;
 
   struct RateLimitEntry {
     const char* key = nullptr;
@@ -129,7 +130,7 @@ namespace {
     {"ota", 1024, "cfg_ota"},
     {"mqtt", 4096, "cfg_mqtt"},
     {"time", 1024, "cfg_time"},
-    {"equitherm", 6144, "cfg_eq"},
+    {"equitherm", 16384, "cfg_eq"},
     {"dhw", 8192, "cfg_dhw"},
     {"alerts", 1024, "cfg_alerts"},
   };
@@ -266,6 +267,7 @@ namespace {
   static void fillInputs(JsonObject out);
   static void fillTemps(JsonObject out);
   static bool ensureConfigDir();
+  static bool saveConfigSnapshot();
   static bool writeJsonVariantToFile(const char* path, JsonVariantConst value);
   static void applyInputsSection(JsonObjectConst in);
   static void applyOpenThermSection(JsonObjectConst o);
@@ -706,6 +708,7 @@ namespace {
   static void fillEquithermSectionJson(JsonObject out);
   static void fillDhwSectionJson(JsonObject out);
   static void fillAlertsSectionJson(JsonObject out);
+  static void fillSetupWizardStatusJson(JsonObject out);
   static void fillFastStateObject(JsonObject out);
 
   static void fillFastStateObject(JsonObject out) {
@@ -832,11 +835,15 @@ namespace {
 
         const uint8_t relayMask = relayGetMask();
         const uint8_t pairMask = (uint8_t)(kRelayMixOpenBit | kRelayMixCloseBit);
+        const EquithermConfig mixCfg = equithermGetConfig();
+        const bool reversedOpening = mixCfg.mixOpeningDirection == "reversed";
+        const uint8_t logicalOpenBit = reversedOpening ? kRelayMixCloseBit : kRelayMixOpenBit;
+        const uint8_t logicalCloseBit = reversedOpening ? kRelayMixOpenBit : kRelayMixCloseBit;
         bool expectedApplied = false;
         if (action == "pulse_a" || action == "end_a") {
-          expectedApplied = (relayMask & pairMask) == kRelayMixOpenBit;
+          expectedApplied = (relayMask & pairMask) == logicalOpenBit;
         } else if (action == "pulse_b" || action == "end_b") {
-          expectedApplied = (relayMask & pairMask) == kRelayMixCloseBit;
+          expectedApplied = (relayMask & pairMask) == logicalCloseBit;
         } else if (action == "stop") {
           expectedApplied = (relayMask & pairMask) == 0;
         }
@@ -867,18 +874,24 @@ namespace {
   }
 
   static void handleBootstrap() {
-    DynamicJsonDocument doc(24576);
+    // The equitherm section includes TECH i-3 programs and setup-wizard state.
+    // Leave headroom for both weekly valve schedules and the regular sections.
+    DynamicJsonDocument doc(49152);
     JsonObject fast = doc.createNestedObject("fast");
     fillFastStateObject(fast);
 
     const char* sections[] = {"time", "dallas", "equitherm", "opentherm", "dhw", "alerts"};
     for (size_t i = 0; i < sizeof(sections)/sizeof(sections[0]); ++i) {
-      DynamicJsonDocument secDoc(6144);
+      const ConfigSectionDef* def = findConfigSection(sections[i]);
+      const size_t cap = (def && def->postDocCap > 6144) ? def->postDocCap : 6144;
+      DynamicJsonDocument secDoc(cap);
       const bool ok = loadConfigSectionLiveOrSnapshot(sections[i], secDoc);
       if (ok) doc[sections[i]] = secDoc.as<JsonVariantConst>();
       else doc[sections[i]] = JsonVariant();
       yield();
     }
+    JsonObject wizard = doc.createNestedObject("setupWizard");
+    fillSetupWizardStatusJson(wizard);
 
     sendJsonDoc(200, doc);
   }
@@ -1311,10 +1324,200 @@ namespace {
     mix["sourceB"] = ec.mixTempSourceB;
     mix["sourceAB"] = ec.mixTempSourceAB;
 
+    // TECH i-3 compatible single-circuit mixing extensions. These fields are
+    // intentionally additive, so existing clients/configurations keep the
+    // original adaptive behavior until controlMode is changed explicitly.
+    mix["controlMode"] = ec.mixControlMode;
+    mix["valveType"] = ec.mixValveType;
+    mix["controlIntervalMs"] = (uint32_t)ec.mixControlIntervalMs;
+    mix["minOpeningPct"] = ec.mixMinOpeningPct;
+    mix["unitStepPct"] = ec.mixUnitStepPct;
+    mix["proportionalCoeff"] = ec.mixProportionalCoeff;
+    mix["calibrationHome"] = ec.mixCalibrationHome;
+    mix["openingDirection"] = ec.mixOpeningDirection;
+    const bool techI3 = ec.mixControlMode == "tech_i3";
+    const bool safeHomeB = techI3 && (ec.mixValveType == "floor" || ec.mixValveType == "return_protection");
+    mix["effectiveCalibrationHome"] = safeHomeB ? "b" : ec.mixCalibrationHome;
+    mix["autoCalibrationPeriodMs"] = techI3 ? (uint32_t)(48UL * 60UL * 60UL * 1000UL) : (uint32_t)ec.mixAutoRecalibrationMs;
+    mix["weeklyCloseEnabled"] = ec.mixWeeklyCloseEnabled;
+    mix["weeklyCorrectionEnabled"] = ec.mixWeeklyCorrectionEnabled;
+    mix["dhwPriorityPositionPct"] = ec.mixDhwPriorityPositionPct;
+    mix["curveMode"] = ec.curveMode;
+
+    JsonObject boilerProtection = mix.createNestedObject("boilerProtection");
+    boilerProtection["enabled"] = ec.mixBoilerProtectionEnabled;
+    boilerProtection["maxC"] = ec.mixBoilerProtectionMaxC;
+
+    JsonObject returnProtection = mix.createNestedObject("returnProtection");
+    returnProtection["enabled"] = ec.mixReturnProtectionEnabled;
+    returnProtection["minC"] = ec.mixReturnProtectionMinC;
+
+    JsonObject floorProtection = mix.createNestedObject("floorProtection");
+    floorProtection["enabled"] = ec.mixFloorProtectionEnabled;
+    floorProtection["maxC"] = ec.mixFloorProtectionMaxC;
+    floorProtection["summerEnabled"] = ec.mixFloorSummerEnabled;
+
+    JsonObject outsideClose = mix.createNestedObject("outsideClose");
+    outsideClose["enabled"] = ec.mixOutsideCloseEnabled;
+    outsideClose["dayC"] = ec.mixOutsideCloseDayC;
+    outsideClose["nightC"] = ec.mixOutsideCloseNightC;
+    outsideClose["hysteresisC"] = ec.mixOutsideCloseHysteresisC;
+    char hm[6];
+    snprintf(hm, sizeof(hm), "%02u:%02u", (unsigned)(ec.mixOutsideCloseDayStartMin / 60), (unsigned)(ec.mixOutsideCloseDayStartMin % 60));
+    outsideClose["dayStart"] = hm;
+    snprintf(hm, sizeof(hm), "%02u:%02u", (unsigned)(ec.mixOutsideCloseNightStartMin / 60), (unsigned)(ec.mixOutsideCloseNightStartMin % 60));
+    outsideClose["nightStart"] = hm;
+
+    JsonArray weeklyClose = mix.createNestedArray("weeklyClose");
+    for (uint8_t d = 0; d < 7; ++d) {
+      JsonArray slots = weeklyClose.createNestedArray();
+      for (uint8_t i = 0; i < 48; ++i) slots.add(ec.mixWeeklyCloseSlots[d][i]);
+    }
+    JsonArray weeklyCorrection = mix.createNestedArray("weeklyCorrection");
+    for (uint8_t d = 0; d < 7; ++d) {
+      JsonArray hours = weeklyCorrection.createNestedArray();
+      for (uint8_t i = 0; i < 24; ++i) hours.add((int)ec.mixWeeklyCorrectionC[d][i]);
+    }
+
+    JsonObject weather4 = mix.createNestedObject("weather4");
+    JsonArray weatherPoints = weather4.createNestedArray("outsideC");
+    weatherPoints.add(-20); weatherPoints.add(-10); weatherPoints.add(0); weatherPoints.add(10);
+    JsonArray weatherDay = weather4.createNestedArray("day");
+    JsonArray weatherNight = weather4.createNestedArray("night");
+    for (uint8_t i = 0; i < 4; i++) {
+      weatherDay.add(ec.day4FlowC[i]);
+      weatherNight.add(ec.night4FlowC[i]);
+    }
+
     JsonObject ba = eq.createNestedObject("boilerAssist");
     ba["enabled"] = ec.boilerAssistEnabled;
     ba["deltaC"] = ec.boilerAssistDeltaC;
     ba["forceChEnable"] = ec.boilerAssistForceChEnable;
+  }
+
+  static void fillSetupWizardStatusJson(JsonObject out) {
+    const uint32_t completedVersion = ConfigStore::getSetupWizardCompletedVersion();
+    out["schemaVersion"] = kSetupWizardSchemaVersion;
+    out["completedVersion"] = completedVersion;
+    out["completed"] = completedVersion >= kSetupWizardSchemaVersion;
+    out["board"] = "Waveshare ESP32-S3-ETH-8DI-8RO";
+    out["singleMixingCircuit"] = true;
+    JsonArray profiles = out.createNestedArray("valveProfiles");
+    profiles.add("ch"); profiles.add("floor"); profiles.add("return_protection"); profiles.add("pool"); profiles.add("ventilation");
+    JsonObject mixing = out.createNestedObject("mixing");
+    mixing["relayPair"] = "R1/R2";
+    mixing["openingDirectionConfigurable"] = true;
+    mixing["techAutoCalibrationHours"] = 48;
+    mixing["weeklyCorrectionHours"] = 24;
+    mixing["weeklyCloseSlotsPerDay"] = 48;
+    mixing["supportsWeather4Point"] = true;
+  }
+
+  static bool wizardNumberInRange(JsonObjectConst o, const char* key, float lo, float hi) {
+    if (!o.containsKey(key)) return true;
+    const float value = o[key].as<float>();
+    return isfinite(value) && value >= lo && value <= hi;
+  }
+
+  static bool validateWizardEquitherm(JsonObjectConst eq, String& err, JsonArray warnings) {
+    err = "";
+    if (eq.isNull() || !eq["mixing"].is<JsonObjectConst>()) { err = "missing_equitherm_mixing"; return false; }
+    JsonObjectConst mix = eq["mixing"].as<JsonObjectConst>();
+    String valveType = String((const char*)(mix["valveType"] | "ch")); valveType.toLowerCase();
+    if (valveType != "ch" && valveType != "floor" && valveType != "return_protection" && valveType != "pool" && valveType != "ventilation") {
+      err = "invalid_valve_type"; return false;
+    }
+    String opening = String((const char*)(mix["openingDirection"] | "normal")); opening.toLowerCase();
+    if (opening != "normal" && opening != "reversed") { err = "invalid_opening_direction"; return false; }
+    if (!wizardNumberInRange(mix, "deadbandC", 0.1f, 10.0f)
+        || !wizardNumberInRange(mix, "minOpeningPct", 0.0f, 95.0f)
+        || !wizardNumberInRange(mix, "unitStepPct", 0.2f, 100.0f)
+        || !wizardNumberInRange(mix, "proportionalCoeff", 0.1f, 20.0f)) {
+      err = "mixing_value_out_of_range"; return false;
+    }
+    if (mix.containsKey("travelMs")) {
+      const uint32_t travel = (uint32_t)(mix["travelMs"] | 0);
+      if (travel < 1000UL || travel > 900000UL) { err = "invalid_travel_time"; return false; }
+    }
+    if (mix.containsKey("controlIntervalMs")) {
+      const uint32_t interval = (uint32_t)(mix["controlIntervalMs"] | 0);
+      if (interval < 200UL || interval > 60000UL) { err = "invalid_control_interval"; return false; }
+    }
+    auto sourceMissing = [&](const char* key) {
+      String value = String((const char*)(mix[key] | ""));
+      value.trim(); value.toLowerCase();
+      return value.length() == 0 || value == "none";
+    };
+    if (sourceMissing("sourceA")) warnings.add("source_a_not_selected");
+    if (sourceMissing("sourceB")) warnings.add("source_b_not_selected");
+    if (sourceMissing("sourceAB")) warnings.add("source_ab_not_selected");
+    if (valveType == "floor") {
+      const bool floorProtectionEnabled = mix["floorProtection"].is<JsonObjectConst>()
+          && (bool)(mix["floorProtection"]["enabled"] | false);
+      if (!floorProtectionEnabled) warnings.add("floor_max_protection_disabled");
+    }
+    return true;
+  }
+
+  static void handleSetupWizardGet() {
+    DynamicJsonDocument doc(1024);
+    doc["ok"] = true;
+    JsonObject status = doc.createNestedObject("wizard");
+    fillSetupWizardStatusJson(status);
+    sendJsonDoc(200, doc);
+  }
+
+  static void handleSetupWizardPost() {
+    if (rejectActionRateLimit("setup_wizard", 500UL, 10, 60000UL, "setup_wizard_guard")) return;
+    DynamicJsonDocument in(16384);
+    const DeserializationError parseErr = deserializeJson(in, g_srv.arg("plain"));
+    if (parseErr || !in.is<JsonObject>()) { writeUploadJson(400, false, "bad_json"); return; }
+    JsonObject root = in.as<JsonObject>();
+    if ((bool)(root["reset"] | false)) {
+      ConfigStore::setSetupWizardCompletedVersion(0);
+      DynamicJsonDocument out(256); out["ok"] = true; out["completed"] = false; sendJsonDoc(200, out);
+      recordAdminAction("setup_wizard", true, "reset");
+      return;
+    }
+    if (!root["equitherm"].is<JsonObject>()) { writeUploadJson(400, false, "missing_equitherm"); return; }
+
+    JsonObject eq = root["equitherm"].as<JsonObject>();
+    JsonObject mix = eq["mixing"].is<JsonObject>() ? eq["mixing"].as<JsonObject>() : eq.createNestedObject("mixing");
+    mix["controlMode"] = "tech_i3";
+    mix["autoRecalibrationMs"] = (uint32_t)(48UL * 60UL * 60UL * 1000UL);
+    String valveType = String((const char*)(mix["valveType"] | "ch")); valveType.toLowerCase();
+    if (valveType == "floor" || valveType == "return_protection") mix["calibrationHome"] = "b";
+    else if (!mix.containsKey("calibrationHome")) mix["calibrationHome"] = "a";
+    if (valveType == "floor") {
+      JsonObject floorProtection = mix["floorProtection"].is<JsonObject>()
+          ? mix["floorProtection"].as<JsonObject>()
+          : mix.createNestedObject("floorProtection");
+      floorProtection["enabled"] = true;
+    }
+
+    DynamicJsonDocument out(1536);
+    JsonArray warnings = out.createNestedArray("warnings");
+    String validationErr;
+    JsonObjectConst eqConst = eq;
+    if (!validateWizardEquitherm(eqConst, validationErr, warnings)) {
+      out["ok"] = false; out["err"] = validationErr; sendJsonDoc(400, out); return;
+    }
+
+    String eqJson;
+    serializeJson(eq, eqJson);
+    equithermApplyConfig(eqJson);
+    const bool complete = (bool)(root["complete"] | true);
+    if (complete) ConfigStore::setSetupWizardCompletedVersion(kSetupWizardSchemaVersion);
+    const bool snapshotOk = saveConfigSnapshot();
+    out["ok"] = true;
+    out["completed"] = complete;
+    out["completedVersion"] = complete ? kSetupWizardSchemaVersion : ConfigStore::getSetupWizardCompletedVersion();
+    out["snapshotSaved"] = snapshotOk;
+    if (!snapshotOk) warnings.add("snapshot_failed");
+    sendJsonDoc(200, out);
+    recordAdminAction("setup_wizard", true, complete
+        ? (snapshotOk ? "completed" : "completed_no_snapshot")
+        : (snapshotOk ? "draft_applied" : "draft_applied_no_snapshot"));
   }
 
   static void fillDhwSectionJson(JsonObject dhw) {
@@ -1425,7 +1628,7 @@ namespace {
   static bool saveConfigSnapshot() {
     if (!g_fsMounted) return false;
     ensureConfigDir();
-    DynamicJsonDocument doc(16384);
+    DynamicJsonDocument doc(49152);
     fillConfigDoc(doc);
     bool ok = writeJsonVariantToFile("/config.json", doc.as<JsonVariantConst>());
     for (const auto& def : kConfigSections) {
@@ -1645,7 +1848,7 @@ namespace {
   static void handleTimeConfigPost() { handleSectionPost("time"); }
 
   static void handleConfigGet() {
-    DynamicJsonDocument doc(16384);
+    DynamicJsonDocument doc(49152);
     fillConfigDoc(doc);
     sendJsonDoc(200, doc);
   }
@@ -2539,6 +2742,8 @@ void webPortalInit() {
 
   g_srv.on("/api/fast", HTTP_GET, handleFast);
   g_srv.on("/api/bootstrap", HTTP_GET, handleBootstrap);
+  g_srv.on("/api/setup/wizard", HTTP_GET, handleSetupWizardGet);
+  g_srv.on("/api/setup/wizard", HTTP_POST, handleSetupWizardPost);
   g_srv.on("/api/config", HTTP_GET, handleConfigGet);
   g_srv.on("/api/config/apply", HTTP_POST, handleConfigApply);
   g_srv.on("/api/config/export", HTTP_POST, handleConfigExport);
