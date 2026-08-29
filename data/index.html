@@ -7,9 +7,9 @@
   <meta name="theme-color" content="#0b0f17" media="(prefers-color-scheme: dark)">
   <meta name="theme-color" content="#f7f8fb" media="(prefers-color-scheme: light)">
   <title>ESP32 Controller • Moderní řízení vytápění</title>
-  <link rel="preload" href="/app.css?v=4.1.2" as="style">
-  <link rel="preload" href="/app.js?v=4.4.0" as="script">
-  <link rel="stylesheet" href="/app.css?v=4.1.2">
+  <link rel="preload" href="/app.css?v=3.5.0" as="style">
+  <link rel="preload" href="/app.js?v=3.5.0" as="script">
+  <link rel="stylesheet" href="/app.css?v=3.5.0">
 </head>
 
 <body>
@@ -73,6 +73,7 @@
 <div id="tbOverviewActions" class="row" style="gap:10px;display:none">
             <button class="btn danger" id="btnAllOff" title="Bezpečně zastavit řízené výstupy">⛔ Bezpečně zastavit</button>
           </div>
+          <button class="btn" id="btnSetupWizard" title="Průvodce prvním nastavením zařízení">🧭 Průvodce nastavením</button>
           <button class="btn primary" id="btnQuick" title="Rychlá akce">⚡ Rychlá akce</button>
         </div>
       </header>
@@ -618,13 +619,22 @@
                 <span class="track"><span class="thumb"></span></span>
                 <span>Povolit automatické řízení ventilu</span>
               </label>
-              <div class="mix-direction-select">
-                <div class="mix-fixed-direction active"><span>✓</span><strong>A → AB</strong><small>otevírá</small></div>
-                <div class="mix-fixed-direction"><span>✓</span><strong>AB → B</strong><small>zavírá</small></div>
+              <div class="field">
+                <label for="hMixOpeningDirection">Směr otevírání servopohonu (TECH i-3)</label>
+                <select id="hMixOpeningDirection">
+                  <option value="normal">Normální – A / 100 % přes Relé1, B / 0 % přes Relé2</option>
+                  <option value="reversed">Obrácený – A / 100 % přes Relé2, B / 0 % přes Relé1</option>
+                </select>
+                <small>Změní směr servopohonu bez přepojování vodičů; logická hydraulika A/B zůstává stejná.</small>
               </div>
               <div class="mix-two-cols compact">
-                <div class="field"><label for="hMixOpenRelay">Směr A</label><input id="hMixOpenRelay" type="text" value="Relé1 (pevně)" readonly /></div>
-                <div class="field"><label for="hMixCloseRelay">Směr B</label><input id="hMixCloseRelay" type="text" value="Relé2 (pevně)" readonly /></div>
+                <div class="field"><label for="hMixOpenRelay">Logický směr A / 100 %</label><input id="hMixOpenRelay" type="text" value="Relé1" readonly /></div>
+                <div class="field"><label for="hMixCloseRelay">Logický směr B / 0 %</label><input id="hMixCloseRelay" type="text" value="Relé2" readonly /></div>
+              </div>
+              <div class="mix-three-cols compact mix-source-row">
+                <div class="field"><label for="hMixSourceA">Čidlo / zdroj A</label><select id="hMixSourceA"></select></div>
+                <div class="field"><label for="hMixSourceB">Čidlo / zdroj B (zpátečka)</label><select id="hMixSourceB"></select></div>
+                <div class="field"><label for="hMixSourceAB">Čidlo / zdroj AB</label><select id="hMixSourceAB"></select></div>
               </div>
             </div>
 
@@ -652,9 +662,9 @@
                     <option value="hold">Setrvat v aktuální poloze</option>
                   </select>
                 </div>
-                <div class="field"><label for="hMixAutoRecalibrationHours">Automatická rekalibrace</label><div class="input-unit"><input id="hMixAutoRecalibrationHours" type="number" step="1" min="0" max="168" value="6" title="0 h = vypnuto. Automatický přejezd do B smí proběhnout pouze na začátku platného topného cyklu, nikdy v létě ani po zahájení běžné regulace." /><span>h</span></div><small>0 h = vypnuto; pouze začátek topného cyklu, před běžnou regulací.</small></div>
+                <div class="field"><label for="hMixAutoRecalibrationHours">Automatická rekalibrace</label><div class="input-unit"><input id="hMixAutoRecalibrationHours" type="number" step="1" min="0" max="168" value="6" /><span>h</span></div><small id="hMixAutoRecalibrationHint">Adaptivní režim: 0 h = vypnuto. TECH i-3: pevně každých 48 h.</small></div>
               </div>
-              <div class="muted" style="margin-top:8px">OpenTherm vždy dostává základní ekvitermní cíl. Offset se přičítá pouze k cíli směšovacího ventilu, když je podpora z AKU aktivní a teplota na vstupu A je dostatečná. Fyzické směry: A / R1 = teplý přívod z AKU, zvýšení AB, 100 %; B / R2 = vratná/chladnější větev, snížení AB, 0 %.</div>
+              <div class="muted" style="margin-top:8px">OpenTherm vždy dostává základní ekvitermní cíl. Offset se přičítá pouze k cíli směšovacího ventilu, když je podpora z AKU aktivní a teplota na vstupu A je dostatečná. Logické směry A / 100 % a B / 0 % mohou být podle nastavení směru otevírání fyzicky prohozeny mezi Relé1 a Relé2.</div>
             </div>
 
             <div class="mix-config-group" id="mixI3AlgorithmGroup">
@@ -673,6 +683,8 @@
                     <option value="ch">ÚT / radiátorový okruh</option>
                     <option value="floor">Podlahový okruh</option>
                     <option value="return_protection">Ochrana zpátečky</option>
+                    <option value="pool">Bazén (algoritmus ÚT)</option>
+                    <option value="ventilation">Ventilace (algoritmus ÚT)</option>
                   </select>
                 </div>
               </div>
@@ -686,11 +698,12 @@
                 <div class="field"><label for="hMixProportionalCoeff">Proporcionální koeficient</label><input id="hMixProportionalCoeff" type="number" min="0.1" max="20" step="0.1" value="5" /></div>
               </div>
               <div class="field" data-tech-i3-advanced>
-                <label for="hMixCalibrationHome">Směr automatické kalibrace</label>
+                <label for="hMixCalibrationHome">Poloha při kalibraci ÚT</label>
                 <select id="hMixCalibrationHome">
-                  <option value="b">Do B / 0 % (výchozí)</option>
-                  <option value="a">Do A / 100 %</option>
+                  <option value="a">Do A / 100 % (TECH i-3 výchozí pro ÚT)</option>
+                  <option value="b">Do B / 0 %</option>
                 </select>
+                <small id="hMixCalibrationHomeHint">Podlahový okruh a ochrana zpátečky používají bezpečnou kalibraci do B / 0 %.</small>
               </div>
               <div class="muted" data-tech-i3-advanced style="margin-top:8px">Režim TECH i-3 mění délku pohybu podle odchylky teploty a omezuje ji jednotkovým krokem. Původní adaptivní režim zůstává plně dostupný.</div>
             </div>
@@ -720,7 +733,7 @@
               <div class="mix-config-heading"><span class="cfg-icon timing">☀</span><strong>Venkovní teplota, týdenní režim a TUV</strong></div>
               <div class="mix-two-cols">
                 <label class="switch"><input type="checkbox" id="hMixOutsideCloseEnabled" /><span class="track"><span class="thumb"></span></span><span>Zavírat dle venkovní teploty</span></label>
-                <label class="switch"><input type="checkbox" id="hMixWeeklyCloseEnabled" /><span class="track"><span class="thumb"></span></span><span>Zavírat mimo aktivní čas topení</span></label>
+                <label class="switch"><input type="checkbox" id="hMixWeeklyCloseEnabled" /><span class="track"><span class="thumb"></span></span><span>Zavírat dle samostatného týdenního programu</span></label>
               </div>
               <div class="mix-two-cols">
                 <div class="field"><label for="hMixOutsideCloseDayC">Prahová teplota DEN</label><div class="input-unit"><input id="hMixOutsideCloseDayC" type="number" min="-20" max="40" step="0.5" value="20" /><span>°C</span></div></div>
@@ -729,6 +742,20 @@
               <div class="mix-two-cols">
                 <div class="field"><label for="hMixOutsideCloseHysteresisC">Hystereze venkovního uzavření</label><div class="input-unit"><input id="hMixOutsideCloseHysteresisC" type="number" min="0.2" max="10" step="0.1" value="2" /><span>°C</span></div></div>
                 <div class="field"><label for="hMixDhwPriorityPositionPct">Poloha ventilu při prioritě TUV</label><div class="input-unit"><input id="hMixDhwPriorityPositionPct" type="number" min="0" max="100" step="1" value="0" /><span>%</span></div></div>
+              </div>
+              <div class="mix-two-cols">
+                <div class="field"><label for="hMixOutsideCloseDayStart">Začátek dne pro venkovní uzavření</label><input id="hMixOutsideCloseDayStart" type="time" value="06:00" /></div>
+                <div class="field"><label for="hMixOutsideCloseNightStart">Začátek noci pro venkovní uzavření</label><input id="hMixOutsideCloseNightStart" type="time" value="22:00" /></div>
+              </div>
+              <div class="mix-program-card">
+                <div class="mix-program-head"><label class="switch"><input type="checkbox" id="hMixWeeklyCorrectionEnabled" /><span class="track"><span class="thumb"></span></span><span>Týdenní korekce cílové teploty ventilu</span></label><select id="hMixWeeklyCorrectionDay" aria-label="Den korekce"><option value="0">Pondělí</option><option value="1">Úterý</option><option value="2">Středa</option><option value="3">Čtvrtek</option><option value="4">Pátek</option><option value="5">Sobota</option><option value="6">Neděle</option></select></div>
+                <div class="muted">TECH i-3: korekce −20…+20 °C po jedné hodině. Hodnota se přičítá k ekvitermnímu cíli.</div>
+                <div class="mix-program-grid correction" id="mixWeeklyCorrectionGrid"></div>
+              </div>
+              <div class="mix-program-card">
+                <div class="mix-program-head"><strong>Týdenní program úplného zavření</strong><select id="hMixWeeklyCloseDay" aria-label="Den zavírání"><option value="0">Pondělí</option><option value="1">Úterý</option><option value="2">Středa</option><option value="3">Čtvrtek</option><option value="4">Pátek</option><option value="5">Sobota</option><option value="6">Neděle</option></select></div>
+                <div class="muted">48 půlhodinových úseků. Aktivní políčko znamená požadavek na úplné zavření ventilu.</div>
+                <div class="mix-program-grid close" id="mixWeeklyCloseGrid"></div>
               </div>
             </div>
 
@@ -772,7 +799,8 @@
           <div class="mix-panel-title"><strong>Kalibrace ventilu</strong><span>Stanovení krajních poloh a ověření doby přejezdu</span></div>
           <div class="mix-calibration-grid">
             <div class="mix-cal-steps">
-              <div class="mix-cal-intro">Kalibraci provádějte při bezpečné teplotě vody. Během přejezdu lze pohyb kdykoliv zastavit.</div>
+              <div class="mix-cal-intro">Kalibraci provádějte při bezpečné teplotě vody. Během přejezdu lze pohyb kdykoliv zastavit. V režimu TECH i-3 probíhá automatická kalibrace každých 48 hodin.</div>
+              <button class="btn primary" id="hMixAutoCalNow" type="button">Kalibrovat nyní podle profilu</button>
               <div class="mix-cal-step"><span class="step-no">1</span><div><strong>Poloha ZAVŘENO (B)</strong><small>Ventil přejede do krajní polohy B.</small></div><button class="btn" id="mixCalGoB" type="button">Spustit</button></div>
               <div class="mix-cal-step"><span class="step-no">2</span><div><strong>Potvrdit B / 0 %</strong><small>Uloží aktuální polohu jako zavřenou.</small></div><button class="btn" id="hMixSyncB" type="button">Potvrdit</button></div>
               <div class="mix-cal-step"><span class="step-no">3</span><div><strong>Poloha OTEVŘENO (A)</strong><small>Ventil přejede do krajní polohy A.</small></div><button class="btn" id="mixCalGoA" type="button">Spustit</button></div>
@@ -1860,11 +1888,67 @@
         </div>
       </div>
 
+      <!-- Průvodce nastavením zařízení -->
+      <div class="setup-wizard-overlay" id="setupWizardOverlay" hidden>
+        <div class="setup-wizard" role="dialog" aria-modal="true" aria-labelledby="setupWizardTitle">
+          <header class="setup-wizard-head">
+            <div><span class="eyebrow">TECH EU-i-3 • ESP32-S3-ETH-8DI-8RO</span><h2 id="setupWizardTitle">Průvodce nastavením zařízení</h2><p id="setupWizardSubtitle">Krok 1 z 7</p></div>
+            <button class="iconbtn" id="setupWizardClose" type="button" aria-label="Zavřít průvodce">×</button>
+          </header>
+          <div class="setup-wizard-progress"><i id="setupWizardProgress"></i></div>
+          <div class="setup-wizard-body">
+            <aside class="setup-wizard-steps" id="setupWizardSteps">
+              <button type="button" data-wiz-step="0"><b>1</b><span>Profil ventilu</span></button>
+              <button type="button" data-wiz-step="1"><b>2</b><span>Teplotní zdroje</span></button>
+              <button type="button" data-wiz-step="2"><b>3</b><span>Servopohon a regulace</span></button>
+              <button type="button" data-wiz-step="3"><b>4</b><span>Ochrany</span></button>
+              <button type="button" data-wiz-step="4"><b>5</b><span>Ekviterm a uzavírání</span></button>
+              <button type="button" data-wiz-step="5"><b>6</b><span>Test a kalibrace</span></button>
+              <button type="button" data-wiz-step="6"><b>7</b><span>Souhrn</span></button>
+            </aside>
+            <section class="setup-wizard-content">
+              <div class="wiz-page" data-wiz-page="0">
+                <h3>Profil směšovacího ventilu</h3><p>Deska ovládá jeden tříbodový servopohon dvojicí Relé1/Relé2. Zvolte hydraulický profil a směr servopohonu.</p>
+                <label class="switch"><input id="wizMixEnabled" type="checkbox" checked><span class="track"><span class="thumb"></span></span><span>Povolit automatickou regulaci ventilu</span></label>
+                <div class="wiz-grid two"><div class="field"><label for="wizValveType">Typ ventilu</label><select id="wizValveType"><option value="ch">ÚT / radiátorový</option><option value="floor">Podlahový</option><option value="return_protection">Ochrana zpátečky</option><option value="pool">Bazén</option><option value="ventilation">Ventilace</option></select></div><div class="field"><label for="wizOpeningDirection">Směr otevírání</label><select id="wizOpeningDirection"><option value="normal">Normální: A=Relé1, B=Relé2</option><option value="reversed">Obrácený: A=Relé2, B=Relé1</option></select></div></div>
+                <div class="wiz-callout">A = logických 100 % / teplejší větev, B = 0 % / chladnější větev. Obrácení směru nevyžaduje přepojení vodičů.</div>
+              </div>
+              <div class="wiz-page" data-wiz-page="1" hidden>
+                <h3>Teplotní zdroje</h3><p>Vyberte fyzické nebo OpenTherm zdroje pro tři hydraulické body. AB je regulační čidlo za ventilem.</p>
+                <div class="wiz-grid"><div class="field"><label for="wizSourceA">A – teplý přívod / zdroj</label><select id="wizSourceA"></select></div><div class="field"><label for="wizSourceB">B – zpátečka</label><select id="wizSourceB"></select></div><div class="field"><label for="wizSourceAB">AB – smíšený výstup</label><select id="wizSourceAB"></select></div></div>
+                <div class="wiz-callout">Pro profil Ochrana zpátečky je rozhodující čidlo B a teplota zdroje; pro běžné ÚT/podlahu je zásadní platné čidlo AB.</div>
+              </div>
+              <div class="wiz-page" data-wiz-page="2" hidden>
+                <h3>Servopohon a regulační parametry</h3><div class="wiz-grid two"><div class="field"><label for="wizTravelSec">Čas úplného otevření servopohonu</label><div class="input-unit"><input id="wizTravelSec" type="number" min="1" max="900" step="1" value="120"><span>s</span></div></div><div class="field"><label for="wizControlIntervalSec">Kontrola teploty</label><div class="input-unit"><input id="wizControlIntervalSec" type="number" min="0.2" max="60" step="0.1" value="2"><span>s</span></div></div><div class="field"><label for="wizDeadband">Hystereze</label><div class="input-unit"><input id="wizDeadband" type="number" min="0.1" max="10" step="0.1" value="0.5"><span>°C</span></div></div><div class="field"><label for="wizMinOpening">Minimální otevření</label><div class="input-unit"><input id="wizMinOpening" type="number" min="0" max="95" step="1" value="0"><span>%</span></div></div><div class="field"><label for="wizUnitStep">Jednotkový krok</label><div class="input-unit"><input id="wizUnitStep" type="number" min="0.2" max="100" step="0.1" value="5"><span>%</span></div></div><div class="field"><label for="wizProportionalCoeff">Proporcionální koeficient</label><input id="wizProportionalCoeff" type="number" min="0.1" max="20" step="0.1" value="5"></div><div class="field"><label for="wizCalibrationHome">Referenční poloha kalibrace ÚT</label><select id="wizCalibrationHome"><option value="a">A / 100 %</option><option value="b">B / 0 %</option></select></div></div>
+                <div class="wiz-callout">TECH i-3 zkracuje krok při přiblížení k cíli. Automatická kalibrace je pevně 48 h. Podlaha a ochrana zpátečky mají bezpečnou referenci B / 0 %; u ÚT, bazénu a ventilace lze referenci změnit.</div>
+              </div>
+              <div class="wiz-page" data-wiz-page="3" hidden>
+                <h3>Bezpečnostní ochrany</h3><div class="wiz-grid two"><label class="switch"><input id="wizBoilerProtection" type="checkbox"><span class="track"><span class="thumb"></span></span><span>Ochrana kotle</span></label><div class="field"><label for="wizBoilerMax">Maximum zdroje</label><div class="input-unit"><input id="wizBoilerMax" type="number" min="30" max="95" value="80"><span>°C</span></div></div><label class="switch"><input id="wizReturnProtection" type="checkbox"><span class="track"><span class="thumb"></span></span><span>Ochrana zpátečky</span></label><div class="field"><label for="wizReturnMin">Minimum zpátečky</label><div class="input-unit"><input id="wizReturnMin" type="number" min="10" max="80" value="40"><span>°C</span></div></div><label class="switch"><input id="wizFloorProtection" type="checkbox"><span class="track"><span class="thumb"></span></span><span>Ochrana podlahy</span></label><div class="field"><label for="wizFloorMax">Maximum podlahy / AB</label><div class="input-unit"><input id="wizFloorMax" type="number" min="20" max="70" value="45"><span>°C</span></div></div><label class="switch"><input id="wizFloorSummer" type="checkbox"><span class="track"><span class="thumb"></span></span><span>Podlaha aktivní i v létě</span></label></div>
+                <div class="wiz-callout">Priorita zásahů: ochrana kotle → ochrana zpátečky → běžná regulace. U podlahového profilu se ochrana kotle nepoužívá.</div>
+              </div>
+              <div class="wiz-page" data-wiz-page="4" hidden>
+                <h3>Ekvitermní křivka a uzavírání</h3><div class="wiz-grid two"><div class="field"><label for="wizCurveMode">Ekvitermní křivka</label><select id="wizCurveMode"><option value="tech_i3_4point">TECH i-3: 4 body</option><option value="linear2">Stávající dvoubodová</option></select></div><label class="switch"><input id="wizOutsideClose" type="checkbox"><span class="track"><span class="thumb"></span></span><span>Zavírat podle venkovní teploty</span></label><div class="field"><label for="wizOutsideDay">Mez DEN</label><div class="input-unit"><input id="wizOutsideDay" type="number" min="-20" max="40" step="0.5" value="20"><span>°C</span></div></div><div class="field"><label for="wizOutsideNight">Mez NOC</label><div class="input-unit"><input id="wizOutsideNight" type="number" min="-20" max="40" step="0.5" value="15"><span>°C</span></div></div><div class="field"><label for="wizOutsideHyst">Hystereze uzavření</label><div class="input-unit"><input id="wizOutsideHyst" type="number" min="0.2" max="10" step="0.1" value="2"><span>°C</span></div></div><div class="field"><label for="wizDayStart">Začátek dne</label><input id="wizDayStart" type="time" value="06:00"></div><div class="field"><label for="wizNightStart">Začátek noci</label><input id="wizNightStart" type="time" value="22:00"></div></div>
+                <div class="wiz-callout">Detailní 24h korekce a 48 půlhodinových úseků úplného zavření lze po dokončení upravit přímo na stránce Směšovací ventil.</div>
+              </div>
+              <div class="wiz-page" data-wiz-page="5" hidden>
+                <h3>Test směru a kalibrace</h3><p>Před testem ověřte, že pohyb ventilu nemůže způsobit nebezpečnou teplotu v topném okruhu.</p>
+                <div class="wiz-test-grid"><button class="btn valve-open" id="wizPulseA" type="button">Krátký puls A / 100 %</button><button class="btn" id="wizStop" type="button">STOP</button><button class="btn valve-close" id="wizPulseB" type="button">Krátký puls B / 0 %</button><button class="btn primary" id="wizAutoCal" type="button">Kalibrace podle profilu</button></div>
+                <div class="wiz-live" id="wizCalibrationState">Stav kalibrace: --</div><div class="wiz-callout">ÚT/Bazén/Ventilace se standardně kalibrují do A / 100 %. Podlaha a ochrana zpátečky používají bezpečnou polohu B / 0 %.</div>
+              </div>
+              <div class="wiz-page" data-wiz-page="6" hidden>
+                <h3>Souhrn a uložení</h3><p>Průvodce uloží konfiguraci do NVS a do JSON snapshotu LittleFS. Nastavení lze kdykoliv znovu otevřít.</p><div class="wiz-summary" id="setupWizardSummary"></div><div class="wiz-callout good">Po dokončení zůstávají všechny pokročilé volby dostupné na stránce Směšovací ventil.</div>
+              </div>
+            </section>
+          </div>
+          <footer class="setup-wizard-foot"><button class="btn" id="setupWizardPrev" type="button">← Zpět</button><span id="setupWizardStatus">Změny ještě nejsou uložené.</span><div class="row"><button class="btn" id="setupWizardLater" type="button">Dokončit později</button><button class="btn primary" id="setupWizardNext" type="button">Další →</button><button class="btn primary" id="setupWizardFinish" type="button" hidden>Uložit a dokončit</button></div></footer>
+        </div>
+      </div>
+
       <!-- Toast -->
       <div class="toast" id="toast" aria-live="polite" aria-atomic="true"></div>
     </main>
   </div>
 
-  <script defer src="/app.js?v=4.4.0"></script>
+  <script defer src="/app.js?v=3.5.0"></script>
 </body>
 </html>

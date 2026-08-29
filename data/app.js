@@ -96,7 +96,11 @@
       },
       ui: {
         eqConfigDirty: false,
+        wizardStep: 0,
+        wizardAutoOpenScheduled: false,
       },
+      setupWizard: { schemaVersion:1, completedVersion:0, completed:false },
+      mixPrograms: { correction:null, close:null },
       diag: {
         heap: {},
         adminActions: []
@@ -1640,6 +1644,43 @@ function formatMixPortLive(port){
   return parts.join(" • ");
 }
 
+function populateMixSourceSelect(id, port, selected, onChange){
+  const el = document.getElementById(id);
+  if(!el) return;
+  const key = String(port || "").toLowerCase();
+  const sourceMeta = state.th?.mixingSourceMeta && typeof state.th.mixingSourceMeta === "object"
+    ? state.th.mixingSourceMeta : mixTempSourceMetaDefault;
+  const meta = Array.isArray(sourceMeta[key]) && sourceMeta[key].length
+    ? sourceMeta[key] : (mixTempSourceMetaDefault[key] || [{key:"none",label:"Nevybráno"}]);
+  const current = String(selected ?? el.value ?? "none");
+  const options = meta.map(item => `<option value="${escapeHtml(item.key)}">${escapeHtml(item.label)}</option>`).join("");
+  if(el.dataset.optionsSignature !== options){
+    el.innerHTML = options;
+    el.dataset.optionsSignature = options;
+  }
+  if(current && !meta.some(item => item.key === current)){
+    const option = document.createElement("option");
+    option.value = current;
+    option.textContent = `${current} (uložený neznámý zdroj)`;
+    el.appendChild(option);
+  }
+  el.value = current || "none";
+  if(typeof onChange === "function") el.onchange = () => onChange(String(el.value || "none"));
+}
+
+function renderMixConfigSourceSelectors(){
+  const cfg = normalizeMixingValveSources(state.th?.mixingValve);
+  state.th.mixingValve = cfg;
+  for(const [port,id] of [["a","hMixSourceA"],["b","hMixSourceB"],["ab","hMixSourceAB"]]){
+    populateMixSourceSelect(id, port, cfg[port], value => { state.th.mixingValve[port] = value; });
+  }
+  for(const [port,id] of [["a","wizSourceA"],["b","wizSourceB"],["ab","wizSourceAB"]]){
+    const el = document.getElementById(id);
+    const desired = el?.dataset?.wizardTouched === "1" ? el.value : cfg[port];
+    populateMixSourceSelect(id, port, desired, value => { el.dataset.wizardTouched = "1"; el.value = value; });
+  }
+}
+
 function renderMixTempSourceSelectors(){
   const cfg = normalizeMixingValveSources(state.th?.mixingValve);
   state.th.mixingValve = cfg;
@@ -1669,6 +1710,7 @@ function renderMixTempSourceSelectors(){
   setText("#mixTempLiveA", formatMixPortLive("a"));
   setText("#mixTempLiveB", formatMixPortLive("b"));
   setText("#mixTempLiveAB", formatMixPortLive("ab"));
+  renderMixConfigSourceSelectors();
 }
 
 function getRoleUiState(role){
@@ -2026,6 +2068,12 @@ async function thermoSave(){
       async fetchBootstrap(){
         return await api.getJson("/api/bootstrap", 5000);
       },
+      async getSetupWizard(){
+        return await api.getJson("/api/setup/wizard", 5000);
+      },
+      async saveSetupWizard(obj){
+        return await api.postJson("/api/setup/wizard", obj ?? {}, 15000);
+      },
 
       async postConfigSection(section, obj){
         return await api.postJson(`/api/config/${encodeURIComponent(section)}`, obj ?? {}, 10000);
@@ -2188,6 +2236,25 @@ async function thermoSave(){
       return clamp(Number(document.getElementById("hMixPulseMs")?.value || 300), 50, 60000);
     }
 
+    function mixLogicalRelay(direction){
+      const reversed = String(document.getElementById("hMixOpeningDirection")?.value || state.dev?.eqCfgRaw?.mixing?.openingDirection || "normal") === "reversed";
+      const a = String(direction || "").toLowerCase() === "a";
+      return a ? (reversed ? 2 : 1) : (reversed ? 1 : 2);
+    }
+
+    function updateMixDirectionUi(){
+      const openRelay = mixLogicalRelay("a");
+      const closeRelay = mixLogicalRelay("b");
+      const aEl = document.getElementById("hMixOpenRelay");
+      const bEl = document.getElementById("hMixCloseRelay");
+      if(aEl) aEl.value = `Relé${openRelay}`;
+      if(bEl) bEl.value = `Relé${closeRelay}`;
+      const pulseA = document.getElementById("hMixPulseA");
+      const pulseB = document.getElementById("hMixPulseB");
+      if(pulseA) pulseA.title = `A / Relé${openRelay}: teplá větev, zvyšuje teplotu AB, logická poloha 100 %`;
+      if(pulseB) pulseB.title = `B / Relé${closeRelay}: vratná/chladnější větev, snižuje teplotu AB, logická poloha 0 %`;
+    }
+
     async function mixManualPulse(direction){
       const pulseMs = getMixPulseMsFromForm();
       const dir = String(direction || "").toLowerCase();
@@ -2196,7 +2263,7 @@ async function thermoSave(){
       state.dev.eqCfgLoaded = false;
       if(state.net) state.net.extrasDueMs = 0;
       await refresh(false);
-      toast("Směšovací ventil", `Manuální puls ${dir === "a" ? "A / R1 (teplá větev, zvýšení AB)" : "B / R2 (vratná větev, snížení AB)"} (${pulseMs} ms).`, "🧪");
+      toast("Směšovací ventil", `Manuální puls ${dir === "a" ? `A / R${mixLogicalRelay("a")} (teplá větev, zvýšení AB)` : `B / R${mixLogicalRelay("b")} (vratná větev, snížení AB)`} (${pulseMs} ms).`, "🧪");
     }
 
     async function mixManualMoveToEnd(direction){
@@ -2220,7 +2287,7 @@ async function thermoSave(){
       await api.eqCmd({ mixCalibrate: command });
       if(state.net) state.net.extrasDueMs = 0;
       await refresh(false);
-      const labels = { sync_a:"Aktuální poloha byla potvrzena jako A / 100 %.", sync_b:"Aktuální poloha byla potvrzena jako B / 0 %.", invalidate:"Odhad polohy byl zneplatněn." };
+      const labels = { sync_a:"Aktuální poloha byla potvrzena jako A / 100 %.", sync_b:"Aktuální poloha byla potvrzena jako B / 0 %.", invalidate:"Odhad polohy byl zneplatněn.", auto:"Spuštěna kalibrace do bezpečné polohy podle profilu TECH i-3." };
       toast("Kalibrace ventilu", labels[command] || "Kalibrace byla upravena.", "🎯");
     }
 
@@ -3298,31 +3365,288 @@ async function otRwWrite(){
       if(el.checked !== next) el.checked = next;
     }
 
+    function normalizeMixWeeklyCorrection(raw){
+      return Array.from({length:7}, (_,d) => Array.from({length:24}, (_,h) => {
+        const v = Number(Array.isArray(raw?.[d]) ? raw[d][h] : 0);
+        return Number.isFinite(v) ? Math.round(clamp(v, -20, 20)) : 0;
+      }));
+    }
+
+    function normalizeMixWeeklyClose(raw){
+      return Array.from({length:7}, (_,d) => Array.from({length:48}, (_,i) => !!(Array.isArray(raw?.[d]) && raw[d][i])));
+    }
+
+    function ensureMixPrograms(){
+      if(!Array.isArray(state.mixPrograms?.correction)) state.mixPrograms.correction = normalizeMixWeeklyCorrection(null);
+      if(!Array.isArray(state.mixPrograms?.close)) state.mixPrograms.close = normalizeMixWeeklyClose(null);
+      return state.mixPrograms;
+    }
+
+    function renderMixWeeklyCorrectionEditor(){
+      ensureMixPrograms();
+      const host = document.getElementById("mixWeeklyCorrectionGrid");
+      const dayEl = document.getElementById("hMixWeeklyCorrectionDay");
+      if(!host || !dayEl) return;
+      const day = clamp(Number(dayEl.value || 0), 0, 6);
+      const row = state.mixPrograms.correction[day];
+      host.innerHTML = row.map((v,h) => `<label class="mix-program-cell correction"><span>${String(h).padStart(2,"0")}:00</span><input type="number" min="-20" max="20" step="1" value="${Number(v)}" data-mix-corr-hour="${h}"><em>°C</em></label>`).join("");
+      host.querySelectorAll("[data-mix-corr-hour]").forEach(input => input.addEventListener("change", () => {
+        const h = Number(input.dataset.mixCorrHour);
+        const v = Math.round(clamp(Number(input.value || 0), -20, 20));
+        state.mixPrograms.correction[day][h] = v;
+        input.value = String(v);
+        setEqConfigDirty(true);
+      }));
+    }
+
+    function renderMixWeeklyCloseEditor(){
+      ensureMixPrograms();
+      const host = document.getElementById("mixWeeklyCloseGrid");
+      const dayEl = document.getElementById("hMixWeeklyCloseDay");
+      if(!host || !dayEl) return;
+      const day = clamp(Number(dayEl.value || 0), 0, 6);
+      const row = state.mixPrograms.close[day];
+      host.innerHTML = row.map((on,i) => {
+        const mins = i * 30;
+        const hh = String(Math.floor(mins/60)).padStart(2,"0");
+        const mm = String(mins%60).padStart(2,"0");
+        return `<button type="button" class="mix-close-slot${on ? " active" : ""}" data-mix-close-slot="${i}" aria-pressed="${on ? "true" : "false"}"><span>${hh}:${mm}</span></button>`;
+      }).join("");
+      host.querySelectorAll("[data-mix-close-slot]").forEach(btn => btn.addEventListener("click", () => {
+        const i = Number(btn.dataset.mixCloseSlot);
+        state.mixPrograms.close[day][i] = !state.mixPrograms.close[day][i];
+        btn.classList.toggle("active", state.mixPrograms.close[day][i]);
+        btn.setAttribute("aria-pressed", state.mixPrograms.close[day][i] ? "true" : "false");
+        setEqConfigDirty(true);
+      }));
+    }
+
+    function collectMixingConfigFromForm(){
+      ensureMixPrograms();
+      const tech = String($("#hMixControlMode")?.value || "adaptive") === "tech_i3";
+      return {
+        enabled: !!$("#hMixEnabled")?.checked,
+        openRelay: 1,
+        closeRelay: 2,
+        sourceA: String($("#hMixSourceA")?.value || state.th?.mixingValve?.a || "none"),
+        sourceB: String($("#hMixSourceB")?.value || state.th?.mixingValve?.b || "none"),
+        sourceAB: String($("#hMixSourceAB")?.value || state.th?.mixingValve?.ab || "none"),
+        deadbandC: Number($("#hMixDeadband")?.value || 0.5),
+        targetOffsetC: Math.max(0, Number($("#hMixTargetOffsetC")?.value || 0)),
+        targetReachedAction: String($("#hMixTargetReachedAction")?.value || "return_a"),
+        pulseMs: Number($("#hMixPulseMs")?.value || 300),
+        minIntervalMs: Number($("#hMixMinIntervalMs")?.value || 30000),
+        travelMs: Number($("#hMixTravelMs")?.value || 6000),
+        calibrationSeatMs: Number($("#hMixCalibrationSeatMs")?.value || 1500),
+        autoRecalibrationMs: tech ? 48 * 3600000 : Math.round(Number($("#hMixAutoRecalibrationHours")?.value || 0) * 3600000),
+        controlMode: String($("#hMixControlMode")?.value || "adaptive"),
+        valveType: String($("#hMixValveType")?.value || "ch"),
+        openingDirection: String($("#hMixOpeningDirection")?.value || "normal"),
+        controlIntervalMs: Number($("#hMixControlIntervalMs")?.value || 2000),
+        minOpeningPct: Number($("#hMixMinOpeningPct")?.value || 0),
+        unitStepPct: Number($("#hMixUnitStepPct")?.value || 5),
+        proportionalCoeff: Number($("#hMixProportionalCoeff")?.value || 5),
+        calibrationHome: String($("#hMixCalibrationHome")?.value || "a"),
+        weeklyCloseEnabled: !!$("#hMixWeeklyCloseEnabled")?.checked,
+        weeklyCorrectionEnabled: !!$("#hMixWeeklyCorrectionEnabled")?.checked,
+        weeklyClose: normalizeMixWeeklyClose(state.mixPrograms.close),
+        weeklyCorrection: normalizeMixWeeklyCorrection(state.mixPrograms.correction),
+        dhwPriorityPositionPct: Number($("#hMixDhwPriorityPositionPct")?.value || 0),
+        curveMode: String($("#hMixCurveMode")?.value || "linear2"),
+        boilerProtection: { enabled: !!$("#hMixBoilerProtectionEnabled")?.checked, maxC: Number($("#hMixBoilerProtectionMaxC")?.value || 80) },
+        returnProtection: { enabled: !!$("#hMixReturnProtectionEnabled")?.checked, minC: Number($("#hMixReturnProtectionMinC")?.value || 40) },
+        floorProtection: { enabled: !!$("#hMixFloorProtectionEnabled")?.checked, maxC: Number($("#hMixFloorProtectionMaxC")?.value || 45), summerEnabled: !!$("#hMixFloorSummerEnabled")?.checked },
+        outsideClose: {
+          enabled: !!$("#hMixOutsideCloseEnabled")?.checked,
+          dayC: Number($("#hMixOutsideCloseDayC")?.value || 20),
+          nightC: Number($("#hMixOutsideCloseNightC")?.value || 15),
+          hysteresisC: Number($("#hMixOutsideCloseHysteresisC")?.value || 2),
+          dayStart: String($("#hMixOutsideCloseDayStart")?.value || "06:00"),
+          nightStart: String($("#hMixOutsideCloseNightStart")?.value || "22:00"),
+        },
+        weather4: {
+          day: [Number($("#hMixDayM20")?.value || 65), Number($("#hMixDayM10")?.value || 55), Number($("#hMixDay0")?.value || 45), Number($("#hMixDayP10")?.value || 35)],
+          night: [Number($("#hMixNightM20")?.value || 60), Number($("#hMixNightM10")?.value || 50), Number($("#hMixNight0")?.value || 40), Number($("#hMixNightP10")?.value || 30)],
+        },
+      };
+    }
+
+    function copyWizardToMainForm(){
+      const pairs = [
+        ["hMixEnabled","wizMixEnabled","checked"], ["hMixValveType","wizValveType"], ["hMixOpeningDirection","wizOpeningDirection"],
+        ["hMixSourceA","wizSourceA"], ["hMixSourceB","wizSourceB"], ["hMixSourceAB","wizSourceAB"],
+        ["hMixDeadband","wizDeadband"], ["hMixMinOpeningPct","wizMinOpening"], ["hMixUnitStepPct","wizUnitStep"], ["hMixProportionalCoeff","wizProportionalCoeff"], ["hMixCalibrationHome","wizCalibrationHome"],
+        ["hMixBoilerProtectionEnabled","wizBoilerProtection","checked"], ["hMixBoilerProtectionMaxC","wizBoilerMax"],
+        ["hMixReturnProtectionEnabled","wizReturnProtection","checked"], ["hMixReturnProtectionMinC","wizReturnMin"],
+        ["hMixFloorProtectionEnabled","wizFloorProtection","checked"], ["hMixFloorProtectionMaxC","wizFloorMax"], ["hMixFloorSummerEnabled","wizFloorSummer","checked"],
+        ["hMixCurveMode","wizCurveMode"], ["hMixOutsideCloseEnabled","wizOutsideClose","checked"], ["hMixOutsideCloseDayC","wizOutsideDay"], ["hMixOutsideCloseNightC","wizOutsideNight"], ["hMixOutsideCloseHysteresisC","wizOutsideHyst"],
+        ["hMixOutsideCloseDayStart","wizDayStart"], ["hMixOutsideCloseNightStart","wizNightStart"],
+      ];
+      for(const [dstId,srcId,kind] of pairs){
+        const dst=document.getElementById(dstId), src=document.getElementById(srcId);
+        if(!dst || !src) continue;
+        if(kind === "checked") dst.checked = !!src.checked; else dst.value = src.value;
+      }
+      const travel = document.getElementById("hMixTravelMs"); if(travel) travel.value = String(Math.round(clamp(Number(document.getElementById("wizTravelSec")?.value || 120),1,900)*1000));
+      const ci = document.getElementById("hMixControlIntervalMs"); if(ci) ci.value = String(Math.round(clamp(Number(document.getElementById("wizControlIntervalSec")?.value || 2),.2,60)*1000));
+      const cm = document.getElementById("hMixControlMode"); if(cm) cm.value = "tech_i3";
+      const auto = document.getElementById("hMixAutoRecalibrationHours"); if(auto) auto.value = "48";
+      const type = String(document.getElementById("wizValveType")?.value || "ch");
+      const home = document.getElementById("hMixCalibrationHome");
+      if(home && (type === "floor" || type === "return_protection")) home.value = "b";
+      state.th.mixingValve = normalizeMixingValveSources({a:document.getElementById("wizSourceA")?.value,b:document.getElementById("wizSourceB")?.value,ab:document.getElementById("wizSourceAB")?.value});
+      updateMixDirectionUi();
+      syncTechI3UiVisibility();
+      setEqConfigDirty(true);
+    }
+
+    function syncWizardFromCurrentConfig(){
+      renderMixConfigSourceSelectors();
+      const mx = collectMixingConfigFromForm();
+      const put = (id,v,checked=false) => { const el=document.getElementById(id); if(!el) return; if(checked) el.checked=!!v; else el.value=String(v ?? ""); };
+      put("wizMixEnabled", mx.enabled, true); put("wizValveType", mx.valveType); put("wizOpeningDirection", mx.openingDirection);
+      put("wizSourceA", mx.sourceA); put("wizSourceB", mx.sourceB); put("wizSourceAB", mx.sourceAB);
+      ["wizSourceA","wizSourceB","wizSourceAB"].forEach(id => { const el=document.getElementById(id); if(el) el.dataset.wizardTouched="0"; });
+      put("wizTravelSec", Number(mx.travelMs)/1000); put("wizControlIntervalSec", Number(mx.controlIntervalMs)/1000); put("wizDeadband",mx.deadbandC); put("wizMinOpening",mx.minOpeningPct); put("wizUnitStep",mx.unitStepPct); put("wizProportionalCoeff",mx.proportionalCoeff); put("wizCalibrationHome",mx.calibrationHome);
+      put("wizBoilerProtection",mx.boilerProtection.enabled,true); put("wizBoilerMax",mx.boilerProtection.maxC); put("wizReturnProtection",mx.returnProtection.enabled,true); put("wizReturnMin",mx.returnProtection.minC); put("wizFloorProtection",mx.floorProtection.enabled,true); put("wizFloorMax",mx.floorProtection.maxC); put("wizFloorSummer",mx.floorProtection.summerEnabled,true);
+      put("wizCurveMode",mx.curveMode); put("wizOutsideClose",mx.outsideClose.enabled,true); put("wizOutsideDay",mx.outsideClose.dayC); put("wizOutsideNight",mx.outsideClose.nightC); put("wizOutsideHyst",mx.outsideClose.hysteresisC); put("wizDayStart",mx.outsideClose.dayStart); put("wizNightStart",mx.outsideClose.nightStart);
+      renderMixConfigSourceSelectors();
+      syncWizardProfileUi();
+    }
+
+    function syncWizardProfileUi(){
+      const type=String(document.getElementById("wizValveType")?.value || "ch");
+      const floor=type === "floor", ret=type === "return_protection";
+      const calHome=document.getElementById("wizCalibrationHome");
+      if(calHome){ if(floor || ret){ calHome.value="b"; calHome.disabled=true; } else calHome.disabled=false; }
+      const boiler=document.getElementById("wizBoilerProtection"), boilerMax=document.getElementById("wizBoilerMax");
+      if(boiler) { boiler.disabled=floor; if(floor) boiler.checked=false; }
+      if(boilerMax) boilerMax.disabled=floor;
+      const fp=document.getElementById("wizFloorProtection"), fm=document.getElementById("wizFloorMax"), fs=document.getElementById("wizFloorSummer");
+      if(fp){ fp.disabled=true; if(floor) fp.checked=true; }
+      for(const el of [fm,fs]) if(el) el.disabled=!floor;
+      const curve=document.getElementById("wizCurveMode"), oc=document.getElementById("wizOutsideClose"), od=document.getElementById("wizOutsideDay"), on=document.getElementById("wizOutsideNight"), oh=document.getElementById("wizOutsideHyst"), ds=document.getElementById("wizDayStart"), ns=document.getElementById("wizNightStart");
+      for(const el of [curve,oc,od,on,oh,ds,ns]) if(el) el.disabled=ret;
+    }
+
+    function setupWizardSummaryHtml(){
+      copyWizardToMainForm();
+      const mx=collectMixingConfigFromForm();
+      const typeNames={ch:"ÚT / radiátorový",floor:"Podlahový",return_protection:"Ochrana zpátečky",pool:"Bazén",ventilation:"Ventilace"};
+      const relayA=mixLogicalRelay("a"), relayB=mixLogicalRelay("b");
+      const warnings=[];
+      if(mx.valveType !== "return_protection" && (!mx.sourceAB || mx.sourceAB === "none")) warnings.push("Není vybráno regulační čidlo AB.");
+      if(mx.valveType === "return_protection" && (!mx.sourceB || mx.sourceB === "none")) warnings.push("Pro ochranu zpátečky není vybráno čidlo B.");
+      if(mx.valveType === "floor" && !mx.floorProtection.enabled) warnings.push("Ochrana maximální teploty podlahy je vypnutá.");
+      return `<dl><div><dt>Profil</dt><dd>${escapeHtml(typeNames[mx.valveType] || mx.valveType)}</dd></div><div><dt>Směr A / B</dt><dd>R${relayA} / R${relayB}</dd></div><div><dt>Čas servopohonu</dt><dd>${Math.round(mx.travelMs/1000)} s</dd></div><div><dt>Kontrola / hystereze</dt><dd>${(mx.controlIntervalMs/1000).toFixed(1)} s / ${Number(mx.deadbandC).toFixed(1)} °C</dd></div><div><dt>Automatická kalibrace</dt><dd>48 h • ${String(mx.calibrationHome || "a").toUpperCase()} / ${String(mx.calibrationHome || "a") === "b" ? "0 %" : "100 %"}</dd></div><div><dt>Zdroje A / B / AB</dt><dd>${escapeHtml(mx.sourceA)} / ${escapeHtml(mx.sourceB)} / ${escapeHtml(mx.sourceAB)}</dd></div></dl>${warnings.length ? `<div class="wiz-summary-warnings">${warnings.map(x=>`<p>⚠ ${escapeHtml(x)}</p>`).join("")}</div>` : ""}`;
+    }
+
+    function setupWizardRenderStep(){
+      const overlay=document.getElementById("setupWizardOverlay"); if(!overlay) return;
+      const step=clamp(Number(state.ui?.wizardStep || 0),0,6); state.ui.wizardStep=step;
+      document.querySelectorAll("[data-wiz-page]").forEach(el => { el.hidden=Number(el.dataset.wizPage)!==step; });
+      document.querySelectorAll("[data-wiz-step]").forEach(el => { const n=Number(el.dataset.wizStep); el.classList.toggle("active",n===step); el.classList.toggle("done",n<step); });
+      const sub=document.getElementById("setupWizardSubtitle"); if(sub) sub.textContent=`Krok ${step+1} z 7`;
+      const progress=document.getElementById("setupWizardProgress"); if(progress) progress.style.width=`${((step+1)/7)*100}%`;
+      const prev=document.getElementById("setupWizardPrev"), next=document.getElementById("setupWizardNext"), finish=document.getElementById("setupWizardFinish");
+      if(prev) prev.disabled=step===0; if(next) next.hidden=step===6; if(finish) finish.hidden=step!==6;
+      if(step===5) renderWizardCalibrationState();
+      if(step===6){ const host=document.getElementById("setupWizardSummary"); if(host) host.innerHTML=setupWizardSummaryHtml(); }
+      syncWizardProfileUi();
+    }
+
+    function setupWizardOpen(options={}){
+      const overlay=document.getElementById("setupWizardOverlay"); if(!overlay) return;
+      syncWizardFromCurrentConfig();
+      state.ui.wizardStep=0;
+      overlay.hidden=false;
+      document.body.classList.add("wizard-open");
+      const status=document.getElementById("setupWizardStatus"); if(status) status.textContent=options.auto ? "První nastavení ještě není dokončeno." : "Změny ještě nejsou uložené.";
+      setupWizardRenderStep();
+    }
+
+    function setupWizardClose(dismiss=true){
+      const overlay=document.getElementById("setupWizardOverlay"); if(!overlay) return;
+      overlay.hidden=true; document.body.classList.remove("wizard-open");
+      if(dismiss) overlay.dataset.dismissed="1";
+    }
+
+    function setupWizardPayload(){
+      copyWizardToMainForm();
+      return { equitherm:{ mixing:collectMixingConfigFromForm() }, complete:false };
+    }
+
+    async function wizardApplyDraft(){
+      const status=document.getElementById("setupWizardStatus");
+      if(status) status.textContent="Aplikuji nastavení pro servisní test…";
+      const payload=setupWizardPayload();
+      const res=await api.saveSetupWizard(payload);
+      state.dev.eqCfgLoaded=false;
+      if(status) status.textContent="Nastavení bylo aplikováno do zařízení; průvodce ještě není označen jako dokončený.";
+      return res;
+    }
+
+    function renderWizardCalibrationState(){
+      const el=document.getElementById("wizCalibrationState"); if(!el) return;
+      const st=state.eqFast || {};
+      const mix=st.mix && typeof st.mix === "object" ? st.mix : {};
+      const cfg=state.dev?.eqCfgRaw?.mixing || {};
+      const cal=readMaybeString(mix,"cal",readMaybeString(st,"mixCalibrationState",cfg.effectiveCalibrationHome ? `referenční poloha ${String(cfg.effectiveCalibrationHome).toUpperCase()}` : "--"));
+      const pos=firstFinite(mix.pct,st.mixPositionPct);
+      el.textContent=`Stav kalibrace: ${cal || "--"}${Number.isFinite(pos) ? ` • poloha ${pos.toFixed(1)} %` : ""}`;
+    }
+
+    async function setupWizardFinish(){
+      const btn=document.getElementById("setupWizardFinish");
+      return withButtonBusy(btn,"Ukládám…",async()=>{
+        copyWizardToMainForm();
+        const res=await api.saveSetupWizard({equitherm:{mixing:collectMixingConfigFromForm()},complete:true});
+        state.setupWizard={...(state.setupWizard||{}),completed:true,completedVersion:Number(res?.completedVersion || 1)};
+        setEqConfigDirty(false);
+        await heatingReloadConfigFromDevice();
+        setupWizardClose(false);
+        toast("Průvodce nastavením","Konfigurace byla uložena a průvodce dokončen.","✅");
+      });
+    }
+
     function syncTechI3UiVisibility(){
       const tech = String(document.getElementById("hMixControlMode")?.value || "adaptive") === "tech_i3";
       const type = String(document.getElementById("hMixValveType")?.value || "ch");
       const returnProfile = tech && type === "return_protection";
       const floorProfile = tech && type === "floor";
+      const chLike = ["ch","pool","ventilation"].includes(type);
       document.querySelectorAll("[data-tech-i3-advanced]").forEach(el => { el.hidden = !tech; });
       document.querySelectorAll("[data-tech-i3-only]").forEach(el => { el.hidden = !tech; });
 
+      const autoEl=document.getElementById("hMixAutoRecalibrationHours");
+      if(autoEl){
+        if(tech){ if(autoEl.dataset.adaptiveHours == null) autoEl.dataset.adaptiveHours=String(autoEl.value || "0"); autoEl.value="48"; autoEl.disabled=true; }
+        else { autoEl.disabled=false; if(autoEl.dataset.adaptiveHours != null) autoEl.value=autoEl.dataset.adaptiveHours; }
+      }
+      const calHome=document.getElementById("hMixCalibrationHome");
+      if(calHome){
+        if(tech && (floorProfile || returnProfile)){ calHome.value="b"; calHome.disabled=true; }
+        else { calHome.disabled=false; if(tech && chLike && !["a","b"].includes(calHome.value)) calHome.value="a"; }
+      }
+
       const outsideGroup = document.getElementById("mixI3OutdoorGroup");
       if(outsideGroup) outsideGroup.hidden = !tech;
-      ["hMixOutsideCloseEnabled","hMixOutsideCloseDayC","hMixOutsideCloseNightC","hMixOutsideCloseHysteresisC","hMixWeeklyCloseEnabled"].forEach(id => {
-        const el = document.getElementById(id);
-        if(el) el.disabled = returnProfile;
+      ["hMixOutsideCloseEnabled","hMixOutsideCloseDayC","hMixOutsideCloseNightC","hMixOutsideCloseHysteresisC","hMixOutsideCloseDayStart","hMixOutsideCloseNightStart","hMixWeeklyCloseEnabled","hMixWeeklyCorrectionEnabled","hMixWeeklyCloseDay","hMixWeeklyCorrectionDay"].forEach(id => {
+        const el = document.getElementById(id); if(el) el.disabled = returnProfile;
       });
-      const floorSummerRow = document.getElementById("mixFloorSummerRow");
-      if(floorSummerRow) floorSummerRow.hidden = !floorProfile;
+      document.querySelectorAll("#mixWeeklyCloseGrid button,#mixWeeklyCorrectionGrid input").forEach(el => { el.disabled=returnProfile; });
+      const floorSummerRow = document.getElementById("mixFloorSummerRow"); if(floorSummerRow) floorSummerRow.hidden = !floorProfile;
 
       const boilerRow = document.getElementById("mixBoilerProtectionRow");
       const boilerInputs = [document.getElementById("hMixBoilerProtectionEnabled"), document.getElementById("hMixBoilerProtectionMaxC")];
-      boilerInputs.forEach(el => { if(el) el.disabled = floorProfile; });
-      boilerRow?.classList.toggle("mix-field-disabled", floorProfile);
+      boilerInputs.forEach(el => { if(el) el.disabled = floorProfile; }); boilerRow?.classList.toggle("mix-field-disabled", floorProfile);
+      if(floorProfile && document.getElementById("hMixBoilerProtectionEnabled")) document.getElementById("hMixBoilerProtectionEnabled").checked=false;
 
       const floorRow = document.getElementById("mixFloorProtectionRow");
       floorRow?.classList.toggle("mix-field-disabled", tech && !floorProfile);
-      [document.getElementById("hMixFloorProtectionEnabled"), document.getElementById("hMixFloorProtectionMaxC")].forEach(el => { if(el) el.disabled = tech && !floorProfile; });
+      const floorEnable=document.getElementById("hMixFloorProtectionEnabled"), floorMax=document.getElementById("hMixFloorProtectionMaxC");
+      if(floorEnable){ if(tech && floorProfile) floorEnable.checked=true; floorEnable.disabled=tech; }
+      if(floorMax) floorMax.disabled=tech && !floorProfile;
 
       const curveGroup = document.getElementById("mixI3CurveGroup");
       curveGroup?.classList.toggle("mix-field-disabled", returnProfile);
@@ -3335,11 +3659,16 @@ async function otRwWrite(){
         hint.textContent = !tech
           ? "Aktivní je původní adaptivní regulace. Přepnutím na TECH i-3 se zpřístupní kroková regulace a ochranné priority."
           : returnProfile
-            ? "Ochrana zpátečky: regulace používá teplotu zpátečky a zdroje; čidlo AB ani ekvitermní křivka nejsou pro řízení ventilu vyžadovány."
+            ? "Ochrana zpátečky: prioritou je minimální teplota vratné vody; ekvitermní křivka ani čidlo AB nejsou pro vlastní ochranný algoritmus nutné."
             : floorProfile
-              ? "Podlahový profil: ochrana maximální teploty AB je nadřazená regulaci; ochrana kotle se v tomto profilu nepoužívá."
-              : "ÚT profil: ochrana kotle má nejvyšší prioritu, potom ochrana zpátečky a následně běžná regulace teploty ventilu.";
+              ? "Podlahový profil: překročení maximální teploty AB ventil úplně uzavře; kalibrace probíhá do B / 0 %."
+              : type === "pool"
+                ? "Bazén: regulační algoritmus odpovídá profilu ÚT; mění se pouze význam okruhu."
+                : type === "ventilation"
+                  ? "Ventilace: regulační algoritmus odpovídá profilu ÚT; mění se pouze význam okruhu."
+                  : "ÚT profil: ochrana kotle má nejvyšší prioritu, potom ochrana zpátečky a následně běžná regulace teploty ventilu.";
       }
+      updateMixDirectionUi(); renderMixWeeklyCorrectionEditor(); renderMixWeeklyCloseEditor();
     }
 
     function getEqChartConfig(){
@@ -3381,8 +3710,11 @@ async function otRwWrite(){
     function eqConfigInputIds(){
       return [
         "hDaySlope","hDayShift","hNightSlope","hNightShift","hMin","hMax",
-        "hWrite57","hBoilerMax","hMixEnabled","hMixDeadband","hMixTargetOffsetC","hMixTargetReachedAction",
-        "hMixPulseMs","hMixMinIntervalMs","hMixTravelMs","hMixCalibrationSeatMs","hMixAutoRecalibrationHours","hEqModeCfg","hUseIn1NightOverride",
+        "hWrite57","hBoilerMax","hMixEnabled","hMixOpeningDirection","hMixSourceA","hMixSourceB","hMixSourceAB","hMixDeadband","hMixTargetOffsetC","hMixTargetReachedAction",
+        "hMixPulseMs","hMixMinIntervalMs","hMixTravelMs","hMixCalibrationSeatMs","hMixAutoRecalibrationHours","hMixControlMode","hMixValveType","hMixControlIntervalMs","hMixMinOpeningPct","hMixUnitStepPct","hMixProportionalCoeff","hMixCalibrationHome",
+        "hMixBoilerProtectionEnabled","hMixBoilerProtectionMaxC","hMixReturnProtectionEnabled","hMixReturnProtectionMinC","hMixFloorProtectionEnabled","hMixFloorProtectionMaxC","hMixFloorSummerEnabled",
+        "hMixOutsideCloseEnabled","hMixOutsideCloseDayC","hMixOutsideCloseNightC","hMixOutsideCloseHysteresisC","hMixOutsideCloseDayStart","hMixOutsideCloseNightStart","hMixDhwPriorityPositionPct",
+        "hMixWeeklyCloseEnabled","hMixWeeklyCorrectionEnabled","hMixCurveMode","hMixDayM20","hMixDayM10","hMixDay0","hMixDayP10","hMixNightM20","hMixNightM10","hMixNight0","hMixNightP10","hEqModeCfg","hUseIn1NightOverride",
         "hSummerModeEnabled","hSummerOffAboveC","hSummerOnBelowC","hDriveNightRelay","hNightRelay",
         "hNightRelayOnWhenNight","hBoilerAssistEnabled","hBoilerAssistForceChEnable"
       ];
@@ -3474,8 +3806,9 @@ async function otRwWrite(){
         });
       }
       setInputBool("hMixEnabled", mx.enabled);
-      if(document.getElementById("hMixOpenRelay")) document.getElementById("hMixOpenRelay").value = "Relé1 (pevně)";
-      if(document.getElementById("hMixCloseRelay")) document.getElementById("hMixCloseRelay").value = "Relé2 (pevně)";
+      if(document.getElementById("hMixOpeningDirection")) document.getElementById("hMixOpeningDirection").value = String(mx.openingDirection || "normal");
+      updateMixDirectionUi();
+      renderMixConfigSourceSelectors();
       setInputNumber("hMixDeadband", mx.deadbandC, 1);
       if(document.getElementById("hMixTargetOffsetC") && mx.targetOffsetC != null) document.getElementById("hMixTargetOffsetC").value = String(Number(mx.targetOffsetC));
       if(document.getElementById("hMixTargetReachedAction")) document.getElementById("hMixTargetReachedAction").value = String(mx.targetReachedAction || "return_a");
@@ -3483,7 +3816,11 @@ async function otRwWrite(){
       if(document.getElementById("hMixMinIntervalMs") && mx.minIntervalMs != null) document.getElementById("hMixMinIntervalMs").value = String(Number(mx.minIntervalMs));
       if(document.getElementById("hMixTravelMs") && mx.travelMs != null) document.getElementById("hMixTravelMs").value = String(Number(mx.travelMs));
       if(document.getElementById("hMixCalibrationSeatMs") && mx.calibrationSeatMs != null) document.getElementById("hMixCalibrationSeatMs").value = String(Number(mx.calibrationSeatMs));
-      if(document.getElementById("hMixAutoRecalibrationHours") && mx.autoRecalibrationMs != null) document.getElementById("hMixAutoRecalibrationHours").value = String(Number(mx.autoRecalibrationMs) / 3600000);
+      if(document.getElementById("hMixAutoRecalibrationHours") && mx.autoRecalibrationMs != null){
+        const h = String(Number(mx.autoRecalibrationMs) / 3600000);
+        document.getElementById("hMixAutoRecalibrationHours").value = h;
+        document.getElementById("hMixAutoRecalibrationHours").dataset.adaptiveHours = h;
+      }
 
       // TECH i-3 compatible single-circuit extensions. Missing values keep the
       // UI defaults so older firmware/config snapshots remain loadable.
@@ -3493,7 +3830,7 @@ async function otRwWrite(){
       setInputNumber("hMixMinOpeningPct", mx.minOpeningPct, 1);
       setInputNumber("hMixUnitStepPct", mx.unitStepPct, 1);
       setInputNumber("hMixProportionalCoeff", mx.proportionalCoeff, 1);
-      if(document.getElementById("hMixCalibrationHome")) document.getElementById("hMixCalibrationHome").value = String(mx.calibrationHome || "b");
+      if(document.getElementById("hMixCalibrationHome")) document.getElementById("hMixCalibrationHome").value = String(mx.calibrationHome || "a");
       setInputBool("hMixBoilerProtectionEnabled", mx?.boilerProtection?.enabled);
       setInputNumber("hMixBoilerProtectionMaxC", mx?.boilerProtection?.maxC, 1);
       setInputBool("hMixReturnProtectionEnabled", mx?.returnProtection?.enabled);
@@ -3505,7 +3842,13 @@ async function otRwWrite(){
       setInputNumber("hMixOutsideCloseDayC", mx?.outsideClose?.dayC, 1);
       setInputNumber("hMixOutsideCloseNightC", mx?.outsideClose?.nightC, 1);
       setInputNumber("hMixOutsideCloseHysteresisC", mx?.outsideClose?.hysteresisC, 1);
+      if(document.getElementById("hMixOutsideCloseDayStart")) document.getElementById("hMixOutsideCloseDayStart").value = String(mx?.outsideClose?.dayStart || "06:00");
+      if(document.getElementById("hMixOutsideCloseNightStart")) document.getElementById("hMixOutsideCloseNightStart").value = String(mx?.outsideClose?.nightStart || "22:00");
       setInputBool("hMixWeeklyCloseEnabled", mx.weeklyCloseEnabled);
+      setInputBool("hMixWeeklyCorrectionEnabled", mx.weeklyCorrectionEnabled);
+      state.mixPrograms = state.mixPrograms || {};
+      state.mixPrograms.close = normalizeMixWeeklyClose(mx.weeklyClose);
+      state.mixPrograms.correction = normalizeMixWeeklyCorrection(mx.weeklyCorrection);
       setInputNumber("hMixDhwPriorityPositionPct", mx.dhwPriorityPositionPct, 1);
       if(document.getElementById("hMixCurveMode")) document.getElementById("hMixCurveMode").value = String(mx.curveMode || "linear2");
       const w4d = Array.isArray(mx?.weather4?.day) ? mx.weather4.day : [];
@@ -4665,6 +5008,10 @@ function applyBootstrapPayload(payload){
     applyTimeConfigToForm(payload.time);
     applied = true;
   }
+  if(payload.setupWizard){
+    state.setupWizard = {...(state.setupWizard || {}), ...payload.setupWizard};
+    applied = true;
+  }
   if(payload.dallas){
     state.th = state.th || {};
     state.th.cfgLoaded = true;
@@ -4673,7 +5020,15 @@ function applyBootstrapPayload(payload){
     state.th.roleMeta = normalizeDallasRoleMeta(payload.dallas?.availableRoles);
     state.th.mixingValve = normalizeMixingValveSources(payload.dallas?.mixingValve);
     state.th.mixingSourceMeta = normalizeMixTempSourceMeta(payload.dallas?.mixingValve?.availableSources);
+    renderMixTempSourceSelectors();
     applied = true;
+  }
+  if(state.setupWizard && !state.setupWizard.completed && !state.ui.wizardAutoOpenScheduled){
+    state.ui.wizardAutoOpenScheduled = true;
+    setTimeout(() => {
+      const overlay=document.getElementById("setupWizardOverlay");
+      if(overlay && overlay.dataset.dismissed !== "1" && !state.setupWizard.completed) setupWizardOpen({auto:true});
+    }, 700);
   }
   return applied;
 }
@@ -4902,9 +5257,20 @@ async function refresh(forceToast=false){
       }));
       $$("#bottomNav button").forEach(b => b.addEventListener("click", () => setView(b.dataset.view)));
       $$('[data-open-view]').forEach(b => b.addEventListener("click", () => setView(b.dataset.openView)));
-      ["hMixControlMode","hMixValveType","hMixCurveMode"].forEach(id => {
+      ["hMixControlMode","hMixValveType","hMixCurveMode","hMixOpeningDirection"].forEach(id => {
         document.getElementById(id)?.addEventListener("change", syncTechI3UiVisibility);
       });
+      document.getElementById("hMixWeeklyCorrectionDay")?.addEventListener("change", renderMixWeeklyCorrectionEditor);
+      document.getElementById("hMixWeeklyCloseDay")?.addEventListener("change", renderMixWeeklyCloseEditor);
+      document.getElementById("btnSetupWizard")?.addEventListener("click", () => setupWizardOpen({auto:false}));
+      document.getElementById("setupWizardClose")?.addEventListener("click", () => setupWizardClose(true));
+      document.getElementById("setupWizardLater")?.addEventListener("click", () => setupWizardClose(true));
+      document.getElementById("setupWizardPrev")?.addEventListener("click", () => { state.ui.wizardStep=Math.max(0,Number(state.ui.wizardStep||0)-1); setupWizardRenderStep(); });
+      document.getElementById("setupWizardNext")?.addEventListener("click", () => { state.ui.wizardStep=Math.min(6,Number(state.ui.wizardStep||0)+1); setupWizardRenderStep(); });
+      document.querySelectorAll("[data-wiz-step]").forEach(btn => btn.addEventListener("click", () => { state.ui.wizardStep=clamp(Number(btn.dataset.wizStep||0),0,6); setupWizardRenderStep(); }));
+      document.getElementById("wizValveType")?.addEventListener("change", syncWizardProfileUi);
+      document.getElementById("setupWizardFinish")?.addEventListener("click", setupWizardFinish);
+      const overlay=document.getElementById("setupWizardOverlay"); if(overlay) overlay.addEventListener("click", e => { if(e.target===overlay) setupWizardClose(true); });
       syncTechI3UiVisibility();
 
       // quick action
@@ -5223,59 +5589,7 @@ updatePlannerStateBadges();
             nightRelay: Number($("#hNightRelay")?.value || 6),
             nightRelayOnWhenNight: !!$("#hNightRelayOnWhenNight")?.checked,
           };
-          const mixing = {
-            enabled: !!$("#hMixEnabled")?.checked,
-            openRelay: 1,
-            closeRelay: 2,
-            deadbandC: Number($("#hMixDeadband")?.value || 0.5),
-            targetOffsetC: Math.max(0, Number($("#hMixTargetOffsetC")?.value || 0)),
-            targetReachedAction: String($("#hMixTargetReachedAction")?.value || "return_a"),
-            pulseMs: Number($("#hMixPulseMs")?.value || 300),
-            minIntervalMs: Number($("#hMixMinIntervalMs")?.value || 30000),
-            travelMs: Number($("#hMixTravelMs")?.value || 6000),
-            calibrationSeatMs: Number($("#hMixCalibrationSeatMs")?.value || 1500),
-            autoRecalibrationMs: Math.round(Number($("#hMixAutoRecalibrationHours")?.value || 0) * 3600000),
-
-            controlMode: String($("#hMixControlMode")?.value || "adaptive"),
-            valveType: String($("#hMixValveType")?.value || "ch"),
-            controlIntervalMs: Number($("#hMixControlIntervalMs")?.value || 2000),
-            minOpeningPct: Number($("#hMixMinOpeningPct")?.value || 0),
-            unitStepPct: Number($("#hMixUnitStepPct")?.value || 5),
-            proportionalCoeff: Number($("#hMixProportionalCoeff")?.value || 5),
-            calibrationHome: String($("#hMixCalibrationHome")?.value || "b"),
-            weeklyCloseEnabled: !!$("#hMixWeeklyCloseEnabled")?.checked,
-            dhwPriorityPositionPct: Number($("#hMixDhwPriorityPositionPct")?.value || 0),
-            curveMode: String($("#hMixCurveMode")?.value || "linear2"),
-            boilerProtection: {
-              enabled: !!$("#hMixBoilerProtectionEnabled")?.checked,
-              maxC: Number($("#hMixBoilerProtectionMaxC")?.value || 80),
-            },
-            returnProtection: {
-              enabled: !!$("#hMixReturnProtectionEnabled")?.checked,
-              minC: Number($("#hMixReturnProtectionMinC")?.value || 40),
-            },
-            floorProtection: {
-              enabled: !!$("#hMixFloorProtectionEnabled")?.checked,
-              maxC: Number($("#hMixFloorProtectionMaxC")?.value || 45),
-              summerEnabled: !!$("#hMixFloorSummerEnabled")?.checked,
-            },
-            outsideClose: {
-              enabled: !!$("#hMixOutsideCloseEnabled")?.checked,
-              dayC: Number($("#hMixOutsideCloseDayC")?.value || 20),
-              nightC: Number($("#hMixOutsideCloseNightC")?.value || 15),
-              hysteresisC: Number($("#hMixOutsideCloseHysteresisC")?.value || 2),
-            },
-            weather4: {
-              day: [
-                Number($("#hMixDayM20")?.value || 65), Number($("#hMixDayM10")?.value || 55),
-                Number($("#hMixDay0")?.value || 45), Number($("#hMixDayP10")?.value || 35),
-              ],
-              night: [
-                Number($("#hMixNightM20")?.value || 60), Number($("#hMixNightM10")?.value || 50),
-                Number($("#hMixNight0")?.value || 40), Number($("#hMixNightP10")?.value || 30),
-              ],
-            },
-          };
+          const mixing = collectMixingConfigFromForm();
           const boilerAssist = {
             enabled: !!$("#hBoilerAssistEnabled")?.checked,
             forceChEnable: !!$("#hBoilerAssistForceChEnable")?.checked,
@@ -5360,6 +5674,14 @@ updatePlannerStateBadges();
       if(mixSyncBBtn) mixSyncBBtn.addEventListener("click", () => withButtonBusy(mixSyncBBtn, "Ukládám B…", () => mixCalibrationCommand("sync_b")));
       const mixInvalidateBtn = document.getElementById("hMixInvalidate");
       if(mixInvalidateBtn) mixInvalidateBtn.addEventListener("click", () => withButtonBusy(mixInvalidateBtn, "Zneplatňuji…", () => mixCalibrationCommand("invalidate")));
+      const autoCalBtn = document.getElementById("hMixAutoCalNow");
+      if(autoCalBtn) autoCalBtn.addEventListener("click", () => withButtonBusy(autoCalBtn, "Kalibruji…", () => mixCalibrationCommand("auto")));
+      const bindWizardTest = (id,busy,fn) => { const b=document.getElementById(id); if(b) b.addEventListener("click", () => withButtonBusy(b,busy,async()=>{ await wizardApplyDraft(); await fn(); renderWizardCalibrationState(); })); };
+      bindWizardTest("wizPulseA","Testuji A…",()=>mixManualPulse("a"));
+      bindWizardTest("wizPulseB","Testuji B…",()=>mixManualPulse("b"));
+      const wizStopBtn=document.getElementById("wizStop");
+      if(wizStopBtn) wizStopBtn.addEventListener("click", () => withButtonBusy(wizStopBtn,"Zastavuji…",async()=>{ await mixManualStop(); renderWizardCalibrationState(); }));
+      bindWizardTest("wizAutoCal","Kalibruji…",()=>mixCalibrationCommand("auto"));
       document.getElementById("bleSave")?.addEventListener("click", bleSave);
 
 // OpenTherm config actions
@@ -5753,6 +6075,8 @@ function boot(){
   renderHeatingOtInfo();
   renderMixCalibrationInfo();
   renderDhwBoilerMode();
+  ensureMixPrograms();
+  renderMixConfigSourceSelectors();
   syncTechI3UiVisibility();
 
   window.addEventListener("hashchange", () => {

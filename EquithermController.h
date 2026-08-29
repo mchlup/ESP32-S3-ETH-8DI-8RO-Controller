@@ -100,12 +100,14 @@ struct EquithermConfig {
   // TECH i-3 compatible single-circuit control. Defaults deliberately preserve
   // the pre-existing controller behavior after a firmware update.
   String mixControlMode = "adaptive";   // adaptive | tech_i3
-  String mixValveType = "ch";           // ch | floor | return_protection
+  String mixValveType = "ch";           // ch | floor | return_protection | pool | ventilation
   uint32_t mixControlIntervalMs = 2000;
   float mixMinOpeningPct = 0.0f;
   float mixUnitStepPct = 5.0f;
   float mixProportionalCoeff = 5.0f;
-  String mixCalibrationHome = "b";       // a | b
+  String mixCalibrationHome = "a";       // a | b; floor/return profiles use safe B automatically
+  // TECH i-3 "Směr otevírání": normal = logical A/100 % uses R1, reversed = R2.
+  String mixOpeningDirection = "normal"; // normal | reversed
 
   bool mixBoilerProtectionEnabled = false;
   float mixBoilerProtectionMaxC = 80.0f;
@@ -119,7 +121,17 @@ struct EquithermConfig {
   float mixOutsideCloseDayC = 20.0f;
   float mixOutsideCloseNightC = 15.0f;
   float mixOutsideCloseHysteresisC = 2.0f;
+  uint16_t mixOutsideCloseDayStartMin = 360;   // 06:00
+  uint16_t mixOutsideCloseNightStartMin = 1320; // 22:00
+
+  // Dedicated valve-closing weekly program, 48 half-hour slots per day.
   bool mixWeeklyCloseEnabled = false;
+  bool mixWeeklyCloseSlots[7][48] = {};
+
+  // TECH i-3 weekly valve-temperature correction: one value per hour, -20..+20 C.
+  bool mixWeeklyCorrectionEnabled = false;
+  int8_t mixWeeklyCorrectionC[7][24] = {};
+
   float mixDhwPriorityPositionPct = 0.0f;
 
   // Optional TECH i-3 style 4-point weather curve. The original two-point
@@ -214,6 +226,12 @@ struct EquithermStatus {
   uint8_t mixRelayMask = 0;
   String mixControlMode;
   String mixValveType;
+  String mixOpeningDirection;
+  String mixEffectiveCalibrationHome;
+  uint8_t mixLogicalOpenRelay = 1;
+  uint8_t mixLogicalCloseRelay = 2;
+  uint32_t mixAutoCalibrationPeriodMs = 0;
+  float mixWeeklyCorrectionC = 0.0f;
   String mixProtection;
   bool mixOutsideClosed = false;
   bool mixWeeklyClosed = false;

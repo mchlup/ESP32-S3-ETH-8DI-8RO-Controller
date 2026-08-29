@@ -2,7 +2,7 @@
 
 Firmware pro řízení topné soustavy na desce **Waveshare ESP32-S3-ETH-8DI-8RO** s podporou **OpenTherm**, **DS18B20**, ekvitermní regulace a řízení trojcestného směšovacího ventilu.
 
-**Aktuální dokumentovaná verze: 3.4.0**  
+**Aktuální dokumentovaná verze: 3.5.0**  
 **Nově:** volitelný regulační režim směšovacího ventilu podle principů **TECH EU-i-3 / i-3**.
 
 > [!WARNING]
@@ -10,7 +10,7 @@ Firmware pro řízení topné soustavy na desce **Waveshare ESP32-S3-ETH-8DI-8RO
 
 ## Obsah
 
-- [Co umí verze 3.4.0](#co-umí-verze-340)
+- [Co umí verze 3.5.0](#co-umí-verze-350)
 - [Hardware](#hardware)
 - [Pevné GPIO mapování](#pevné-gpio-mapování)
 - [Relé a směšovací ventil](#relé-a-směšovací-ventil)
@@ -29,7 +29,7 @@ Firmware pro řízení topné soustavy na desce **Waveshare ESP32-S3-ETH-8DI-8RO
 - [Diagnostika](#diagnostika)
 - [Omezení](#omezení)
 
-## Co umí verze 3.4.0
+## Co umí verze 3.5.0
 
 Projekt kombinuje:
 
@@ -37,11 +37,15 @@ Projekt kombinuje:
 - ekvitermní výpočet cílové teploty topné vody,
 - původní adaptivní regulaci směšovacího ventilu,
 - nový volitelný režim `tech_i3`,
-- profily ventilu `ch`, `floor` a `return_protection`,
+- profily ventilu `ch`, `floor`, `return_protection`, `pool` a `ventilation`,
 - ochranu kotle / zdroje proti přehřátí,
 - ochranu nízké teploty zpátečky,
 - ochranu maximální teploty podlahového okruhu,
 - proporcionální krokování směšovacího ventilu,
+- volitelný směr otevírání servopohonu bez přepojení R1/R2,
+- automatickou kalibraci TECH i-3 každých 48 hodin,
+- samostatný týdenní program úplného zavření po 30 minutách,
+- týdenní hodinovou korekci cíle ventilu v rozsahu ±20 °C,
 - minimální otevření ventilu,
 - volitelnou čtyřbodovou ekvitermní křivku `-20 / -10 / 0 / +10 °C`,
 - denní a noční režim a týdenní plán,
@@ -55,6 +59,7 @@ Projekt kombinuje:
 - MQTT telemetrii a Home Assistant Discovery,
 - OTA a webovou aktualizaci firmware / LittleFS,
 - moderní webové UI s WebSocket aktualizacemi,
+- front-end/back-end Průvodce nastavením zařízení,
 - servisní diagnostiku relé, vstupů, OpenTherm, teplot, MQTT a systému.
 
 Původní regulační algoritmus zůstává zachován. Po aktualizaci se automaticky nepřepíná na nový způsob řízení:
@@ -182,6 +187,8 @@ Dostupné profily:
 | `ch` | běžný radiátorový / topný okruh |
 | `floor` | podlahový okruh s omezením maximální teploty |
 | `return_protection` | ochrana zpátečky kotle |
+| `pool` | bazén; regulačně odpovídá profilu ÚT |
+| `ventilation` | ventilace; regulačně odpovídá profilu ÚT |
 
 ## TECH i-3 kompatibilní regulace
 
@@ -193,6 +200,9 @@ Nový režim používá následující parametry:
 - proporcionální koeficient `proportionalCoeff`,
 - skutečný čas plného přejezdu `travelMs`,
 - směr kalibrační krajní polohy `calibrationHome`,
+- směr otevírání `openingDirection` (`normal` / `reversed`),
+- pevnou periodickou kalibraci 48 h v režimu `tech_i3`,
+- 7×24 hodnot týdenní korekce cíle a 7×48 půlhodinových slotů úplného zavření,
 - hystereze / mrtvá zóna,
 - ochranné limity.
 
@@ -219,10 +229,10 @@ pulse_ms = travel_ms * step_pct / 100
 | minimální otevření | 0 % |
 | jednotkový krok | 5 % |
 | proporcionální koeficient | 5.0 |
-| kalibrační kraj | B / 0 % |
+| kalibrační kraj | A / 100 % pro ÚT; B / 0 % pro podlahu a ochranu zpátečky |
 | ochrana kotle | vypnuta, limit 80 °C |
 | ochrana zpátečky | vypnuta, minimum 40 °C |
-| ochrana podlahy | vypnuta, maximum 45 °C |
+| ochrana podlahy | maximum 45 °C; v `tech_i3` profilu `floor` je vždy aktivní |
 
 ## Ekvitermní regulace
 
@@ -351,6 +361,9 @@ http://<IP zařízení>/filemanager
 
 Web používá:
 
+- průvodce prvním nastavením se 7 kroky (profil, zdroje, servopohon, ochrany, ekviterm, test/kalibrace, souhrn),
+- perzistentní stav dokončení průvodce v NVS a samostatné API `/api/setup/wizard`,
+- detailní editor týdenní korekce i úplného zavření ventilu,
 - LittleFS,
 - HTTP server na portu 80,
 - WebSocket na portu 81,
@@ -359,7 +372,7 @@ Web používá:
 - průběžnou diagnostiku,
 - mobilní rozvržení.
 
-### Optimalizace UI ve 3.4.0
+### Optimalizace UI ve 3.5.0
 
 - nastavení směšovače se zobrazuje podle aktivního profilu,
 - méně zbytečných DOM aktualizací,
@@ -375,7 +388,7 @@ Web používá:
 ### Ukázka webového UI - simulovaný zimní provoz
 
 > [!NOTE]
-> Následující screenshoty jsou pořízené přímo z webového rozhraní verze 3.4.0 s lokálně simulovaným API. Nejde o záznam z konkrétní instalace; hodnoty představují běžný modelový zimní stav a slouží k demonstraci UI a návazností regulace.
+> Následující screenshoty jsou pořízené přímo z webového rozhraní verze 3.5.0 s lokálně simulovaným API. Nejde o záznam z konkrétní instalace; hodnoty představují běžný modelový zimní stav a slouží k demonstraci UI a návazností regulace.
 
 Modelový stav použitý pro screenshoty:
 
@@ -437,11 +450,15 @@ minOpeningPct
 unitStepPct
 proportionalCoeff
 calibrationHome
+openingDirection
 boilerProtection.*
 returnProtection.*
 floorProtection.*
 outsideClose.*
 weeklyCloseEnabled
+weeklyClose[7][48]
+weeklyCorrectionEnabled
+weeklyCorrection[7][24]
 dhwPriorityPositionPct
 curveMode
 weather4.day[]
@@ -488,19 +505,17 @@ Po nahrání firmware je nutné nahrát také obsah složky `data/` do LittleFS.
 
 1. Nahrajte firmware a LittleFS.
 2. Ověřte Wi-Fi / Ethernet a otevřete webové UI.
-3. Přiřaďte DS18B20 k požadovaným teplotním rolím.
-4. Ověřte fyzické umístění čidla zpátečky na GPIO2.
-5. Ověřte OpenTherm nejprve v read-only režimu.
-6. Proveďte krátký ruční puls R1 a R2.
-7. Potvrďte, že R1 zvyšuje AB a R2 snižuje AB.
-8. Nastavte skutečný čas plného přejezdu servopohonu.
-9. Proveďte kalibraci ventilu.
-10. Nechte nejprve `controlMode=adaptive` a ověřte základní chování.
-11. Přepněte na `tech_i3` a začněte profilem `ch`.
-12. Nastavte konzervativní jednotkový krok a proporcionální koeficient.
-13. Ochranu kotle a zpátečky zapněte až po ověření správných čidel a směru ventilu.
-14. Pro podlahové topení použijte profil `floor` a nezávislý hardwarový havarijní termostat.
-15. Profil `return_protection` otestujte i se simulovaným výpadkem OpenTherm.
+3. Otevřete automaticky nabídnutý **Průvodce nastavením zařízení**.
+4. Zvolte typ ventilu a fyzický směr servopohonu; vodiče R1/R2 není nutné přepojovat.
+5. Přiřaďte zdroje A (zdroj/„Čidlo ÚT“), B (zpátečka) a AB (smíšený výstup).
+6. Opište z výrobního štítku skutečný čas úplného otevření servopohonu.
+7. Nastavte hysterezi, jednotkový krok, proporcionální koeficient a minimální otevření.
+8. Nastavte ochrany; pro podlahu ponechte aktivní ochranu maximální teploty.
+9. Nastavte čtyřbodovou křivku a případné venkovní/týdenní uzavírání.
+10. V servisním kroku proveďte krátký puls A/B, ověřte skutečný směr a spusťte kalibraci podle profilu.
+11. Průvodce dokončete; tím se uloží konfigurace do NVS i snapshotu LittleFS.
+12. Jemné doladění týdenní korekce a 30minutového programu úplného zavření proveďte na stránce Směšovací ventil.
+13. Pro podlahové topení vždy použijte také nezávislý hardwarový havarijní termostat.
 
 ## Diagnostika
 

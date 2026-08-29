@@ -213,6 +213,7 @@ namespace {
   static constexpr const char* K_TIME_N1 = "t_n1";
   static constexpr const char* K_TIME_N2 = "t_n2";
   static constexpr const char* K_TIME_N3 = "t_n3";
+  static constexpr const char* K_SETUP_WIZ_VER = "wiz_ver";
 
   // Ekviterm
   static constexpr const char* K_EQ_EN = "eq_en";
@@ -870,6 +871,16 @@ namespace ConfigStore {
   void setTimeNtp1(const String& v) { begin(); g_timeNtp1 = v; saveString(K_TIME_N1, g_timeNtp1); }
   void setTimeNtp2(const String& v) { begin(); g_timeNtp2 = v; saveString(K_TIME_N2, g_timeNtp2); }
   void setTimeNtp3(const String& v) { begin(); g_timeNtp3 = v; saveString(K_TIME_N3, g_timeNtp3); }
+
+  uint32_t getSetupWizardCompletedVersion() {
+    begin();
+    return g_prefs.getUInt(K_SETUP_WIZ_VER, 0);
+  }
+
+  void setSetupWizardCompletedVersion(uint32_t version) {
+    begin();
+    saveUInt(K_SETUP_WIZ_VER, version);
+  }
 
   // Ekviterm
   bool getEqEnabled() { begin(); return g_eqEnabled; }
