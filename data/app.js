@@ -41,7 +41,8 @@
         mode: "auto"
       },
       ot: {
-        comm: true,
+        comm: false,
+        linkOk: false,
         enabled: false,
         ready: false,
         fault: false,
@@ -1471,15 +1472,18 @@ const dallasRoleMetaDefault = [
 const mixTempSourceMetaDefault = {
   a: [
     { key:"none", label:"Nevybráno" },
-    { key:"tank_mid", label:"Akumulační nádrž – Uprostřed (DS18B20)" },
+    { key:"tank_mid", label:"DS18B20 – AKU uprostřed" },
+    { key:"opentherm_ch", label:"OpenTherm – výstup kotle / CH (ID25)" },
   ],
   b: [
     { key:"none", label:"Nevybráno" },
-    { key:"return_dallas", label:"Zpátečka B – DS18B20 (role Zpátečka / Return.flow)" },
+    { key:"return_dallas", label:"DS18B20 – role Zpátečka / Return.flow (GPIO2)" },
+    { key:"opentherm_return", label:"OpenTherm – zpátečka kotle (ID28)" },
   ],
   ab: [
     { key:"none", label:"Nevybráno" },
-    { key:"opentherm_ch", label:"OpenTherm – CH teplota (měřená)" },
+    { key:"opentherm_ch", label:"OpenTherm – výstup kotle / CH (ID25)" },
+    { key:"return_dallas", label:"DS18B20 – role Zpátečka / Return.flow (GPIO2)" },
   ],
 };
 
@@ -3000,15 +3004,18 @@ function otFmtRW(it){
 }
 
 function otProfileSupportedSet(profileJson){
-  const items = Array.isArray(profileJson?.scan?.items) ? profileJson.scan.items : [];
-  const set = new Set();
-  items.forEach(it => { if(it && it.supported) set.add(Number(it.id)); });
+  const p = profileJson?.profile || profileJson?.scan || {};
+  const items = Array.isArray(p?.items) ? p.items : [];
+  const ids = Array.isArray(p?.supportedIds) ? p.supportedIds : [];
+  const set = new Set(ids.map(Number));
+  items.forEach(it => { if(it && (it.supported !== false)) set.add(Number(it.id)); });
   return set;
 }
 
 function otApplyProfileVisibility(profileJson){
-  const hasProfile = !!profileJson?.exists && Array.isArray(profileJson?.scan?.items);
-  otSetBadge("otProfileBadge", hasProfile ? "good" : "", hasProfile ? `profil: ${Number(profileJson?.scan?.supportedCount ?? 0)} ID` : "profil: není");
+  const p = profileJson?.profile || profileJson?.scan || {};
+  const hasProfile = !!(p?.hasProfile ?? profileJson?.exists) && (Array.isArray(p?.items) || Array.isArray(p?.supportedIds));
+  otSetBadge("otProfileBadge", hasProfile ? "good" : "", hasProfile ? `profil: ${Number(p?.supportedCount ?? 0)} ID` : "profil: není");
   const supported = otProfileSupportedSet(profileJson);
   document.querySelectorAll("[data-ot-id]").forEach(el => {
     const id = Number(el.getAttribute("data-ot-id"));
@@ -3077,7 +3084,8 @@ async function otScanRefresh(force=false){
   if(!force && (now - Number(state.otAdv?.lastRefreshMs || 0)) < 4000) return;
   state.otAdv.loading = true;
   try{
-    const j = await api.getJson("/api/opentherm/scan/status", 4500);
+    const showAll = !!document.getElementById("otScanShowAll")?.checked;
+    const j = await api.getJson("/api/opentherm/scan/status" + (showAll ? "?all=1" : ""), 3500);
     state.otAdv.scan = j;
     state.otAdv.lastRefreshMs = Date.now();
     otRenderScan(j);
@@ -3291,8 +3299,10 @@ async function otRwWrite(){
       const enabledFromStatus = readMaybeBool(status, "enabled", state.ot.enabled);
       state.ot.enabled = enabledFromStatus || !!state.ot.cfg?.enabled || !!state.ot.cfg?.enable;
       state.ot.ready = readMaybeBool(status, "ready", state.ot.ready);
+      state.ot.linkOk = readMaybeBool(status, "linkOk", Number(status.lastUpdateMs || 0) > 0 || state.ot.linkOk);
       state.ot.fault = readMaybeBool(status, "fault", state.ot.fault);
-      state.ot.comm = !!state.ot.present && !!state.ot.ready && !state.ot.fault;
+      // Boiler fault is application data, not a communication failure.
+      state.ot.comm = !!state.ot.present && !!state.ot.ready && !!state.ot.linkOk;
       state.ot.chSet = readMaybeNumber(status, "reqChSetpointC", state.ot.chSet);
       state.ot.reqWaterTempC = hasOwn(status, "reqChSetpointC")
         ? numOrNaN(status.reqChSetpointC)
@@ -3872,6 +3882,14 @@ async function otRwWrite(){
       state.ot.cfg.mode = String(cfg.mode ?? "control");
       state.ot.cfg.boilerControl = String(cfg.boilerControl ?? state.ot.cfg.boilerControl ?? (state.ot.cfg.mode === "control" ? "opentherm" : "relay"));
       state.ot.cfg.allowRawWrite = !!cfg.allowRawWrite;
+      state.ot.cfg.assumedMaxBoilerKw = Number(cfg.assumedMaxBoilerKw ?? state.ot.cfg.assumedMaxBoilerKw ?? 9);
+      state.ot.cfg.rxPin = Number(cfg.rxPin ?? state.ot.cfg.rxPin ?? 48);
+      state.ot.cfg.txPin = Number(cfg.txPin ?? state.ot.cfg.txPin ?? 47);
+      state.ot.cfg.invertRx = !!cfg.invertRx;
+      state.ot.cfg.invertTx = !!cfg.invertTx;
+      state.ot.cfg.autoDetectLogic = cfg.autoDetectLogic === true;
+      state.ot.cfg.transportProfile = String(cfg.transportProfile || "legacy-3.3.14");
+      setText("#otLogicPolarity", `Transport ${state.ot.cfg.transportProfile} • RX GPIO${state.ot.cfg.rxPin} • TX GPIO${state.ot.cfg.txPin} • pevná polarita`);
 
       const en = document.getElementById("otEnable");
       if(en) en.checked = !!cfg.enabled;
@@ -4133,31 +4151,41 @@ async function serviceIoCall(payload){
       if(!state.ot?.enabled || !state.ot?.ready) return state.ot.maxCapacityKw;
       if(!force && !otViewActive) return state.ot.maxCapacityKw;
       if(state.otMeta?.capacityFetching) return state.ot.maxCapacityKw;
-      const successAge = now - Number(state.otMeta?.capacityFetchMs || 0);
+
+      // Firmware now polls ID15 in the low-rate OT round-robin and exposes it in
+      // /api/fast as ot.cp. Prefer that cached value; a direct bus request is only
+      // a fallback and must not turn an unsupported optional ID into a UI error.
+      if(Number.isFinite(Number(state.ot.maxCapacityKw)) && Number(state.ot.maxCapacityKw) > 0){
+        return state.ot.maxCapacityKw;
+      }
+
       const failAge = now - Number(state.otMeta?.capacityFailMs || 0);
-      if(!force && Number.isFinite(Number(state.ot.maxCapacityKw)) && successAge < 5 * 60 * 1000) return state.ot.maxCapacityKw;
       if(!force && failAge < 5 * 60 * 1000) return state.ot.maxCapacityKw;
       state.otMeta.capacityFetching = true;
       try{
-        const j = await api.postJson("/api/opentherm/dataid/read", { id: 15, reqValue: 0 }, 5000);
+        const j = await api.postJson("/api/opentherm/dataid/read", { id: 15, reqValue: 0 }, 3000);
         const kw = Number(j?.maxCapacityKw ?? j?.val?.maxCapacityKw);
-        if(Number.isFinite(kw) && kw > 0){
+        if(j?.ok && Number.isFinite(kw) && kw > 0){
           state.ot.maxCapacityKw = kw;
           state.otMeta.capacityFetchMs = now;
           state.otMeta.capacityFailMs = 0;
-          const mod = Number(state.ot.modulationPct);
-          state.ot.currentPowerKw = Number.isFinite(mod) ? (kw * mod / 100) : NaN;
-          if(state.last) renderSample(state.last);
         }else{
+          // ID15 is optional on some boilers. Use configured/known nominal
+          // capacity instead of logging a false communication failure.
+          const fallback = Number(state.ot?.cfg?.assumedMaxBoilerKw ?? state.ot.maxCapacityKw ?? 9);
+          if(Number.isFinite(fallback) && fallback > 0) state.ot.maxCapacityKw = fallback;
           state.otMeta.capacityFailMs = now;
-          log("ot capacity read: missing maxCapacityKw in response");
         }
-      }catch(e){
+      }catch(_e){
+        const fallback = Number(state.ot?.cfg?.assumedMaxBoilerKw ?? state.ot.maxCapacityKw ?? 9);
+        if(Number.isFinite(fallback) && fallback > 0) state.ot.maxCapacityKw = fallback;
         state.otMeta.capacityFailMs = now;
-        log("ot capacity read failed: " + (e.message || e));
       }finally{
         state.otMeta.capacityFetching = false;
       }
+      const mod = Number(state.ot.modulationPct);
+      const kw = Number(state.ot.maxCapacityKw);
+      state.ot.currentPowerKw = Number.isFinite(mod) && Number.isFinite(kw) ? (kw * mod / 100) : NaN;
       return state.ot.maxCapacityKw;
     }
 
@@ -4238,9 +4266,10 @@ async function serviceIoCall(payload){
         state.ot.cfg.boilerControl = readMaybeString(ot, "bc", state.ot.cfg.boilerControl || "");
       }
       state.ot.ready = readMaybeBool(ot, "rd", state.ot.ready);
+      state.ot.linkOk = readMaybeBool(ot, "lk", state.ot.linkOk);
       state.ot.fault = readMaybeBool(ot, "fl", state.ot.fault);
       state.ot.present = state.ot.enabled;
-      state.ot.comm = state.ot.enabled && state.ot.ready && !state.ot.fault;
+      state.ot.comm = state.ot.enabled && state.ot.ready && state.ot.linkOk;
       state.ot.chSet = readMaybeNumber(ot, "cs", state.ot.chSet);
       state.ot.chTemp = readMaybeNumber(ot, "bt", state.ot.chTemp);
       state.ot.returnTempC = readMaybeNumber(ot, "rt", state.ot.returnTempC);
@@ -4248,6 +4277,7 @@ async function serviceIoCall(payload){
       state.ot.outsideTempC = readMaybeNumber(ot, "ot", state.ot.outsideTempC);
       state.ot.pressure = readMaybeNumber(ot, "pr", state.ot.pressure);
       state.ot.modulationPct = readMaybeNumber(ot, "mt", state.ot.modulationPct);
+      state.ot.maxCapacityKw = readMaybeNumber(ot, "cp", state.ot.maxCapacityKw);
       state.ot.reqWaterTempC = hasOwn(ot, "cs") ? numOrNaN(ot.cs) : state.ot.reqWaterTempC;
       if(!Number.isFinite(state.ot.reqWaterTempC)) state.ot.reqWaterTempC = firstFinite(state.eqFast?.tf, state.ot.reqWaterTempC);
       state.ot.maxChSetpointC = readMaybeNumber(ot, "mx", state.ot.maxChSetpointC);
@@ -4462,9 +4492,9 @@ async function serviceIoCall(payload){
 
       // OT pill
       if(!state.ot.enabled) $("#pillOT").textContent = "OT: vypnuto";
-      else if(state.ot.fault) $("#pillOT").textContent = "OT: chyba";
+      else if(state.ot.fault && state.ot.comm) $("#pillOT").textContent = "OT: fault kotle";
       else if(state.ot.comm) $("#pillOT").textContent = "OT: ok";
-      else if(state.ot.ready) $("#pillOT").textContent = "OT: připraveno";
+      else if(state.ot.ready) $("#pillOT").textContent = "OT: bez odpovědi";
       else $("#pillOT").textContent = "OT: inicializace";
 
       // function summaries
@@ -4716,16 +4746,16 @@ async function serviceIoCall(payload){
 
 
       // OpenTherm pill + page
-      const otPillText = !state.ot.enabled ? "OT: vypnuto" : state.ot.fault ? "OT: chyba" : state.ot.comm ? "OT: ok" : state.ot.ready ? "OT: připraveno" : "OT: inicializace";
+      const otPillText = !state.ot.enabled ? "OT: vypnuto" : (state.ot.fault && state.ot.comm) ? "OT: fault kotle" : state.ot.comm ? "OT: ok" : state.ot.ready ? "OT: bez odpovědi" : "OT: inicializace";
       setText("#pillOT", otPillText);
       if($("#pillOT")){
         const p = $("#pillOT").closest(".pill");
         if(p){
-          p.classList.toggle("good", !!state.ot.comm);
-          p.classList.toggle("bad", !!state.ot.enabled && !state.ot.comm);
+          p.classList.toggle("good", !!state.ot.comm && !state.ot.fault);
+          p.classList.toggle("bad", !!state.ot.enabled && (!state.ot.comm || !!state.ot.fault));
         }
       }
-      setText("#otComm", !state.ot.enabled ? "VYPNUTO" : state.ot.comm ? "OK" : state.ot.fault ? "FAULT" : state.ot.ready ? "READY" : "INIT");
+      setText("#otComm", !state.ot.enabled ? "VYPNUTO" : state.ot.comm ? (state.ot.fault ? "OK • FAULT KOTLE" : "OK") : state.ot.ready ? "BEZ ODPOVĚDI" : "INIT");
       setText("#otChSet", fmtMaybeNumber(state.ot.chSet, 1));
       setText("#otChTemp", fmtMaybeNumber(state.ot.chTemp, 1));
       setText("#otDhwTemp", fmtMaybeNumber(state.ot.dhwTemp, 1));
@@ -4749,7 +4779,7 @@ async function serviceIoCall(payload){
         $("#otLog").checked = !!(state.ot.cfg?.allowRawWrite ?? state.ot.cfg?.log);
       }
       const otModeTxt = String(state.ot.cfg?.mode || "control");
-      setBadge("#otBadge", state.ot.comm ? "good" : "bad", state.ot.comm ? `stav: OK • ${otModeTxt}` : `stav: ${state.ot.enabled ? "chyba" : "vypnuto"} • ${otModeTxt}`);
+      setBadge("#otBadge", state.ot.comm && !state.ot.fault ? "good" : "bad", state.ot.comm ? `stav: ${state.ot.fault ? "FAULT KOTLE (link OK)" : "OK"} • ${otModeTxt}` : `stav: ${state.ot.enabled ? "bez odpovědi" : "vypnuto"} • ${otModeTxt}`);
 
       const pAlert = state.alerts?.pressure || {};
       let pText = "alarm: vypnuto";
@@ -4830,11 +4860,13 @@ async function serviceIoCall(payload){
       const usage = getHeatingOtUsageSummary();
       const wantsReadOnly = String(mode || "control") === "readOnly";
       if((usage.eqUsesOt || usage.dhwUsesOt) && (!enabled || wantsReadOnly)) {
-        const parts = [];
-        if(usage.eqUsesOt) parts.push("topení/ekviterm");
-        if(usage.dhwUsesOt) parts.push("TUV přes OpenTherm");
-        throw new Error(`OpenTherm musí zůstat v režimu control, protože ho právě používá ${parts.join(" + ")}.`);
+        const en = document.getElementById("otEnable");
+        const md = document.getElementById("otFailMode");
+        if(en) en.checked = true;
+        if(md) md.value = "control";
+        return { enabled:true, mode:"control", adjusted:true };
       }
+      return { enabled:!!enabled, mode:String(mode || "control"), adjusted:false };
     }
 
     function ensureWritableOtForDhw(requestMode){
@@ -5690,10 +5722,12 @@ updatePlannerStateBadges();
         otBtn.addEventListener("click", async () => withButtonBusy(otBtn, "Ukládám…", async () => {
           try{
             state.ot.cfg = state.ot.cfg || {};
-            const enabled = !!$("#otEnable")?.checked;
-            const pollMs = clamp(Number($("#otPoll")?.value ?? 2000), 100, 60000);
-            const mode = String($("#otFailMode")?.value || "control");
-            ensureOtConfigCompatible(enabled, mode);
+            let enabled = !!$("#otEnable")?.checked;
+            const pollMs = clamp(Number($("#otPoll")?.value ?? 2000), 250, 60000);
+            let mode = String($("#otFailMode")?.value || "control");
+            const compat = ensureOtConfigCompatible(enabled, mode);
+            enabled = compat.enabled; mode = compat.mode;
+            if(compat.adjusted) toast("OpenTherm", "Režim control zůstal aktivní, protože OT používá topení nebo TUV.", "ℹ");
             const allowRawWrite = !!$("#otLog")?.checked;
 
             await api.postConfigSection("opentherm", {
@@ -5965,9 +5999,9 @@ const tooltipHelpById = {
   bleScanIntervalMs: "Prodleva mezi jednotlivými krátkými hledáními BLE zařízení, pokud teploměr není připojen.",
   hMixCalibrationSeatMs: "Čas navíc po dosažení předpokládané krajní polohy, který zajistí mechanické dosednutí ventilu.",
   hMixAutoRecalibrationHours: "Interval automatického přejezdu do referenční polohy B. Hodnota 0 automatickou rekalibraci vypne.",
-  mixTempSourceA: "Teplý přívod A: teplota uprostřed akumulační nádrže z role AKU uprostřed (DS18B20).",
-  mixTempSourceB: "Vratná větev B: samostatné DS18B20 přiřazené roli Zpátečka / Return.flow na GPIO2; OpenTherm tuto hodnotu nepřepisuje.",
-  mixTempSourceAB: "Smíšený výstup AB a regulační zpětná vazba: OpenTherm CH teplota (měřená). Při neplatné hodnotě automatika zastaví pohyb ventilu.",
+  mixTempSourceA: "Teplý přívod A: lze zvolit DS18B20 AKU uprostřed nebo OpenTherm výstup kotle / CH (ID25).",
+  mixTempSourceB: "Vratná větev B: lze zvolit samostatné DS18B20 role Zpátečka / Return.flow na GPIO2 nebo OpenTherm zpátečku (ID28).",
+  mixTempSourceAB: "Smíšený výstup AB a regulační zpětná vazba: lze použít OpenTherm CH (ID25) nebo DS18B20 role Zpátečka / Return.flow. Při neplatném zvoleném zdroji automatika ventil bezpečně zastaví.",
   timeEnable: "Zapne synchronizaci systémového času, který používají plánovače a časové funkce regulace."
 };
 

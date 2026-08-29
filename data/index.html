@@ -7,9 +7,9 @@
   <meta name="theme-color" content="#0b0f17" media="(prefers-color-scheme: dark)">
   <meta name="theme-color" content="#f7f8fb" media="(prefers-color-scheme: light)">
   <title>ESP32 Controller • Moderní řízení vytápění</title>
-  <link rel="preload" href="/app.css?v=3.5.0" as="style">
-  <link rel="preload" href="/app.js?v=3.5.0" as="script">
-  <link rel="stylesheet" href="/app.css?v=3.5.0">
+  <link rel="preload" href="/app.css?v=3.5.3" as="style">
+  <link rel="preload" href="/app.js?v=3.5.3" as="script">
+  <link rel="stylesheet" href="/app.css?v=3.5.3">
 </head>
 
 <body>
@@ -1188,9 +1188,9 @@
               <tbody>
                 <tr><td>Komunikace</td><td><strong id="otComm">--</strong></td></tr>
                 <tr data-ot-id="1"><td>CH setpoint (požadavek)</td><td class="mono"><span id="otChSet">--</span> °C</td></tr>
-                <tr data-ot-id="15"><td>CH teplota (měřená)</td><td class="mono"><span id="otChTemp">--</span> °C</td></tr>
+                <tr data-ot-id="25"><td>CH teplota (měřená)</td><td class="mono"><span id="otChTemp">--</span> °C</td></tr>
                 <tr data-ot-id="28"><td>Zpátečka do kotle</td><td class="mono"><span id="otReturn">--</span> °C</td></tr>
-                <tr data-ot-id="25"><td>TUV teplota</td><td class="mono"><span id="otDhwTemp">--</span> °C</td></tr>
+                <tr data-ot-id="26"><td>TUV teplota</td><td class="mono"><span id="otDhwTemp">--</span> °C</td></tr>
                 <tr data-ot-id="27"><td>Venkovní teplota</td><td class="mono"><span id="otOutside">--</span> °C</td></tr>
                 <tr data-ot-id="18"><td>Tlak</td><td class="mono"><span id="otPress">--</span> bar</td></tr>
                 <tr data-ot-id="17"><td>Modulace</td><td class="mono"><span id="otMod">--</span> %</td></tr>
@@ -1199,6 +1199,7 @@
                 <tr data-ot-id="56"><td>TUV setpoint</td><td class="mono"><span id="otDhwSet">--</span> °C</td></tr>
                 <tr><td>Požadovaný TUV setpoint</td><td class="mono"><span id="otReqDhw">--</span> °C</td></tr>
                 <tr><td>Reason</td><td class="mono"><span id="otReason">--</span></td></tr>
+                <tr><td>Logika adaptéru</td><td class="mono"><span id="otLogicPolarity">--</span></td></tr>
                 <tr><td>Fault flags / OEM</td><td class="mono"><span id="otFaultFlags">0</span> / <span id="otOemFault">0</span></td></tr>
               </tbody>
             </table>
@@ -1296,10 +1297,11 @@
                     <tr data-ot-id="1"><td class="mono">1</td><td><strong>Control setpoint</strong></td><td class="mono">R/W</td><td class="mono">°C</td><td class="muted">Požadovaná teplota topné vody</td></tr>
                     <tr data-ot-id="3"><td class="mono">3</td><td><strong>Slave configuration</strong></td><td class="mono">R</td><td class="mono">flags</td><td class="muted">Schopnosti kotle</td></tr>
                     <tr data-ot-id="14"><td class="mono">14</td><td><strong>Max relative modulation</strong></td><td class="mono">R</td><td class="mono">%</td><td class="muted">Aktuální modulace</td></tr>
-                    <tr data-ot-id="15"><td class="mono">15</td><td><strong>Boiler water temperature</strong></td><td class="mono">R</td><td class="mono">°C</td><td class="muted">Měřená teplota vody v kotli</td></tr>
+                    <tr data-ot-id="15"><td class="mono">15</td><td><strong>Boiler capacity / min modulation</strong></td><td class="mono">R</td><td class="mono">kW / %</td><td class="muted">Max. výkon kotle / minimální modulace</td></tr>
                     <tr data-ot-id="17"><td class="mono">17</td><td><strong>Relative modulation level</strong></td><td class="mono">R</td><td class="mono">%</td><td class="muted">Zátěž / výkon</td></tr>
                     <tr data-ot-id="18"><td class="mono">18</td><td><strong>CH water pressure</strong></td><td class="mono">R</td><td class="mono">bar</td><td class="muted">Tlak systému</td></tr>
-                    <tr data-ot-id="25"><td class="mono">25</td><td><strong>TUV temperature</strong></td><td class="mono">R</td><td class="mono">°C</td><td class="muted">TUV teplota</td></tr>
+                    <tr data-ot-id="25"><td class="mono">25</td><td><strong>Boiler water temperature</strong></td><td class="mono">R</td><td class="mono">°C</td><td class="muted">Výstupní teplota vody z kotle</td></tr>
+                    <tr data-ot-id="26"><td class="mono">26</td><td><strong>DHW temperature</strong></td><td class="mono">R</td><td class="mono">°C</td><td class="muted">Teplota TUV hlášená kotlem</td></tr>
                     <tr data-ot-id="56"><td class="mono">56</td><td><strong>TUV setpoint</strong></td><td class="mono">R/W</td><td class="mono">°C</td><td class="muted">Požadovaná TUV teplota</td></tr>
                     <tr data-ot-id="57"><td class="mono">57</td><td><strong>Max CH setpoint</strong></td><td class="mono">R/W</td><td class="mono">°C</td><td class="muted">Limit Max CH (v UI: volba „ID57“)</td></tr>
                   </tbody>
@@ -1323,7 +1325,7 @@
               <div class="detail-body">
                 <div class="row" style="align-items:flex-end">
                   <label class="switch" title="Zobrazit i nepodporované ID (v cache)">
-                    <input type="checkbox" id="otScanShowAll" checked />
+                    <input type="checkbox" id="otScanShowAll" />
                     <span class="track"><span class="thumb"></span></span>
                     <span>Zobrazit vše</span>
                   </label>
@@ -1482,12 +1484,12 @@
               <summary>
                 <div class="sum-left">
                   <div class="chev">›</div>
-                  <div class="sum-title"><strong>Zdroje teplot směšovacího ventilu</strong><span>A = AKU uprostřed, B = DS18B20, AB = OpenTherm CH</span></div>
+                  <div class="sum-title"><strong>Zdroje teplot směšovacího ventilu</strong><span>volitelně OpenTherm / DS18B20 podle portu</span></div>
                 </div>
                 <div class="sum-right"><span class="badge"><span class="b"></span>3 porty</span></div>
               </summary>
               <div class="detail-body">
-                <div class="mix-source-note"><strong>A</strong> používá čidlo „AKU uprostřed“. <strong>B</strong> používá samostatné DS18B20 přiřazené níže roli „Zpátečka / Return.flow“ na GPIO2. <strong>AB</strong> je regulační zpětná vazba z OpenTherm „CH teplota (měřená)“; bez platné hodnoty automatika ventil bezpečně zastaví.</div>
+                <div class="mix-source-note"><strong>A</strong>: DS18B20 „AKU uprostřed“ nebo OpenTherm CH/výstup kotle (ID25). <strong>B</strong>: DS18B20 „Zpátečka / Return.flow“ na GPIO2 nebo OpenTherm zpátečka (ID28). <strong>AB</strong>: OpenTherm CH (ID25) nebo DS18B20 „Zpátečka / Return.flow“. Regulace vždy používá právě zvolený zdroj; při jeho neplatné hodnotě se pohyb ventilu bezpečně zastaví.</div>
                 <div class="sp"></div>
                 <table class="table mix-source-table" aria-label="Zdroje teplot trojcestného směšovacího ventilu">
                   <thead><tr><th>Port ventilu</th><th>Vybraný zdroj</th><th>Aktuální hodnota</th></tr></thead>
@@ -1949,6 +1951,6 @@
     </main>
   </div>
 
-  <script defer src="/app.js?v=3.5.0"></script>
+  <script defer src="/app.js?v=3.5.3"></script>
 </body>
 </html>

@@ -1,0 +1,1112 @@
+{
+  "ok": true,
+  "inputs": {
+    "activeLevel": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ]
+  },
+  "opentherm": {
+    "enabled": true,
+    "autoStart": true,
+    "pollMs": 2000,
+    "bootDelayMs": 15000,
+    "mode": "control",
+    "boilerControl": "opentherm",
+    "allowRawWrite": false,
+    "rxPin": 48,
+    "txPin": 47,
+    "invertRx": false,
+    "invertTx": false,
+    "autoDetectLogic": false,
+    "transportProfile": "legacy-3.3.14"
+  },
+  "ble": {
+    "enabled": false,
+    "namePrefix": "ESP-Meteostanice",
+    "scanIntervalMs": 10000
+  },
+  "dallas": {
+    "enabled": true,
+    "roles": {
+      "dhw_tank": "",
+      "outside": "",
+      "return": "",
+      "tank_top": "970623A18B393D28",
+      "tank_mid": "CA0623A193FA0628",
+      "tank_bottom": "B80623A1AC65A928",
+      "dhw_return": "B60623B2841B3F28"
+    },
+    "availableRoles": [
+      {
+        "key": "dhw_tank",
+        "label": "TUV zásobník",
+        "gpio": 3
+      },
+      {
+        "key": "outside",
+        "label": "Venkovní teplota",
+        "gpio": 0
+      },
+      {
+        "key": "return",
+        "label": "Zpátečka / Return.flow",
+        "gpio": 2
+      },
+      {
+        "key": "tank_top",
+        "label": "AKU nahoře",
+        "gpio": 3
+      },
+      {
+        "key": "tank_mid",
+        "label": "AKU uprostřed",
+        "gpio": 3
+      },
+      {
+        "key": "tank_bottom",
+        "label": "AKU dole",
+        "gpio": 3
+      },
+      {
+        "key": "dhw_return",
+        "label": "Návrat TUV",
+        "gpio": 1
+      }
+    ],
+    "mixingValve": {
+      "a": "tank_mid",
+      "b": "opentherm_return",
+      "ab": "opentherm_ch",
+      "availableSources": {
+        "a": [
+          {
+            "key": "none",
+            "label": "Nevybráno"
+          },
+          {
+            "key": "tank_mid",
+            "label": "DS18B20 – AKU uprostřed"
+          },
+          {
+            "key": "opentherm_ch",
+            "label": "OpenTherm – výstup kotle / CH (ID25)"
+          }
+        ],
+        "b": [
+          {
+            "key": "none",
+            "label": "Nevybráno"
+          },
+          {
+            "key": "return_dallas",
+            "label": "DS18B20 – role Zpátečka / Return.flow (GPIO2)"
+          },
+          {
+            "key": "opentherm_return",
+            "label": "OpenTherm – zpátečka kotle (ID28)"
+          }
+        ],
+        "ab": [
+          {
+            "key": "none",
+            "label": "Nevybráno"
+          },
+          {
+            "key": "opentherm_ch",
+            "label": "OpenTherm – výstup kotle / CH (ID25)"
+          },
+          {
+            "key": "return_dallas",
+            "label": "DS18B20 – role Zpátečka / Return.flow (GPIO2)"
+          }
+        ]
+      }
+    }
+  },
+  "ota": {
+    "enabled": true,
+    "hostname": "ESP-HEATCTRL-16",
+    "port": 3232,
+    "passwordSet": false
+  },
+  "mqtt": {
+    "enabled": true,
+    "connected": true,
+    "implemented": true,
+    "runtime": "connected",
+    "host": "10.0.6.2",
+    "port": 1883,
+    "username": "mqtt",
+    "passwordSet": true,
+    "clientId": "esp32-controller",
+    "baseTopic": "esp32-controller",
+    "publishIntervalMs": 10000,
+    "stateTopic": "esp32-controller/state",
+    "availabilityTopic": "esp32-controller/availability",
+    "homeAssistant": {
+      "enabled": true,
+      "discovery": true,
+      "discoveryPrefix": "homeassistant",
+      "nodeId": "esp32_controller"
+    },
+    "preview": {
+      "stateTopic": "esp32-controller/state",
+      "availabilityTopic": "esp32-controller/availability",
+      "discoveryPrefix": "homeassistant",
+      "device": {
+        "identifiers": [
+          "esp32_controller"
+        ],
+        "name": "ESP32 Controller",
+        "manufacturer": "Waveshare",
+        "model": "ESP32-S3-ETH-8DI-8RO",
+        "ip": "10.0.6.55"
+      },
+      "entities": [
+        {
+          "component": "sensor",
+          "objectId": "outside_temp",
+          "name": "Venkovni teplota",
+          "stateTopic": "esp32-controller/state",
+          "availabilityTopic": "esp32-controller/availability",
+          "valueTemplate": "{{ value_json.temps.outside }}",
+          "unit": "°C",
+          "deviceClass": "temperature",
+          "stateClass": "measurement",
+          "discoveryTopic": "homeassistant/sensor/esp32_controller/outside_temp/config"
+        },
+        {
+          "component": "sensor",
+          "objectId": "flow_temp",
+          "name": "Topna voda",
+          "stateTopic": "esp32-controller/state",
+          "availabilityTopic": "esp32-controller/availability",
+          "valueTemplate": "{{ value_json.temps.flow }}",
+          "unit": "°C",
+          "deviceClass": "temperature",
+          "stateClass": "measurement",
+          "discoveryTopic": "homeassistant/sensor/esp32_controller/flow_temp/config"
+        },
+        {
+          "component": "sensor",
+          "objectId": "return_temp",
+          "name": "Zpatecka",
+          "stateTopic": "esp32-controller/state",
+          "availabilityTopic": "esp32-controller/availability",
+          "valueTemplate": "{{ value_json.temps.return }}",
+          "unit": "°C",
+          "deviceClass": "temperature",
+          "stateClass": "measurement",
+          "discoveryTopic": "homeassistant/sensor/esp32_controller/return_temp/config"
+        },
+        {
+          "component": "sensor",
+          "objectId": "dhw_temp",
+          "name": "TUV",
+          "stateTopic": "esp32-controller/state",
+          "availabilityTopic": "esp32-controller/availability",
+          "valueTemplate": "{{ value_json.temps.dhw_tank }}",
+          "unit": "°C",
+          "deviceClass": "temperature",
+          "stateClass": "measurement",
+          "discoveryTopic": "homeassistant/sensor/esp32_controller/dhw_temp/config"
+        },
+        {
+          "component": "sensor",
+          "objectId": "mix_position",
+          "name": "Smesovaci ventil",
+          "stateTopic": "esp32-controller/state",
+          "availabilityTopic": "esp32-controller/availability",
+          "valueTemplate": "{{ value_json.eq.mix.pct }}",
+          "unit": "%",
+          "stateClass": "measurement",
+          "discoveryTopic": "homeassistant/sensor/esp32_controller/mix_position/config"
+        },
+        {
+          "component": "binary_sensor",
+          "objectId": "input1_night",
+          "name": "Vstup Den Noc",
+          "stateTopic": "esp32-controller/state",
+          "availabilityTopic": "esp32-controller/availability",
+          "valueTemplate": "{{ value_json.in.actMask | int(0) & 1 > 0 }}",
+          "discoveryTopic": "homeassistant/binary_sensor/esp32_controller/input1_night/config"
+        }
+      ]
+    }
+  },
+  "time": {
+    "enabled": true,
+    "tz": "CET-1CEST,M3.5.0,M10.5.0/3",
+    "ntp": [
+      "pool.ntp.org",
+      "europe.pool.ntp.org",
+      "time.nist.gov"
+    ],
+    "valid": true,
+    "iso": "2026-08-29T10:05:35",
+    "src": "sntp"
+  },
+  "equitherm": {
+    "enabled": false,
+    "mode": "auto",
+    "useIn1NightOverride": true,
+    "summerModeEnabled": false,
+    "summerOffAboveC": 18,
+    "summerOnBelowC": 16,
+    "schedule": {
+      "enabled": false,
+      "week": [
+        {
+          "day": "mon",
+          "intervalCount": 1,
+          "intervals": [
+            {
+              "startMin": 360,
+              "endMin": 1320
+            }
+          ],
+          "dayStartMin": 360,
+          "nightStartMin": 1320
+        },
+        {
+          "day": "tue",
+          "intervalCount": 1,
+          "intervals": [
+            {
+              "startMin": 360,
+              "endMin": 1320
+            }
+          ],
+          "dayStartMin": 360,
+          "nightStartMin": 1320
+        },
+        {
+          "day": "wed",
+          "intervalCount": 1,
+          "intervals": [
+            {
+              "startMin": 360,
+              "endMin": 1320
+            }
+          ],
+          "dayStartMin": 360,
+          "nightStartMin": 1320
+        },
+        {
+          "day": "thu",
+          "intervalCount": 1,
+          "intervals": [
+            {
+              "startMin": 360,
+              "endMin": 1320
+            }
+          ],
+          "dayStartMin": 360,
+          "nightStartMin": 1320
+        },
+        {
+          "day": "fri",
+          "intervalCount": 1,
+          "intervals": [
+            {
+              "startMin": 360,
+              "endMin": 1320
+            }
+          ],
+          "dayStartMin": 360,
+          "nightStartMin": 1320
+        },
+        {
+          "day": "sat",
+          "intervalCount": 1,
+          "intervals": [
+            {
+              "startMin": 480,
+              "endMin": 1320
+            }
+          ],
+          "dayStartMin": 480,
+          "nightStartMin": 1320
+        },
+        {
+          "day": "sun",
+          "intervalCount": 1,
+          "intervals": [
+            {
+              "startMin": 480,
+              "endMin": 1320
+            }
+          ],
+          "dayStartMin": 480,
+          "nightStartMin": 1320
+        }
+      ]
+    },
+    "day": {
+      "outColdC": -20,
+      "flowColdC": 45,
+      "outWarmC": 20,
+      "flowWarmC": 21
+    },
+    "night": {
+      "outColdC": -20,
+      "flowColdC": 43,
+      "outWarmC": 20,
+      "flowWarmC": 15
+    },
+    "limits": {
+      "minFlowC": 22,
+      "maxFlowC": 40,
+      "minChSetpointC": 22,
+      "maxChSetpointC": 40
+    },
+    "temps": {
+      "maxAgeMs": 600000
+    },
+    "send": {
+      "minIntervalMs": 60000,
+      "minDeltaC": 0.5
+    },
+    "output": {
+      "useOpenTherm": true,
+      "applyBoilerMaxCh": false,
+      "boilerMaxChC": 40,
+      "driveNightRelay": true,
+      "nightRelay": 6,
+      "nightRelayOnWhenNight": true
+    },
+    "mixing": {
+      "enabled": true,
+      "openRelay": 1,
+      "closeRelay": 2,
+      "deadbandC": 1,
+      "targetOffsetC": 0,
+      "targetReachedAction": "return_a",
+      "pulseMs": 600,
+      "minIntervalMs": 30000,
+      "travelMs": 6000,
+      "calibrationSeatMs": 500,
+      "autoRecalibrationMs": 172800000,
+      "sourceA": "tank_mid",
+      "sourceB": "opentherm_return",
+      "sourceAB": "opentherm_ch",
+      "controlMode": "tech_i3",
+      "valveType": "floor",
+      "controlIntervalMs": 2000,
+      "minOpeningPct": 0,
+      "unitStepPct": 5,
+      "proportionalCoeff": 5,
+      "calibrationHome": "b",
+      "openingDirection": "normal",
+      "effectiveCalibrationHome": "b",
+      "autoCalibrationPeriodMs": 172800000,
+      "weeklyCloseEnabled": false,
+      "weeklyCorrectionEnabled": false,
+      "dhwPriorityPositionPct": 0,
+      "curveMode": "tech_i3_4point",
+      "boilerProtection": {
+        "enabled": false,
+        "maxC": 80
+      },
+      "returnProtection": {
+        "enabled": false,
+        "minC": 40
+      },
+      "floorProtection": {
+        "enabled": true,
+        "maxC": 45,
+        "summerEnabled": false
+      },
+      "outsideClose": {
+        "enabled": true,
+        "dayC": 20,
+        "nightC": 15,
+        "hysteresisC": 2,
+        "dayStart": "06:00",
+        "nightStart": "20:00"
+      },
+      "weeklyClose": [
+        [
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        [
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        [
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        [
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        [
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        [
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        [
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false
+        ]
+      ],
+      "weeklyCorrection": [
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      ],
+      "weather4": {
+        "outsideC": [
+          -20,
+          -10,
+          0,
+          10
+        ],
+        "day": [
+          65,
+          55,
+          45,
+          35
+        ],
+        "night": [
+          60,
+          50,
+          40,
+          30
+        ]
+      }
+    },
+    "boilerAssist": {
+      "enabled": true,
+      "deltaC": 5,
+      "forceChEnable": true
+    }
+  },
+  "dhw": {
+    "enabled": true,
+    "disableEquithermDuringHeat": true,
+    "tempMaxAgeMs": 900000,
+    "heat": {
+      "useInput": false,
+      "useSchedule": true,
+      "scheduleEnabled": true,
+      "targetTempC": 55,
+      "hysteresisC": 2,
+      "requestMode": "opentherm",
+      "otEnableDhw": true,
+      "otDhwSetpointC": 55,
+      "relayRequest": false,
+      "driveValveRelay": false,
+      "valveRelay": 3,
+      "boilerRelay": 5,
+      "valveLeadMs": 3000,
+      "valveSwitchBackMs": 1500,
+      "boilerOffHoldMs": 2000,
+      "schedule": {
+        "week": [
+          {
+            "day": "mon",
+            "intervals": []
+          },
+          {
+            "day": "tue",
+            "intervals": []
+          },
+          {
+            "day": "wed",
+            "intervals": []
+          },
+          {
+            "day": "thu",
+            "intervals": []
+          },
+          {
+            "day": "fri",
+            "intervals": []
+          },
+          {
+            "day": "sat",
+            "intervals": []
+          },
+          {
+            "day": "sun",
+            "intervals": []
+          }
+        ]
+      }
+    },
+    "antiLegionella": {
+      "enabled": false,
+      "weekday": 0,
+      "startMin": 120,
+      "targetTempC": 60,
+      "holdMin": 30
+    },
+    "circ": {
+      "useInput": false,
+      "useSchedule": true,
+      "scheduleEnabled": true,
+      "pulseEnabled": true,
+      "pulseOnMin": 5,
+      "pulseOffMin": 15,
+      "relay": 4,
+      "schedule": {
+        "week": [
+          {
+            "day": "mon",
+            "intervals": []
+          },
+          {
+            "day": "tue",
+            "intervals": []
+          },
+          {
+            "day": "wed",
+            "intervals": []
+          },
+          {
+            "day": "thu",
+            "intervals": []
+          },
+          {
+            "day": "fri",
+            "intervals": []
+          },
+          {
+            "day": "sat",
+            "intervals": []
+          },
+          {
+            "day": "sun",
+            "intervals": []
+          }
+        ]
+      }
+    }
+  },
+  "alerts": {
+    "pressure": {
+      "enabled": true,
+      "minBar": 0.8,
+      "maxBar": 2.8,
+      "hysteresisBar": 0.05,
+      "active": false,
+      "sensorValid": true,
+      "pressureBar": 1.597656,
+      "state": "ok"
+    }
+  }
+}
