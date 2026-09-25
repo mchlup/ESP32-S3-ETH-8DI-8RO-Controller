@@ -26,6 +26,13 @@ namespace {
   EquithermStatus s_st;
   bool s_externalBlock = false;
 
+  // True when the OpenTherm equitherm request must be re-published even if
+  // the requested temperature is numerically unchanged and the normal send
+  // interval has not elapsed. This is required after configuration changes or
+  // after the equitherm request was explicitly cleared (DHW priority, summer,
+  // missing sensor, disabled controller, ...).
+  bool s_boilerRequestDirty = true;
+
   float s_outsideFiltered = NAN;
   uint32_t s_lastComputeMs = 0;
   uint32_t s_lastOutsideFilterMs = 0;
@@ -379,6 +386,13 @@ namespace {
 
     // Clamp basics
     if (s_cfg.mode != "auto" && s_cfg.mode != "day" && s_cfg.mode != "night") s_cfg.mode = "auto";
+    clampFloat(s_cfg.summerOffAboveC, -30.0f, 50.0f);
+    clampFloat(s_cfg.summerOnBelowC, -30.0f, 50.0f);
+    if (s_cfg.summerOnBelowC > s_cfg.summerOffAboveC) {
+      const float t = s_cfg.summerOnBelowC;
+      s_cfg.summerOnBelowC = s_cfg.summerOffAboveC;
+      s_cfg.summerOffAboveC = t;
+    }
     clampFloat(s_cfg.minFlowC, 10.0f, 90.0f);
     clampFloat(s_cfg.maxFlowC, 10.0f, 90.0f);
     if (s_cfg.minFlowC > s_cfg.maxFlowC) { float t=s_cfg.minFlowC; s_cfg.minFlowC=s_cfg.maxFlowC; s_cfg.maxFlowC=t; }
@@ -504,6 +518,31 @@ namespace {
     return s_cfg.mixWeeklyCloseSlots[day][slot];
   }
 
+  static bool isComfortByScheduleDay(int dayIdx, uint16_t nowMin, bool includeCarryFromPreviousDay) {
+    if (dayIdx < 0 || dayIdx > 6) return false;
+    const uint8_t cnt = (s_cfg.intervalCount[dayIdx] > HEATING_MAX_INTERVALS_PER_DAY)
+        ? HEATING_MAX_INTERVALS_PER_DAY : s_cfg.intervalCount[dayIdx];
+    for (uint8_t i = 0; i < cnt; i++) {
+      const uint16_t startMin = s_cfg.intervals[dayIdx][i].startMin;
+      const uint16_t endMin = s_cfg.intervals[dayIdx][i].endMin;
+      if (startMin == endMin) continue;
+
+      if (startMin < endMin) {
+        if (!includeCarryFromPreviousDay && nowMin >= startMin && nowMin < endMin) return true;
+        continue;
+      }
+
+      // Overnight interval, e.g. Monday 22:00 -> Tuesday 06:00. The segment
+      // before midnight belongs to the configured day; the segment after
+      // midnight belongs to the previous day's interval. Evaluating both parts
+      // against the current day used to select the wrong curve after midnight
+      // whenever adjacent days had different schedules.
+      if (!includeCarryFromPreviousDay && nowMin >= startMin) return true;
+      if (includeCarryFromPreviousDay && nowMin < endMin) return true;
+    }
+    return false;
+  }
+
   static bool isNightBySchedule(bool& usedSchedule, String& outIso) {
     usedSchedule = false;
     outIso = networkGetTimeIso();
@@ -514,22 +553,14 @@ namespace {
 
     // tm_wday: 0=Sun..6=Sat -> convert to Mon..Sun index
     const int idx = localWeekdayIndex(tmv);
-
+    const int prevIdx = (idx + 6) % 7;
     const uint16_t nowMin = (uint16_t)(tmv.tm_hour * 60 + tmv.tm_min);
-    bool isDay = false;
-    const uint8_t cnt = (s_cfg.intervalCount[idx] > HEATING_MAX_INTERVALS_PER_DAY) ? HEATING_MAX_INTERVALS_PER_DAY : s_cfg.intervalCount[idx];
-    for (uint8_t i = 0; i < cnt; i++) {
-      const uint16_t dayStart = s_cfg.intervals[idx][i].startMin;
-      const uint16_t nightStart = s_cfg.intervals[idx][i].endMin;
-      if (dayStart == nightStart) continue;
-      bool active = false;
-      if (dayStart < nightStart) active = (nowMin >= dayStart && nowMin < nightStart);
-      else active = (nowMin >= dayStart || nowMin < nightStart);
-      if (active) { isDay = true; break; }
-    }
+
+    const bool comfortNow = isComfortByScheduleDay(idx, nowMin, false)
+        || isComfortByScheduleDay(prevIdx, nowMin, true);
 
     usedSchedule = true;
-    return !isDay;
+    return !comfortNow;
   }
 
   static void recomputeNow() {
@@ -1204,6 +1235,7 @@ namespace {
       s_st.active = false;
       s_st.reason = "disabled";
       openthermClearEquithermRequest();
+      s_boilerRequestDirty = true;
       return;
     }
     const bool techI3Control = s_cfg.mixControlMode == "tech_i3";
@@ -1243,6 +1275,7 @@ namespace {
       s_st.active = false;
       s_st.reason = "blocked_dhw";
       openthermClearEquithermRequest();
+      s_boilerRequestDirty = true;
       return;
     }
 
@@ -1285,6 +1318,7 @@ namespace {
       s_st.active = false;
       s_st.reason = "outside temp missing";
       openthermClearEquithermRequest();
+      s_boilerRequestDirty = true;
       return;
     }
     const float outsideC = outsideValid ? outsideTv.c : NAN;
@@ -1302,6 +1336,7 @@ namespace {
       s_st.active = false;
       s_st.reason = "summer_mode";
       openthermClearEquithermRequest();
+      s_boilerRequestDirty = true;
       return;
     }
 
@@ -1313,6 +1348,7 @@ namespace {
       resetHeatingCycleState();
       resetNightRelayToSafeDay();
       openthermClearEquithermRequest();
+      s_boilerRequestDirty = true;
     } else if (!s_heatingCycleActive) {
       s_heatingCycleActive = true;
       s_autoCalibrationAttemptedThisCycle = false;
@@ -1331,6 +1367,7 @@ namespace {
       s_st.active = false;
       s_st.reason = "opentherm not ready";
       openthermClearEquithermRequest();
+      s_boilerRequestDirty = true;
       return;
     }
 
@@ -1873,7 +1910,14 @@ namespace {
     // return-protection safety profile during an OT/outside-sensor outage) must
     // not convert the local safety action into a failed/invalid boiler write.
     if (localReturnProfile || summerHydraulicOnly || !s_cfg.useOpenTherm || !openThermReadyForControl || !outsideValid) {
-      if (localReturnProfile || summerHydraulicOnly) openthermClearEquithermRequest();
+      if (localReturnProfile || summerHydraulicOnly || !s_cfg.useOpenTherm) {
+        // If OpenTherm output is disabled at runtime, remove any previously
+        // published equitherm layer from the arbiter instead of leaving the
+        // last CH request active indefinitely. Keep the dirty flag set so a
+        // later re-enable publishes the current curve target immediately.
+        openthermClearEquithermRequest();
+        s_boilerRequestDirty = true;
+      }
       s_st.active = true;
       s_st.lastSendOk = openThermReadyForControl || !s_cfg.useOpenTherm || localReturnProfile || summerHydraulicOnly;
       if (localReturnProfile) s_st.reason = "return_protection_local";
@@ -1885,21 +1929,30 @@ namespace {
     // The boiler always receives the base equitherm target. Accumulator support
     // raises only the valve/support target, e.g. OT=22 °C and valve target=27 °C.
     float boilerSp = baseTargetFlow;
-    // Determine effective CH setpoint clamp (prefer OpenTherm limits when available)
+
+    // The configured equitherm flow limits are authoritative for the TSet request.
+    // IMPORTANT: OpenTherm ID49 reports the writable bounds of the remote
+    // "Max CH water setpoint" parameter (ID57). Its lower bound is NOT the
+    // minimum allowed CH control setpoint (TSet / ID1). Some boilers report
+    // ID49.min = 25 °C, and using that value here incorrectly forced every
+    // equitherm request below 25 °C up to exactly 25 °C.
+    //
+    // The current Max CH setpoint (ID57) is a valid upper ceiling for TSet, so
+    // it is still respected. ID49 bounds remain diagnostic / ID57-write limits
+    // only and must never clamp the normal equitherm TSet.
     s_st.boilerMaxChC = ot.maxChSetpointC;
     s_st.boilerMaxBoundMinC = ot.maxChBoundMinC;
     s_st.boilerMaxBoundMaxC = ot.maxChBoundMaxC;
-    float clampMin = s_cfg.minChSetpointC;
-    float clampMax = s_cfg.maxChSetpointC;
-    if (isfinite(ot.maxChBoundMinC)) clampMin = fmaxf(clampMin, ot.maxChBoundMinC);
-    if (isfinite(ot.maxChBoundMaxC)) clampMax = fminf(clampMax, ot.maxChBoundMaxC);
+    float clampMin = s_cfg.minFlowC;
+    float clampMax = s_cfg.maxFlowC;
     if (isfinite(ot.maxChSetpointC)) clampMax = fminf(clampMax, ot.maxChSetpointC);
     if (s_cfg.applyBoilerMaxCh && isfinite(s_cfg.boilerMaxChC)) clampMax = fminf(clampMax, s_cfg.boilerMaxChC);
     if (clampMin > clampMax) clampMin = clampMax;
     s_st.boilerClampMinC = clampMin;
     s_st.boilerClampMaxC = clampMax;
 
-    // Safety clamp for what we send to boiler
+    // Safety clamp for what we send to boiler. The lower limit therefore follows
+    // exactly the user-configured minimum heating-water temperature (minFlowC).
     clampFloat(boilerSp, clampMin, clampMax);
     s_st.boilerSetpointC = boilerSp;
     s_st.active = true;
@@ -1910,9 +1963,10 @@ namespace {
     const bool modeChanged = (eff.length() && eff != lastEffMode);
     const bool supportStateChanged = !lastSupportStateKnown
         || (s_accumulatorSupportActive != lastSupportActive);
-    if (modeChanged || supportStateChanged) deltaOk = true;
+    const bool forceRefresh = s_boilerRequestDirty;
+    if (modeChanged || supportStateChanged || forceRefresh) deltaOk = true;
 
-    if (!intervalOk && !modeChanged && !supportStateChanged) {
+    if (!intervalOk && !modeChanged && !supportStateChanged && !forceRefresh) {
       s_st.reason = "hold_interval";
       return;
     }
@@ -1942,6 +1996,7 @@ namespace {
       lastEffMode = eff;
       lastSupportActive = s_accumulatorSupportActive;
       lastSupportStateKnown = true;
+      s_boilerRequestDirty = false;
     }
 
     s_st.lastSentChC = lastSent;
@@ -1955,6 +2010,9 @@ namespace {
     out["enabled"] = s_cfg.enabled;
     out["mode"] = s_cfg.mode;
     out["useIn1NightOverride"] = s_cfg.useIn1NightOverride;
+    out["summerModeEnabled"] = s_cfg.summerModeEnabled;
+    out["summerOffAboveC"] = s_cfg.summerOffAboveC;
+    out["summerOnBelowC"] = s_cfg.summerOnBelowC;
 
     JsonObject sched = out.createNestedObject("schedule");
     sched["enabled"] = s_cfg.scheduleEnabled;
@@ -2286,6 +2344,15 @@ static void applyConfigDoc(JsonObjectConst o) {
   if (o.containsKey("useIn1NightOverride")) {
     ConfigStore::setEqUseIn1NightOverride((bool)(o["useIn1NightOverride"] | true));
   }
+  if (o.containsKey("summerModeEnabled")) {
+    ConfigStore::setEqSummerModeEnabled((bool)(o["summerModeEnabled"] | false));
+  }
+  if (o.containsKey("summerOffAboveC")) {
+    ConfigStore::setEqSummerOffAboveC(o["summerOffAboveC"].as<float>());
+  }
+  if (o.containsKey("summerOnBelowC")) {
+    ConfigStore::setEqSummerOnBelowC(o["summerOnBelowC"].as<float>());
+  }
 
   if (o.containsKey("schedule") && o["schedule"].is<JsonObjectConst>()) {
     JsonObjectConst s = o["schedule"].as<JsonObjectConst>();
@@ -2495,6 +2562,11 @@ void equithermReloadFromStore() {
   const String previousTargetAction = s_cfg.mixTargetReachedAction;
   const bool previousSupportEnabled = s_cfg.boilerAssistEnabled;
   loadFromPrefs();
+  // A configuration reload may change the active curve, its points, limits,
+  // output mode or any other value that affects the CH request. Do not let the
+  // normal minSendInterval/minSendDelta throttling keep an obsolete OpenTherm
+  // request alive after a user setting change.
+  s_boilerRequestDirty = true;
   if (previousFeedbackSource.length() && previousFeedbackSource != s_cfg.mixTempSourceAB) {
     if (s_mix.active) stopMixingNow(millis(), true);
     resetMixFeedbackTracking();
@@ -2549,8 +2621,10 @@ bool equithermHandleCmdJson(const String& json, String& outErr) {
   }
 
   JsonObjectConst o = doc.as<JsonObjectConst>();
+  bool persistentConfigChanged = false;
   if (o.containsKey("enabled")) {
     ConfigStore::setEqEnabled((bool)(o["enabled"] | false));
+    persistentConfigChanged = true;
   }
   if (o.containsKey("mode")) {
     String m = String((const char*)(o["mode"] | "auto"));
@@ -2561,6 +2635,13 @@ bool equithermHandleCmdJson(const String& json, String& outErr) {
       return false;
     }
     ConfigStore::setEqMode(m);
+    persistentConfigChanged = true;
+  }
+  if (persistentConfigChanged) {
+    // ConfigStore setters update NVS/cache, but s_cfg is a separate runtime
+    // snapshot. Without this reload EQ MODE DAY/NIGHT/AUTO changed Preferences
+    // while computeAndSend() kept using the old curve indefinitely.
+    equithermReloadFromStore();
   }
   if (o.containsKey("mixMove")) {
     String cmd = String((const char*)(o["mixMove"] | ""));
@@ -2728,7 +2809,14 @@ void equithermSetExternalBlock(bool blocked) {
     resetNightRelayToSafeDay();
     if (changed) {
       openthermClearEquithermRequest();
+      s_boilerRequestDirty = true;
     }
+  } else if (changed) {
+    // DHW priority removed the equitherm request from the OpenTherm arbiter.
+    // Re-publish the current comfort/setback target on the very next loop even
+    // when the numeric setpoint is identical to the one used before DHW.
+    s_boilerRequestDirty = true;
+    s_lastComputeMs = 0;
   }
 }
 
